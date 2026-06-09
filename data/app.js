@@ -130,6 +130,7 @@ const initialState = {
   canNodeId: 1,
   canNodes: [],
   canActiveNodeId: 1,
+  canConnected: false,
 };
 
 function reducer(state, action) {
@@ -190,7 +191,8 @@ function reducer(state, action) {
       }
       return { ...state, params, spotValues, status, opmode, lasterr, udc, tmphs,
         firmwareVersion: version, categoryVisible: cv, fetchAge: 0,
-        failedFetchCount: 0, commError: false, fetching: false };
+        failedFetchCount: 0, commError: false, fetching: false,
+        canConnected: state.canMode ? (action.payload.can_cache === true) : false };
     }
 
     case 'SET_FPS':
@@ -223,7 +225,8 @@ function reducer(state, action) {
       return { ...state, messages: action.payload };
     case 'FETCH_ERROR':
       const fc = state.failedFetchCount + 1;
-      return { ...state, failedFetchCount: fc, commError: fc >= 2, fetching: false };
+      return { ...state, failedFetchCount: fc, commError: fc >= 2, fetching: false,
+               canConnected: state.canMode ? (fc < 2 && state.canConnected) : false };
     case 'SET_ACTIVE_TAB':
       return { ...state, activeTab: action.payload };
     case 'SET_AUTO_RELOAD':
@@ -254,6 +257,8 @@ function reducer(state, action) {
     }
     case 'REMOVE_CAN_NODE':
       return { ...state, canNodes: state.canNodes.filter(n => n.nodeId !== action.payload) };
+    case 'SET_CAN_CONNECTED':
+      return { ...state, canConnected: action.payload };
     case 'SET_PARAM_VALUE':
       const np = { ...state.params };
       if (np[action.name]) np[action.name] = { ...np[action.name], value: action.value };
@@ -363,7 +368,7 @@ const Navbar = () => {
           </select>
         </div>
       `}
-      ${state.canMode && html`<div style="text-align:center;padding:4px 0 0"><span style="background:var(--green);color:#fff;padding:2px 8px;border-radius:10px;font-size:.65rem;font-weight:600;letter-spacing:.03em">CAN #${state.canActiveNodeId}</span></div>`}
+      ${state.canMode && html`<div style="text-align:center;padding:4px 0 0"><span style="background:${state.canConnected ? 'var(--green)' : 'var(--red)'};color:#fff;padding:2px 8px;border-radius:10px;font-size:.65rem;font-weight:600;letter-spacing:.03em">CAN #${state.canActiveNodeId}</span></div>`}
     </aside>
   `;
 };
@@ -394,21 +399,6 @@ const Dashboard = () => {
         <h3 class="underline">Reset</h3>
         <button onclick=${() => setConfirmAction('inverter')}>Reboot Inverter</button>
         <button onclick=${() => setConfirmAction('esp32')}>Reboot ESP32</button>
-        ${state.canMode && html`
-        <h3 class="underline">CAN Message</h3>
-        <div style="display:flex;flex-direction:column;gap:4px">
-          <label style="font-size:.7rem;color:var(--text2)">Target: Node #${state.canNodeId} — change in Settings</label>
-          <label style="font-size:.75rem">CAN ID (hex)</label>
-          <input type="text" value=${canId} oninput=${e => setCanId(e.target.value)} style="font-size:.75rem;padding:4px 6px;font-family:var(--mono)" />
-          <label style="font-size:.75rem">Data bytes (hex, space/comma separated)</label>
-          <input type="text" value=${canData} oninput=${e => setCanData(e.target.value)} style="font-size:.75rem;padding:4px 6px;font-family:var(--mono)" />
-          <button onclick=${async () => {
-            const r = await fetch('/can-send?canId=' + encodeURIComponent(canId) + '&data=' + encodeURIComponent(canData));
-            const json = await r.json();
-            setCmdOutput(o => o + 'CAN: ' + JSON.stringify(json) + '\n');
-          }} style="font-size:.75rem;padding:4px 10px">Send CAN Message</button>
-        </div>
-        `}
       </div>
       <div class="main-left">
         <h2>Dashboard</h2>
@@ -429,8 +419,8 @@ const Dashboard = () => {
             <pre><div>${state.messages}</div></pre>
           </div>
         </div>
-        <div id="bottom-row">
-          <div id="bottom-left" class="dash-box">
+        <div class="dash-row">
+          <div class="dash-box" style="flex:1">
             <h3>Command</h3>
             <div id="commandoutput">${cmdOutput}</div>
             <div style="display:flex;gap:6px;margin-top:8px">
@@ -439,6 +429,26 @@ const Dashboard = () => {
             </div>
           </div>
         </div>
+        ${state.canMode && html`
+        <div class="dash-row">
+          <div class="dash-box" style="flex:1">
+            <h3>CAN Message</h3>
+            <div style="display:flex;gap:8px;align-items:flex-end">
+              <label style="font-size:.75rem;flex:1">CAN ID (hex)
+                <input type="text" value=${canId} oninput=${e => setCanId(e.target.value)} style="width:100%;font-size:.75rem;padding:4px 6px;font-family:var(--mono)" />
+              </label>
+              <label style="font-size:.75rem;flex:2">Data bytes (hex, space/comma separated)
+                <input type="text" value=${canData} oninput=${e => setCanData(e.target.value)} style="width:100%;font-size:.75rem;padding:4px 6px;font-family:var(--mono)" />
+              </label>
+              <button onclick=${async () => {
+                const r = await fetch('/can-send?canId=' + encodeURIComponent(canId) + '&data=' + encodeURIComponent(canData));
+                const json = await r.json();
+                setCmdOutput(o => o + 'CAN: ' + JSON.stringify(json) + '\n');
+              }} style="font-size:.75rem;padding:6px 14px;white-space:nowrap">Send</button>
+            </div>
+          </div>
+        </div>
+        `}
       </div>
     </div>
     ${confirmAction && html`
@@ -1442,7 +1452,7 @@ const Settings = () => {
         </div>
 
         <div class="dash-box" style="margin-bottom:1rem">
-          <h3>Interface Mode</h3>
+          <h3>Interface</h3>
           <div style="display:flex;align-items:center;gap:12px;margin-bottom:.5rem">
             <label class="switch">
               <input type="checkbox" checked=${canMode} onchange=${e => setCanMode(e.target.checked)} />
@@ -1458,111 +1468,86 @@ const Settings = () => {
                 params.set('can_speed', canSpeed);
                 params.set('can_rx_pin', canRxPin);
                 params.set('can_tx_pin', canTxPin);
+                params.set('can_nodes', JSON.stringify(state.canNodes));
                 await fetch('/settings?' + params.toString(), { method: 'POST' });
                 dispatch({ type: 'SET_CAN_CONFIG', payload: { canMode, canNodeId } });
                 setTimeout(() => setSaving(false), 2000);
               } catch (e) { setSaving(false); }
             }} style="font-size:.75rem;padding:4px 12px;margin-left:auto" disabled=${saving}>${saving ? 'Saving...' : 'Save'}</button>
           </div>
-          <p style="color:var(--text2);font-size:.8rem;margin:0">
-            ${canMode
-              ? 'Commands route through the CAN bus using the TWAI controller. Configure pins below and save.'
-              : 'Commands route through UART serial to the inverter.'}
-          </p>
-        </div>
 
-        ${!canMode && html`
-        <div class="dash-box" style="margin-bottom:1rem">
-          <h3>UART Configuration</h3>
-          <div style="display:flex;align-items:center;gap:12px;margin-bottom:.5rem">
-            <label class="switch">
-              <input type="checkbox" checked=${txrxSwapped} onchange=${e => toggleTxRx(e.target.checked)} disabled=${saving} />
-              <span class="slider"></span>
-            </label>
-            <span style="font-weight:600">Swap TX/RX Pins</span>
-            ${saving && html`<span style="color:var(--accent);font-size:.75rem">Reinitializing UART...</span>`}
-          </div>
-          <p style="color:var(--text2);font-size:.8rem;margin:0">
-            TX/RX are swapped on Wemos boards used with OpenInverter / ZombieVerter VCU boards.
-            ${txrxSwapped ? 'Currently using TX=3, RX=1 (swapped).' : 'Currently using TX=1, RX=3 (normal).'}
-          </p>
-        </div>
-        `}
+          ${!canMode && html`
+            <h3 style="margin-top:.75rem">UART Configuration</h3>
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:.25rem">
+              <label class="switch">
+                <input type="checkbox" checked=${txrxSwapped} onchange=${e => toggleTxRx(e.target.checked)} disabled=${saving} />
+                <span class="slider"></span>
+              </label>
+              <span style="font-weight:600">Swap TX/RX Pins</span>
+              ${saving && html`<span style="color:var(--accent);font-size:.75rem">Reinitializing UART...</span>`}
+            </div>
+            <p style="color:var(--text2);font-size:.8rem;margin:0">
+              TX/RX are swapped on Wemos boards used with OpenInverter / ZombieVerter VCU boards.
+              ${txrxSwapped ? 'Currently using TX=3, RX=1 (swapped).' : 'Currently using TX=1, RX=3 (normal).'}
+            </p>
+          `}
 
-        ${canMode && html`
-        <div class="dash-box" style="margin-bottom:1rem">
-          <h3>CAN Bus</h3>
-          <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:.5rem;align-items:center">
-            <label style="font-size:.75rem">Speed
-              <select value=${canSpeed} onchange=${e => setCanSpeed(parseInt(e.target.value))} class="styled" style="font-size:.7rem">
-                <option value="0">125k</option>
-                <option value="1">250k</option>
-                <option value="2">500k</option>
-              </select>
-            </label>
-            <label style="font-size:.75rem">RX Pin <input type="number" value=${canRxPin} oninput=${e => setCanRxPin(parseInt(e.target.value)||4)} style="width:4em;padding:2px 4px" /></label>
-            <label style="font-size:.75rem">TX Pin <input type="number" value=${canTxPin} oninput=${e => setCanTxPin(parseInt(e.target.value)||5)} style="width:4em;padding:2px 4px" /></label>
-            <button onclick=${async () => {
-              setSaving(true);
-              try {
-                const params = new URLSearchParams();
-                params.set('can_mode', '1');
-                params.set('can_node_id', canNodeId);
-                params.set('can_speed', canSpeed);
-                params.set('can_rx_pin', canRxPin);
-                params.set('can_tx_pin', canTxPin);
-                params.set('can_nodes', JSON.stringify(state.canNodes));
-                await fetch('/settings?' + params.toString(), { method: 'POST' });
-                setTimeout(() => setSaving(false), 2000);
-              } catch (e) { setSaving(false); }
-            }} style="font-size:.75rem;padding:4px 12px" disabled=${saving}>${saving ? 'Saving...' : 'Save Bus'}</button>
-          </div>
-          <p style="color:var(--text2);font-size:.8rem;margin:0">Speed and pins apply to all devices on the bus. Default pins: GPIO4 (RX), GPIO5 (TX).</p>
-        </div>
+          ${canMode && html`
+            <h3 style="margin-top:.75rem">CAN Bus</h3>
+            <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:.25rem;align-items:center">
+              <label style="font-size:.75rem">Speed
+                <select value=${canSpeed} onchange=${e => setCanSpeed(parseInt(e.target.value))} class="styled" style="font-size:.7rem">
+                  <option value="0">125k</option>
+                  <option value="1">250k</option>
+                  <option value="2">500k</option>
+                </select>
+              </label>
+              <label style="font-size:.75rem">RX Pin <input type="number" value=${canRxPin} oninput=${e => setCanRxPin(parseInt(e.target.value)||4)} style="width:4em;padding:2px 4px" /></label>
+              <label style="font-size:.75rem">TX Pin <input type="number" value=${canTxPin} oninput=${e => setCanTxPin(parseInt(e.target.value)||5)} style="width:4em;padding:2px 4px" /></label>
+            </div>
+            <p style="color:var(--text2);font-size:.8rem;margin:0 0 .75rem">Speed and pins apply to all devices on the bus. Default: GPIO4 (RX), GPIO5 (TX).</p>
 
-        <div class="dash-box" style="margin-bottom:1rem">
-          <h3>CAN Devices</h3>
-          <div style="display:flex;gap:6px;margin-bottom:.5rem">
-            <button onclick=${async () => {
-              const btn = document.activeElement;
-              if (btn) { btn.textContent = 'Scanning...'; btn.disabled = true; }
-              try {
-                const r = await fetch('/can-scan');
-                const devices = await r.json();
-                if (devices.length > 0) {
-                  devices.forEach(d => dispatch({ type: 'ADD_CAN_NODE', payload: d }));
-                  dispatch({ type: 'SET_CAN_NODE', payload: devices[0].nodeId });
-                  fetch('/set-can-node?id=' + devices[0].nodeId);
+            <h3 style="margin-top:.75rem">CAN Devices</h3>
+            <div style="display:flex;gap:6px;margin-bottom:.5rem">
+              <button onclick=${async () => {
+                const btn = document.activeElement;
+                if (btn) { btn.textContent = 'Scanning...'; btn.disabled = true; }
+                try {
+                  const r = await fetch('/can-scan');
+                  const devices = await r.json();
+                  if (devices.length > 0) {
+                    devices.forEach(d => dispatch({ type: 'ADD_CAN_NODE', payload: d }));
+                    dispatch({ type: 'SET_CAN_NODE', payload: devices[0].nodeId });
+                    fetch('/set-can-node?id=' + devices[0].nodeId);
+                  }
+                  if (btn) btn.textContent = devices.length ? `Found ${devices.length} device(s)` : 'No devices found';
+                } catch (e) {
+                  if (btn) btn.textContent = 'Scan failed';
                 }
-                if (btn) btn.textContent = devices.length ? `Found ${devices.length} device(s)` : 'No devices found';
-              } catch (e) {
-                if (btn) btn.textContent = 'Scan failed';
-              }
-              setTimeout(() => { if (btn) { btn.textContent = '🔍 Scan for devices'; btn.disabled = false; } }, 2000);
-            }} style="font-size:.75rem;padding:4px 12px">🔍 Scan for devices</button>
-            <button onclick=${() => {
-              const id = parseInt(prompt('Enter node ID (1-32):', '1'));
-              if (id >= 1 && id <= 32) dispatch({ type: 'ADD_CAN_NODE', payload: { nodeId: id, name: '' } });
-            }} style="font-size:.75rem;padding:4px 12px">+ Add node</button>
-          </div>
-          ${state.canNodes.length > 0 && html`
-            <div style="display:flex;flex-direction:column;gap:3px">
-              ${state.canNodes.map(n => html`
-                <div style="display:flex;align-items:center;gap:8px;padding:3px 6px;background:var(--surface2);border-radius:var(--radius-xs);font-size:.75rem">
-                  <span style="font-weight:600;min-width:60px">Node #${n.nodeId}</span>
-                  ${n.serial ? html`<span style="color:var(--text3);font-size:.7rem">s/n ${n.serial}</span>` : null}
-                  <button onclick=${() => {
+                setTimeout(() => { if (btn) { btn.textContent = '🔍 Scan for devices'; btn.disabled = false; } }, 2000);
+              }} style="font-size:.75rem;padding:4px 12px">🔍 Scan for devices</button>
+              <button onclick=${() => {
+                const id = parseInt(prompt('Enter node ID (1-32):', '1'));
+                if (id >= 1 && id <= 32) dispatch({ type: 'ADD_CAN_NODE', payload: { nodeId: id, name: '' } });
+              }} style="font-size:.75rem;padding:4px 12px">+ Add node</button>
+            </div>
+            ${state.canNodes.length > 0 && html`
+              <div style="display:flex;flex-direction:column;gap:3px">
+                ${state.canNodes.map(n => html`
+                  <div onclick=${() => {
                     dispatch({ type: 'SET_CAN_NODE', payload: n.nodeId });
                     fetch('/set-can-node?id=' + n.nodeId);
-                  }} style="font-size:.65rem;padding:2px 8px">Select</button>
-                  <button onclick=${() => dispatch({ type: 'REMOVE_CAN_NODE', payload: n.nodeId })} style="font-size:.65rem;padding:2px 6px;color:var(--red)">×</button>
-                </div>
-              `)}
-            </div>
+                  }} style="display:flex;align-items:center;gap:8px;padding:3px 6px;cursor:pointer;background:${n.nodeId === state.canActiveNodeId ? 'var(--accent-glow)' : 'var(--surface2)'};border-radius:var(--radius-xs);font-size:.75rem">
+                    <span style="font-weight:600;min-width:60px">Node #${n.nodeId}${n.nodeId === state.canActiveNodeId ? ' ●' : ''}</span>
+                    ${n.serial ? html`<span style="color:var(--text3);font-size:.7rem">s/n ${n.serial}</span>` : null}
+                    <button onclick=${() => dispatch({ type: 'REMOVE_CAN_NODE', payload: n.nodeId })} style="font-size:.65rem;padding:2px 6px;color:var(--red)">×</button>
+                  </div>
+                `)}
+              </div>
+            `}
+            ${state.canNodes.length === 0 && html`<p style="color:var(--text3);font-size:.75rem">No devices configured. Scan the bus or add a node manually.</p>`}
           `}
-          ${state.canNodes.length === 0 && html`<p style="color:var(--text3);font-size:.75rem">No devices configured. Scan the bus or add a node manually.</p>`}
         </div>
-        `}
 
         <div class="dash-box" style="margin-bottom:1rem">
           <h3>WiFi Access Point</h3>

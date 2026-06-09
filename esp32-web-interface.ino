@@ -724,6 +724,8 @@ static String canExecuteCommand(const String& cmdStr, int repeat) {
     }
 
     result += "}";
+    // Signal whether real parameter data was loaded
+    if (canParamCacheLoaded) result = result.substring(0, result.length() - 1) + ",\"can_cache\":true}";
     return result;
   }
 
