@@ -1175,8 +1175,8 @@ const CanMapping = () => {
         <h2>CAN Mapping</h2>
         <p>Configure CAN mapping settings for your OpenInverter board.</p>
         <h3 class="underline">Existing CAN Mappings</h3>
-        <table>
-          <thead><tr><th>Spot Value</th><th>TX/RX</th><th>CAN ID</th><th>Offset</th><th>Length</th><th>Gain</th><th></th></tr></thead>
+        <table style="width:auto;table-layout:auto">
+          <thead><tr><th style="min-width:110px">Spot Value</th><th>TX/RX</th><th style="min-width:60px">CAN ID</th><th style="min-width:50px">Offset</th><th style="min-width:50px">Length</th><th style="min-width:50px">Gain</th><th></th></tr></thead>
           <tbody>
             ${mappings.map((m, i) => html`
               <tr key=${i}>
