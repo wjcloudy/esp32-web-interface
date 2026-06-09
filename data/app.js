@@ -266,7 +266,7 @@ const tabs = [
   { id: 'parameters', label: 'Parameters', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><circle cx="4" cy="12" r="2"/><circle cx="12" cy="10" r="2"/><circle cx="20" cy="14" r="2"/></svg>' },
   { id: 'spotvalues', label: 'Spot Values', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>' },
   { id: 'plot', label: 'Plot', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>' },
-  { id: 'gauges', label: 'Gauges', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="13" r="8"/><path d="M12 5v6"/><line x1="12" y1="13" x2="14" y2="10"/></svg>' },
+  { id: 'gauges', label: 'Gauges', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 20a8 8 0 0116 0"/><line x1="12" y1="20" x2="8.5" y2="8.5"/><circle cx="12" cy="20" r="1.5"/></svg>' },
   { id: 'logger', label: 'Data Logger', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>' },
   { id: 'canmapping', label: 'CAN Mapping', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>' },
   { id: 'files', label: 'Files', icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>' },
@@ -806,6 +806,7 @@ const Plot = () => {
   const { state, dispatch } = useContext(Store);
   const [plots, setPlots] = useState([]);
   const [plotting, setPlotting] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [maxValues, setMaxValues] = useState(500);
   const [burstLength, setBurstLength] = useState(5);
   const [tick, setTick] = useState(0);
@@ -915,8 +916,9 @@ const Plot = () => {
 
   return html`
     <div id="plot" class="tabdiv main-content" style="display:flex">
+      ${editing && html`
       <div class="main-right">
-        <h3 class="underline">Plots</h3>
+        <h3 class="underline">Edit Plots</h3>
         <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px">
           <div style="display:flex;gap:6px;align-items:center">
             <label style="font-size:.8rem;font-weight:500">Points</label>
@@ -926,42 +928,47 @@ const Plot = () => {
           </div>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px">
-          <button onclick=${togglePlotting} style=${{ background: plotting ? 'var(--red)' : 'var(--green)', color: '#fff', borderColor: 'transparent', fontWeight: 600 }}>
-            ${plotting ? '⏹ Stop' : '▶ Start'}
-          </button>
-          ${!plotting && html`<button onclick=${addPlot}>+ Add plot</button>`}
-          <button onclick=${savePlots}>Save Layout</button>
+          <button onclick=${addPlot}>+ Add plot</button>
+          <button onclick=${() => { savePlots(); setEditing(false); }}>Save & Done</button>
         </div>
 
         ${plots.map(p => html`
           <div key=${p.id} style="margin-bottom:8px;padding:8px;background:var(--surface2);border-radius:var(--radius-xs)">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
               <span style="font-weight:600;font-size:.8rem">Plot ${p.id}</span>
-              ${!plotting && html`<span onclick=${() => removePlot(p.id)} style="cursor:pointer;color:var(--red);font-weight:700;font-size:1rem">×</span>`}
+              <span onclick=${() => removePlot(p.id)} style="cursor:pointer;color:var(--red);font-weight:700;font-size:1rem">×</span>
             </div>
-            ${!plotting && html`
-              <div style="margin-bottom:4px">
-                <button onclick=${() => addItem(p.id)} style="font-size:.7rem;padding:2px 8px">+ Field</button>
+            <div style="margin-bottom:4px">
+              <button onclick=${() => addItem(p.id)} style="font-size:.7rem;padding:2px 8px">+ Field</button>
+            </div>
+            ${p.items.map((item, i) => html`
+              <div key=${i} style="display:flex;gap:3px;align-items:center;margin-bottom:2px">
+                <${FieldPicker} value=${item.name} spotNames=${spotNames} onChange=${name => updateItem(p.id, i, 'name', name)} />
+                <select value=${item.axis || 'left'} onchange=${e => updateItem(p.id, i, 'axis', e.target.value)} style="width:3.2em;font-size:.65rem;padding:1px 2px;border-radius:var(--radius-xs)">
+                  <option value="left">L</option>
+                  <option value="right">R</option>
+                </select>
+                <span onclick=${() => removeItem(p.id, i)} style="cursor:pointer;color:var(--red);font-size:.8rem;line-height:1">×</span>
               </div>
-              ${p.items.map((item, i) => html`
-                <div key=${i} style="display:flex;gap:3px;align-items:center;margin-bottom:2px">
-                  <${FieldPicker} value=${item.name} spotNames=${spotNames} onChange=${name => updateItem(p.id, i, 'name', name)} />
-                  <select value=${item.axis || 'left'} onchange=${e => updateItem(p.id, i, 'axis', e.target.value)} style="width:3.2em;font-size:.65rem;padding:1px 2px;border-radius:var(--radius-xs)">
-                    <option value="left">L</option>
-                    <option value="right">R</option>
-                  </select>
-                  <span onclick=${() => removeItem(p.id, i)} style="cursor:pointer;color:var(--red);font-size:.8rem;line-height:1">×</span>
-                </div>
-              `)}
-            `}
+            `)}
           </div>
         `)}
       </div>
+      `}
       <div class="main-left">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem;flex-wrap:wrap;gap:6px">
+          <h2 style="margin:0">Plot</h2>
+          <div style="display:flex;gap:6px;align-items:center">
+            <button onclick=${togglePlotting} style=${{ background: plotting ? 'var(--red)' : 'var(--green)', color: '#fff', borderColor: 'transparent', fontWeight: 600, fontSize: '.8rem', padding: '4px 14px' }}>
+              ${plotting ? '⏹ Stop' : '▶ Start'}
+            </button>
+            ${!editing && html`<button onclick=${() => { if (plotting) setPlotting(false); setEditing(true); }} style="font-size:.75rem;padding:4px 12px">✎ Edit Layout</button>`}
+          </div>
+        </div>
         ${plots.map(p => html`
           <${PlotChart} key=${p.id} plot=${p} pushValue=${plotting ? getValue : null} maxValues=${maxValues} />
         `)}
-        ${plots.length === 0 && html`<p style="color:var(--text3)">Click + Add plot to get started.</p>`}
+        ${plots.length === 0 && !editing && html`<p style="color:var(--text3);text-align:center;padding:2rem 0">Click ✎ Edit Layout to add a plot.</p>`}
       </div>
     </div>
   `;
@@ -1283,7 +1290,6 @@ const Support = () => html`
 const GaugeLine = ({ name, min, max, value, unit }) => {
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
-  const historyRef = useRef([]);
   const MAX_POINTS = 20;
 
   useEffect(() => {
@@ -1291,7 +1297,7 @@ const GaugeLine = ({ name, min, max, value, unit }) => {
       const yMin = min != null ? min : 0;
       const yMax = max != null && max !== 0 ? max : 100;
       chartRef.current = new Chart(canvasRef.current, {
-        type: 'line', data: { datasets: [{ label: name, data: [], borderColor: colours[0], backgroundColor: colours[0] + '22', fill: true, pointRadius: 0, tension: 0.3 }] },
+        type: 'line', data: { datasets: [{ label: name, data: [], borderColor: colours[1], backgroundColor: colours[1] + '22', fill: true, pointRadius: 0, tension: 0.3 }] },
         options: {
           animation: false, parsing: false,
           plugins: { legend: { display: false } },
@@ -1317,20 +1323,20 @@ const GaugeLine = ({ name, min, max, value, unit }) => {
     const chart = chartRef.current;
     const ds = chart.data.datasets[0];
     if (!ds) return;
-    const t = historyRef.current.length;
-    historyRef.current.push({ x: t, y: value });
-    if (historyRef.current.length > MAX_POINTS) historyRef.current.shift();
-    ds.data = [...historyRef.current];
+    ds.data.push({ x: ds.data.length, y: value });
+    while (ds.data.length > MAX_POINTS) ds.data.shift();
+    // Renumber x values so they remain contiguous from 0
+    ds.data.forEach((pt, i) => { pt.x = i; });
     chart.update('none');
   }, [value]);
 
   return html`
     <div style="width:250px">
-      <div style="font-size:1.6rem;font-weight:700;color:var(--accent);line-height:1.2;margin-bottom:2px">
+      <canvas ref=${canvasRef} width="250" height="200" style="width:250px;height:200px"></canvas>
+      <div style="font-size:1.4rem;font-weight:700;color:var(--accent);line-height:1.2;margin-top:2px">
         ${value != null ? value.toFixed(1) : '—'}
         ${unit && html`<span style="font-size:.7rem;font-weight:500;color:var(--text2)"> ${unit}</span>`}
       </div>
-      <canvas ref=${canvasRef} width="250" height="200" style="width:250px;height:200px"></canvas>
     </div>
   `;
 };
@@ -1349,6 +1355,7 @@ const Gauges = () => {
   const { state, dispatch } = useContext(Store);
   const [gaugeItems, setGaugeItems] = useState([]);
   const [lineVals, setLineVals] = useState({});
+  const [editing, setEditing] = useState(false);
   const gaugeRefs = useRef({});
   const createdRef = useRef({});
   const fetchRef = useRef(null);
@@ -1411,8 +1418,26 @@ const Gauges = () => {
     delete createdRef.current[id];
   };
 
+  const moveGauge = (fromIdx, toIdx) => {
+    if (fromIdx === toIdx) return;
+    const next = [...gaugeItems];
+    const [item] = next.splice(fromIdx, 1);
+    next.splice(toIdx, 0, item);
+    setGaugeItems(next);
+  };
+
+  // Drag state for reordering
+  const dragIdx = useRef(-1);
+  const [dragOverIdx, setDragOverIdx] = useState(-1);
+  const [dragId, setDragId] = useState(null); // which gauge id is being dragged
+
   const updateGaugeConfig = (id, field, value) => {
     setGaugeItems(gaugeItems.map(g => g.id !== id ? g : { ...g, [field]: value }));
+    // Clear refs on type or name change so gauge is recreated with new settings
+    if (field === 'type' || field === 'name') {
+      if (gaugeRefs.current[id]) { gaugeRefs.current[id] = null; }
+      delete createdRef.current[id];
+    }
   };
 
   // Helper to get spot value for a name (from params or spotValues)
@@ -1456,31 +1481,50 @@ const Gauges = () => {
             highlights: [],
             value: val,
             valueInt: 1, valueDec: 1,
-            units: valInfo ? valInfo.unit : '',
+            units: (valInfo && valInfo.unit && valInfo.unit.indexOf('=') === -1) ? valInfo.unit : '',
             animation: true,
             animationDuration: 400,
-            colorPlate: c.bg,
+            colorPlate: 'transparent',
             colorMajorTicks: c.text2,
             colorMinorTicks: c.text2,
             colorTitle: c.text,
             colorUnits: c.text2,
-            colorNumbers: c.text,
+            colorNumbers: c.text2,
             colorNeedle: c.accent,
-            colorNeedleEnd: c.red,
-            colorValueText: c.text,
-            colorValueBoxBackground: c.surface,
-            colorValueBoxRect: c.text2,
-            colorValueBoxRectEnd: c.text2,
+            colorNeedleEnd: c.accent,
+            colorValueText: c.accent,
+            colorValueBoxBackground: 'transparent',
+            colorValueBoxRect: 'transparent',
+            colorValueBoxRectEnd: 'transparent',
             colorValueBoxShadow: 'transparent',
             valueBox: true,
-            valueBoxStroke: 2,
-            valueBoxWidth: 0,
-            fontTitleSize: 22,
-            fontValueSize: 34,
-            fontUnitsSize: 18,
+            valueBoxStroke: 0,
+            valueText: '',
+            needle: true,
+            needleShadow: false,
+            needleType: 'arrow',
+            needleStart: 15,
+            needleEnd: 75,
+            needleWidth: 3,
+            borderOuterWidth: 0,
+            borderMiddleWidth: 0,
+            borderInnerWidth: 0,
+            borderShadowWidth: 0,
+            colorBorderOuter: 'transparent',
+            colorBorderMiddle: 'transparent',
+            colorBorderInner: 'transparent',
+            colorBorderShadow: 'transparent',
+            colorBarStroke: c.text3 || c.text2,
+            colorBar: c.surface3 || c.surface2,
+            colorBarProgress: c.accent,
+            colorBarShadow: 'transparent',
+            barWidth: 8,
+            barStrokeWidth: 1,
+            barProgress: true,
+            barShadow: false,
             fontNumbersSize: 14,
-            fontTitleWeight: 'bold',
-            fontValueWeight: 'bold',
+            fontNumbersWeight: 'normal',
+            fontValueSize: 26,
           });
           gauge.draw();
           gaugeRefs.current[g.id] = gauge;
@@ -1521,7 +1565,11 @@ const Gauges = () => {
             setLineVals(prev => ({ ...prev, [g.id]: val }));
           } else {
             const gauge = gaugeRefs.current[g.id];
-            if (gauge) gauge.value = val;
+            if (gauge) {
+              gauge.value = val;
+              // Force value box text to update immediately (not just on animation tick)
+              if (gauge.options) gauge.options.valueText = val.toFixed(1);
+            }
           }
         });
       } catch (e) { /* ignore */ }
@@ -1558,34 +1606,46 @@ const Gauges = () => {
     });
   }, [gaugeItems]);
 
-  // Smooth animation tick (updates needle position)
+  // Smooth animation tick (updates needle position and value box at ~60fps)
   useEffect(() => {
-    const interval = setInterval(() => {
+    let rafId;
+    const tick = () => {
       gaugeItems.forEach(g => {
         const gauge = gaugeRefs.current[g.id];
         if (gauge) {
           try { gauge.update(); } catch (e) { /* ignore */ }
         }
       });
-    }, 400);
-    return () => clearInterval(interval);
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
   }, [gaugeItems]);
 
   const spotNames = state.spotValues ? Object.keys(state.spotValues) : [];
 
   return html`
     <div id="gauges" class="tabdiv main-content" style="display:flex">
+      ${editing && html`
       <div class="main-right">
-        <h3 class="underline">Gauges</h3>
+        <h3 class="underline">Edit Gauges</h3>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px">
           <button onclick=${addGauge}>+ Add Gauge</button>
-          <button onclick=${() => saveLayout(gaugeItems)}>Save Layout</button>
+          <button onclick=${() => { saveLayout(gaugeItems); setEditing(false); }}>Save & Done</button>
         </div>
         ${gaugeItems.length > 0 && html`
           <h3>Active (${gaugeItems.length})</h3>
-          ${gaugeItems.map(g => html`
-            <div style="margin-bottom:10px;padding:6px 8px;background:var(--surface2);border-radius:var(--radius-xs);font-size:.78rem">
+          ${gaugeItems.map((g, i) => html`
+            <div
+              ondragover=${e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (dragOverIdx !== i) setDragOverIdx(i); }}
+              ondragleave=${e => { if (dragOverIdx === i) setDragOverIdx(-1); }}
+              ondrop=${e => { e.preventDefault(); const from = dragIdx.current; if (from !== i && from >= 0) moveGauge(from, i); setDragOverIdx(-1); setDragId(null); }}
+              style="margin-bottom:10px;padding:6px 8px;background:var(--surface2);border-radius:var(--radius-xs);font-size:.78rem;${dragOverIdx === i ? 'border-top:2px solid var(--accent);' : ''}${dragId === g.id ? 'opacity:0.4' : ''}">
               <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+                <span draggable="true"
+                  ondragstart=${e => { dragIdx.current = i; setDragId(g.id); e.dataTransfer.effectAllowed = 'move'; }}
+                  ondragend=${e => { setDragOverIdx(-1); dragIdx.current = -1; setDragId(null); }}
+                  style="cursor:grab;color:var(--text3);font-size:.9rem;user-select:none;padding-right:4px" title="Drag to reorder">⋮⋮</span>
                 <${FieldPicker} value=${g.name} spotNames=${spotNames} onChange=${name => updateGaugeConfig(g.id, 'name', name)} />
                 <span onclick=${() => removeGauge(g.id)} style="cursor:pointer;color:var(--red);font-weight:700;padding:0 4px" title="Remove">×</span>
               </div>
@@ -1604,17 +1664,23 @@ const Gauges = () => {
             </div>
           `)}
         `}
-        ${gaugeItems.length === 0 && html`<p style="color:var(--text3);font-size:.8rem">No gauges added yet. Click + Add Gauge.</p>`}
       </div>
+      `}
       <div class="main-left">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem">
+          <h2 style="margin:0">Gauges</h2>
+          ${!editing && html`<button onclick=${() => setEditing(true)} style="font-size:.75rem;padding:4px 12px">✎ Edit Layout</button>`}
+        </div>
+        ${gaugeItems.length === 0 && !editing && html`<p style="color:var(--text3);font-size:.85rem;text-align:center;padding:2rem 0">Click ✎ Edit Layout to add a gauge.</p>`}
         <div id="gauge-container" style="display:flex;flex-wrap:wrap;gap:1.5rem;justify-content:center;align-items:flex-start">
           ${gaugeItems.map(g => html`
             <div class="gauge-wrapper" style="text-align:center" key="${g.id}">
               <div style="font-weight:600;font-size:.9rem;margin-bottom:4px">${g.name || '—'}</div>
               ${(g.type === 'line')
                 ? html`<${GaugeLine} name=${g.name} min=${g.min} max=${g.max} value=${lineVals[g.id]} unit=${(state.spotValues && state.spotValues[g.name] && state.spotValues[g.name].unit && state.spotValues[g.name].unit.indexOf('=') === -1) ? state.spotValues[g.name].unit : ''} />`
-                : html`<canvas id="${gaugeId(g.id)}" width="250" height="250"></canvas>`
-              }
+                : html`
+                  <canvas id="${gaugeId(g.id)}" width="250" height="250"></canvas>
+                `}
             </div>
           `)}
         </div>
