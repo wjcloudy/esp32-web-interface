@@ -328,6 +328,7 @@ const Dashboard = () => {
   const { state, dispatch } = useContext(Store);
   const [cmd, setCmd] = useState('');
   const [cmdOutput, setCmdOutput] = useState('');
+  const [confirmAction, setConfirmAction] = useState(null); // 'inverter' | 'esp32'
 
   const send = async () => {
     if (!cmd.trim()) return;
@@ -342,6 +343,9 @@ const Dashboard = () => {
         <h3 class="underline">Actions</h3>
         <button onclick=${() => api.getText('start 2').then(r => dispatch({ type: 'SET_MESSAGES', payload: r }))}>Start inverter in manual mode</button>
         <button onclick=${() => api.getText('stop').then(r => dispatch({ type: 'SET_MESSAGES', payload: r }))}>Stop inverter</button>
+        <h3 class="underline">Reset</h3>
+        <button onclick=${() => setConfirmAction('inverter')} style="background:var(--red);color:#fff;border-color:transparent">Reset inverter</button>
+        <button onclick=${() => setConfirmAction('esp32')} style="background:var(--amber);color:#fff;border-color:transparent">Reboot ESP32</button>
       </div>
       <div class="main-left">
         <h2>Dashboard</h2>
@@ -374,6 +378,25 @@ const Dashboard = () => {
         </div>
       </div>
     </div>
+    ${confirmAction && html`
+      <${Modal} id="reset-modal" title=${confirmAction === 'inverter' ? 'Reset inverter' : 'Reboot ESP32'} onClose=${() => setConfirmAction(null)}>
+        <p>${confirmAction === 'inverter'
+          ? 'This will send a reset command to the inverter (STM32). The inverter will reboot. The web interface will remain accessible.'
+          : 'This will reboot the ESP32 itself. You will temporarily lose connection to the web interface.'}</p>
+        <div style="display:flex;gap:8px;margin-top:1rem">
+          <button onclick=${() => setConfirmAction(null)}>Cancel</button>
+          <button onclick=${async () => {
+            setConfirmAction(null);
+            if (confirmAction === 'inverter') {
+              await api.getText('reset');
+              dispatch({ type: 'SET_MESSAGES', payload: 'Inverter reset command sent.' });
+            } else {
+              await fetch('/reboot');
+            }
+          }} style="background:var(--red);color:#fff;border-color:transparent">Confirm</button>
+        </div>
+      </${Modal}>
+    `}
   `;
 };
 
@@ -463,9 +486,6 @@ const Parameters = () => {
         <h3 class="underline">Save & Load</h3>
         <button onclick=${() => api.getText('save').then(r => alert(r || 'Parameters saved'))}>Save parameters to flash</button>
         <button onclick=${() => api.getText('load')}>Restore parameters from flash</button>
-        ${hasFavs && html`<button onclick=${() => dispatch({ type: 'TOGGLE_FAVORITES_ONLY' })}>
-          ${showFavs ? '★ Show all' : '☆ Favorites only'}
-        </button>`}
         <a download="params.json" href=${'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(state.params, null, 2))}><button>Download parameters file</button></a>
         <form id="paramform" enctype="multipart/form-data" action="edit" method="POST" onsubmit=${async e => { e.preventDefault(); await api.uploadFile(new FormData(e.target)); }}>
           <input id="paramfile" name="paramfile" type="file" hidden onchange=${e => e.target.form.requestSubmit()} />
@@ -476,6 +496,9 @@ const Parameters = () => {
         <button onclick=${() => setShowSubscribe(true)}>Subscribe to parameter set</button>
         <button onclick=${stopSubscription}>Stop subscription</button>
         <h3 class="underline">Misc</h3>
+        ${hasFavs && html`<button onclick=${() => dispatch({ type: 'TOGGLE_FAVORITES_ONLY' })}>
+          ${showFavs ? '★ Show all' : '☆ Favorites only'}
+        </button>`}
         <a href="/syncofs.html" target="_blank"><button>Launch syncofs tuner</button></a>
         <a href="https://openinverter.org/wiki/Parameters" target="_blank"><button>Parameter reference</button></a>
       </div>

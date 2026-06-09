@@ -941,6 +941,7 @@ void setup(void){
   server.on("/settings", HTTP_GET, handleSettings);
   server.on("/settings", HTTP_POST, handleSettings);
   server.on("/version", [](){ server.send(200, "text/plain", "4.0"); });
+  server.on("/reboot", [](){ server.send(200, "text/plain", "Rebooting..."); ESP.restart(); });
   
   //called when the url is not defined here
   //use it to load content from SPIFFS
