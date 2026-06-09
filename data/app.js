@@ -250,14 +250,27 @@ function reducer(state, action) {
 
 const Spinner = () => html`<div class="css-spinner"></div>`;
 
-const Modal = ({ id, size, title, children, onClose }) => html`
-  <div id="${id}-modal-overlay" class="modal-overlay" style="display:block">
-    <div class="${size === 'large' ? 'large-modal-container' : size === 'can-mapping' ? 'can-mapping-modal-container' : 'small-modal-container'}">
-      ${title && html`<div id="large-modal-header-div"><h2>${title}</h2><span class="modal-close" onclick=${onClose}>×</span></div>`}
-      <div class="modal-content">${children}</div>
-    </div>
-  </div>
-`;
+const Modal = ({ id, size, title, children, onClose }) => {
+  const elRef = useRef(null);
+  useEffect(() => {
+    const el = document.createElement('div');
+    el.id = id + '-modal-root';
+    document.body.appendChild(el);
+    elRef.current = el;
+    const vnode = html`
+      <div id="${id}-modal-overlay" class="modal-overlay" style="display:flex">
+        <div class="${size === 'large' ? 'large-modal-container' : size === 'can-mapping' ? 'can-mapping-modal-container' : 'small-modal-container'}">
+          ${title && html`<div id="large-modal-header-div"><h2>${title}</h2><span class="modal-close" onclick=${onClose}>×</span></div>`}
+          <div class="modal-content">${children}</div>
+        </div>
+      </div>
+    `;
+    preact.render(vnode, el);
+    return () => { preact.render(null, el); document.body.removeChild(el); elRef.current = null; };
+  }, [id, size, title, children, onClose]);
+
+  return null;
+};
 
 // ==================== Navbar ====================
 
@@ -344,8 +357,8 @@ const Dashboard = () => {
         <button onclick=${() => api.getText('start 2').then(r => dispatch({ type: 'SET_MESSAGES', payload: r }))}>Start inverter in manual mode</button>
         <button onclick=${() => api.getText('stop').then(r => dispatch({ type: 'SET_MESSAGES', payload: r }))}>Stop inverter</button>
         <h3 class="underline">Reset</h3>
-        <button onclick=${() => setConfirmAction('inverter')} style="background:var(--red);color:#fff;border-color:transparent">Reset inverter</button>
-        <button onclick=${() => setConfirmAction('esp32')} style="background:var(--amber);color:#fff;border-color:transparent">Reboot ESP32</button>
+        <button onclick=${() => setConfirmAction('inverter')}>Reset inverter</button>
+        <button onclick=${() => setConfirmAction('esp32')}>Reboot ESP32</button>
       </div>
       <div class="main-left">
         <h2>Dashboard</h2>
@@ -388,8 +401,7 @@ const Dashboard = () => {
           <button onclick=${async () => {
             setConfirmAction(null);
             if (confirmAction === 'inverter') {
-              await api.getText('reset');
-              dispatch({ type: 'SET_MESSAGES', payload: 'Inverter reset command sent.' });
+              await fetch('/reset-inverter');
             } else {
               await fetch('/reboot');
             }

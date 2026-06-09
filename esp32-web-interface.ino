@@ -942,6 +942,16 @@ void setup(void){
   server.on("/settings", HTTP_POST, handleSettings);
   server.on("/version", [](){ server.send(200, "text/plain", "4.0"); });
   server.on("/reboot", [](){ server.send(200, "text/plain", "Rebooting..."); ESP.restart(); });
+  server.on("/reset-inverter", [](){
+    server.send(200, "text/plain", "Inverter reset sent");
+    sendCommand("reset");
+    // Reset UART state so baud rate renegotiates after inverter reboot
+    if (fastUart) {
+      uart_set_baudrate(INVERTER_PORT, 115200);
+      fastUart = false;
+      fastUartAvailable = true;
+    }
+  });
   
   //called when the url is not defined here
   //use it to load content from SPIFFS
