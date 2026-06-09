@@ -601,9 +601,17 @@ const SpotValues = () => {
   let filtered = term ? all.filter(v => v.name.toLowerCase().includes(term)) : all;
   if (showFavs) filtered = filtered.filter(v => state.spotFavorites.includes(v.name));
   const isFav = (name) => (state.spotFavorites || []).includes(name);
-  // Use fast value if available, otherwise store value
+  // Use fast value if available, otherwise store value (with enum resolution)
   const getDisplay = (v) => {
-    if (showFavs && fastVals[v.name] !== undefined) return fastVals[v.name];
+    if (showFavs && fastVals[v.name] !== undefined) {
+      const val = fastVals[v.name];
+      if (v.enums) {
+        if (v.enums[val] !== undefined) return v.enums[val];
+        const a = []; for (const k in v.enums) if (val & parseInt(k)) a.push(v.enums[k]);
+        if (a.length > 0) return a.join('|');
+      }
+      return val;
+    }
     return v.display;
   };
 

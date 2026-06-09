@@ -214,7 +214,93 @@ Environment    Status    Duration
 release        SUCCESS   00:00:08.371
 ====================================================================================================================================== 1 succeeded in 00:00:08.371 ======================================================================================================================================
 ```
+# Building a combined binary for web flasher
 
+To publish a single `.bin` file that can be flashed at offset `0x0` via [ESP Web Tools](https://espressif.github.io/esptool-js/) or any other web-based flasher, you need to merge the bootloader, partition table, firmware, and SPIFFS image into one file.
+
+## Prerequisite: Gzip compress web assets
+
+The web interface serves `.gz` files from SPIFFS for faster transfer. Before building the filesystem, gzip the source files in `data/`:
+
+**PowerShell (Windows):**
+```powershell
+$dataDir = "data"
+foreach ($f in @("app.js", "style.css", "index.html")) {
+  $path = Join-Path $dataDir $f
+  $in = [System.IO.File]::ReadAllBytes($path)
+  $outPath = "$path.gz"
+  $outStream = [System.IO.File]::Create($outPath)
+  $gzip = New-Object System.IO.Compression.GZipStream($outStream, [System.IO.Compression.CompressionMode]::Compress)
+  $gzip.Write($in, 0, $in.Length)
+  $gzip.Close()
+  $outStream.Close()
+}
+```
+
+**Bash (Linux/macOS):**
+```bash
+gzip -9 -k -f data/app.js data/style.css data/index.html
+```
+
+The SPIFFS build includes both the original and `.gz` files — the ESP32 serves the compressed version to browsers that support it.
+
+> **Note:** This gzip step is required for **every** build (normal or combined) whenever you change `app.js`, `style.css`, or `index.html`. Without it, the compressed `.gz` copies served to browsers will be stale.
+
+## Normal build (firmware only, no SPIFFS merge)
+
+For day-to-day development and OTA updates, build just the firmware:
+
+```bash
+# 1. Gzip assets (see above)
+# 2. Build firmware
+pio run --environment release
+
+# 3. Upload firmware via OTA
+pio run --target upload --environment release
+
+# 4. Upload filesystem via OTA (after changing web files)
+pio run --target uploadfsota --environment release
+```
+
+## Combined binary build (for web flasher)
+
+```bash
+# 1. Gzip assets (see above)
+# 2. Build firmware
+pio run --environment release
+
+# 3. Build SPIFFS filesystem image
+pio run --target buildfs --environment release
+
+# 4. Merge into single binary
+esptool.py --chip esp32 merge_bin \
+  -o esp32-web-interface_4.00-0x000.bin \
+  0x1000 .pio/build/release/bootloader.bin \
+  0x8000 .pio/build/release/partitions.bin \
+  0x10000 .pio/build/release/firmware.bin \
+  0x290000 .pio/build/release/spiffs.bin
+```
+
+Or on Windows PowerShell:
+```powershell
+# Build
+pio run --environment release
+pio run --target buildfs --environment release
+
+# Merge
+C:\Users\$env:USERNAME\.platformio\penv\Scripts\python.exe `
+  C:\Users\$env:USERNAME\.platformio\packages\tool-esptoolpy\esptool.py `
+  --chip esp32 merge_bin `
+  -o esp32-web-interface_4.00-0x000.bin `
+  0x1000 .pio\build\release\bootloader.bin `
+  0x8000 .pio\build\release\partitions.bin `
+  0x10000 .pio\build\release\firmware.bin `
+  0x290000 .pio\build\release\spiffs.bin
+```
+
+This produces `esp32-web-interface_4.00-0x000.bin` (~4MB) which contains the complete flash image. Flash it at offset `0x0`.
+
+> **Note:** The SPIFFS offset (`0x290000`) matches the default 4MB partition scheme. If you use a custom partition table, adjust accordingly.
 
 # Check device output
 

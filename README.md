@@ -64,8 +64,13 @@ The connection to the inverter are on Pin16 (Rx line connect to inverter Tx line
 Tompile it follow the [instructions below](#development).
 
 # Flashing / Upgrading
+## Web Flasher (recommended for first install)
+A pre-built combined binary (`firmware-combined.bin`) is available in [releases](https://github.com/wjcloudy/esp32-web-interface/releases). Flash it at offset `0x0` using [ESP Web Tools](https://espressif.github.io/esptool-js/) or any ESP32 flasher.
+
+To build your own combined binary, see [PlatformIO usage — Building a combined binary](doc/PLATFORMIO_usage.md#building-a-combined-binary-for-web-flasher).
+
 ## Wirelessly
-TBA
+OTA updates are supported for firmware and individual web files. Use the **Update** tab in the web interface, or PlatformIO targets `uploadfsota` / `upload`.
 
 ## Wired
 If your board is new and unprogrammed, or if you want to fully re-program it, you'll need to have a wired connection between your computer and the board.
