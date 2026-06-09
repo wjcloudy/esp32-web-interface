@@ -317,7 +317,7 @@ const Navbar = () => {
           <button onclick=${() => { dispatch({ type: 'SET_FETCHING' }); api.getJSON('json').then(json => dispatch({ type: 'SET_PARAMS', payload: json })).catch(() => {}); }} style="font-size:.7rem;padding:4px 12px">Refresh now</button>
         </div>
       `}
-      ${state.logging && html`<div style="text-align:center;padding:4px 0 0"><span style="background:var(--accent);color:#fff;padding:2px 8px;border-radius:10px;font-size:.65rem;font-weight:600;letter-spacing:.03em">HIGH PERF</span></div>`}
+      ${state.logging && html`<div style="text-align:center;padding:4px 0 0"><span style="background:var(--accent);color:#fff;padding:2px 8px;border-radius:10px;font-size:.65rem;font-weight:600;letter-spacing:.03em">⚡ FAST</span></div>`}
     </aside>
   `;
 };
@@ -506,7 +506,7 @@ const Parameters = () => {
                         onkeyup=${e => e.keyCode === 13 && saveParam(p.name, editValue)}
                         autofocus />
                     ` : p.enums ? html`
-                      <select value=${String(p.value)} onchange=${e => saveParam(p.name, e.target.value)}>
+                      <select class="styled" value=${String(p.value)} onchange=${e => saveParam(p.name, e.target.value)}>
                         ${Object.keys(p.enums).map(k => html`<option value=${k}>${p.enums[k]}</option>`)}
                       </select>
                     ` : html`
@@ -543,6 +543,10 @@ const Parameters = () => {
 const SpotValues = () => {
   const { state, dispatch } = useContext(Store);
   const [search, setSearch] = useState('');
+  const [fastVals, setFastVals] = useState({});
+  const [multiCol, setMultiCol] = useState(false);
+  const wrapRef = useRef(null);
+  const fetchRef = useRef(null);
 
   if (!state.spotValues) return html`<div class="tabdiv main-content" style="display:flex"><p>Loading...</p></div>`;
 
@@ -550,10 +554,76 @@ const SpotValues = () => {
   const term = search.toLowerCase();
   const hasFavs = (state.spotFavorites || []).length > 0;
   const showFavs = state.showFavoritesOnly && hasFavs;
+
+  // High-perf fetch loop when in favorites-only mode
+  useEffect(() => {
+    if (!showFavs) {
+      dispatch({ type: 'SET_LOGGING', payload: false });
+      setFastVals({});
+      return;
+    }
+    const names = state.spotFavorites;
+    if (names.length === 0) return;
+
+    dispatch({ type: 'SET_LOGGING', payload: true });
+    let active = true;
+    const interval = 100;
+
+    const fetchLoop = async () => {
+      if (!active) return;
+      const t0 = performance.now();
+      try {
+        const text = await api.getText('get ' + names.join(','));
+        if (!active) return;
+        const vals = text.match(/[\-\d\.]+/g) || [];
+        const next = {};
+        names.forEach((name, i) => {
+          const val = parseFloat(vals[i]);
+          if (!isNaN(val)) next[name] = val;
+        });
+        setFastVals(next);
+      } catch (e) { /* ignore */ }
+      if (active) {
+        const elapsed = performance.now() - t0;
+        fetchRef.current = setTimeout(fetchLoop, Math.max(0, interval - elapsed));
+      }
+    };
+
+    fetchRef.current = setTimeout(fetchLoop, 0);
+    return () => {
+      active = false;
+      dispatch({ type: 'SET_LOGGING', payload: false });
+      if (fetchRef.current) { clearTimeout(fetchRef.current); fetchRef.current = null; }
+    };
+  }, [showFavs, state.spotFavorites]);
+
   // Search always searches all items, then favorites filter applies
   let filtered = term ? all.filter(v => v.name.toLowerCase().includes(term)) : all;
   if (showFavs) filtered = filtered.filter(v => state.spotFavorites.includes(v.name));
   const isFav = (name) => (state.spotFavorites || []).includes(name);
+  // Use fast value if available, otherwise store value
+  const getDisplay = (v) => {
+    if (showFavs && fastVals[v.name] !== undefined) return fastVals[v.name];
+    return v.display;
+  };
+
+  // Enable multi-column only if table content overflows available height
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const check = () => {
+      const table = el.querySelector('table');
+      if (!table) return;
+      const availH = window.innerHeight - el.getBoundingClientRect().top - 40;
+      setMultiCol(table.scrollHeight > availH);
+    };
+    check();
+    // Re-check when filtered items change
+    const ro = new ResizeObserver(check);
+    const table = el.querySelector('table');
+    if (table) ro.observe(table);
+    return () => ro.disconnect();
+  }, [filtered]);
 
   return html`
     <div id="spotvalues" class="tabdiv main-content" style="display:flex">
@@ -569,8 +639,9 @@ const SpotValues = () => {
       </div>
       <div class="main-left">
         <h2>Spot Values</h2>
-        <table id="spotValues" class="fullheight">
-          <thead><tr><th></th><th>Name</th><th>Value</th><th>Unit</th></tr></thead>
+        <div id="spotValuesWrap" ref=${wrapRef} class="fullheight ${multiCol ? 'multi-col' : ''}" style="overflow-y:auto">
+        <table id="spotValues" style="width:auto;table-layout:auto">
+          <thead><tr><th style="width:32px"></th><th>Name</th><th style="width:100px;min-width:100px">Value</th><th style="width:60px;min-width:60px">Unit</th></tr></thead>
           <tbody>
             ${filtered.map(v => html`
               <tr key=${v.name}>
@@ -579,10 +650,11 @@ const SpotValues = () => {
                     style="background:none;border:none;cursor:pointer;font-size:1rem;padding:0;color:${isFav(v.name)?'var(--amber)':'var(--text3)'}">
                     ${isFav(v.name) ? '★' : '☆'}
                   </button>
-                </td><td>${v.name}</td><td>${v.display}</td><td>${v.unit && v.unit.indexOf('=') === -1 ? v.unit : ''}</td></tr>
+                </td><td>${v.name}</td><td>${getDisplay(v)}</td><td>${v.unit && v.unit.indexOf('=') === -1 ? v.unit : ''}</td></tr>
             `)}
           </tbody>
         </table>
+        </div>
       </div>
     </div>
   `;
@@ -1159,10 +1231,24 @@ const Files = () => {
 
 // ==================== Settings ====================
 
+// Theme helper
+function getTheme() { return localStorage.getItem('theme') || 'system'; }
+function setTheme(theme) {
+  localStorage.setItem('theme', theme);
+  if (theme === 'system') document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', theme);
+}
+// Apply saved theme on load
+(function() {
+  const t = getTheme();
+  if (t !== 'system') document.documentElement.setAttribute('data-theme', t);
+})();
+
 const Settings = () => {
   const [txrxSwapped, setTxrxSwapped] = useState(true);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [theme, setThemeState] = useState(getTheme);
   const [apSSID, setApSSID] = useState('');
   const [apPW, setApPW] = useState('');
   const [staSSID, setStaSSID] = useState('');
@@ -1222,8 +1308,19 @@ const Settings = () => {
 
   return html`
     <div id="settings" class="tabdiv main-content" style="display:flex">
-      <div class="main-left" style="max-width:600px">
+      <div class="main-left">
         <h2>Settings</h2>
+
+        <div class="dash-box" style="margin-bottom:1rem">
+          <h3>Theme</h3>
+          <p style="font-size:.8rem;margin:0 0 .35rem">Choose appearance — System follows your device setting.</p>
+          <select value=${theme} onchange=${e => { const v = e.target.value; setThemeState(v); setTheme(v); }}
+            class="styled">
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </div>
 
         <div class="dash-box" style="margin-bottom:1rem">
           <h3>UART Configuration</h3>
