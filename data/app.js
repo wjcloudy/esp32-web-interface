@@ -1524,14 +1524,21 @@ const Settings = () => {
           <h3>CAN Devices</h3>
           <div style="display:flex;gap:6px;margin-bottom:.5rem">
             <button onclick=${async () => {
+              const btn = document.activeElement;
+              if (btn) { btn.textContent = 'Scanning...'; btn.disabled = true; }
               try {
                 const r = await fetch('/can-scan');
                 const devices = await r.json();
                 if (devices.length > 0) {
                   devices.forEach(d => dispatch({ type: 'ADD_CAN_NODE', payload: d }));
                   dispatch({ type: 'SET_CAN_NODE', payload: devices[0].nodeId });
+                  fetch('/set-can-node?id=' + devices[0].nodeId);
                 }
-              } catch (e) { /* ignore */ }
+                if (btn) btn.textContent = devices.length ? `Found ${devices.length} device(s)` : 'No devices found';
+              } catch (e) {
+                if (btn) btn.textContent = 'Scan failed';
+              }
+              setTimeout(() => { if (btn) { btn.textContent = '🔍 Scan for devices'; btn.disabled = false; } }, 2000);
             }} style="font-size:.75rem;padding:4px 12px">🔍 Scan for devices</button>
             <button onclick=${() => {
               const id = parseInt(prompt('Enter node ID (1-32):', '1'));
