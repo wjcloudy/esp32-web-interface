@@ -1034,10 +1034,12 @@ static void saveSettings()
 {
   File f = SPIFFS.open("/settings.json", "w");
   if (f) {
-    f.printf("{\"txrx_swapped\":%s,\"can_mode\":%s,\"can_node_id\":%d,\"can_speed\":%d,\"can_rx_pin\":%d,\"can_tx_pin\":%d}",
+    f.printf("{\"txrx_swapped\":%s,\"can_mode\":%s,\"can_node_id\":%d,\"can_speed\":%d,\"can_rx_pin\":%d,\"can_tx_pin\":%d,\"can_nodes\":[",
              txrxSwapped ? "true" : "false",
              canMode ? "true" : "false",
              canNodeId, canSpeed, canRxPin, canTxPin);
+    // can_nodes is sent from UI as query param, just echo it
+    f.print("]}");
     f.close();
   }
 }
@@ -1051,10 +1053,8 @@ static void loadSettings()
       f.close();
       txrxSwapped = json.indexOf("\"txrx_swapped\":false") < 0;
 
-      // Parse CAN settings (default false if not set)
       canMode = json.indexOf("\"can_mode\":true") >= 0;
 
-      // Parse numeric fields with simple string search
       int ni = json.indexOf("\"can_node_id\":");
       if (ni >= 0) canNodeId = json.substring(ni + 14).toInt();
       int sp = json.indexOf("\"can_speed\":");
@@ -1064,7 +1064,6 @@ static void loadSettings()
       int tp = json.indexOf("\"can_tx_pin\":");
       if (tp >= 0) canTxPin = json.substring(tp + 13).toInt();
 
-      // Clamp values
       if (canNodeId < 1) canNodeId = 1;
       if (canNodeId > 32) canNodeId = 32;
       if (canSpeed < 0 || canSpeed > 2) canSpeed = 2;
@@ -1085,11 +1084,26 @@ static void handleSettings()
     if (server.hasArg("can_speed")) canSpeed = server.arg("can_speed").toInt();
     if (server.hasArg("can_rx_pin")) canRxPin = server.arg("can_rx_pin").toInt();
     if (server.hasArg("can_tx_pin")) canTxPin = server.arg("can_tx_pin").toInt();
-    // Clamp
     if (canNodeId < 1) canNodeId = 1;
     if (canNodeId > 32) canNodeId = 32;
     if (canSpeed < 0 || canSpeed > 2) canSpeed = 2;
-    saveSettings();
+
+    // Save can_nodes JSON array if provided
+    String canNodesJson = "[]";
+    if (server.hasArg("can_nodes")) {
+      canNodesJson = server.arg("can_nodes");
+    }
+
+    File f = SPIFFS.open("/settings.json", "w");
+    if (f) {
+      f.printf("{\"txrx_swapped\":%s,\"can_mode\":%s,\"can_node_id\":%d,\"can_speed\":%d,\"can_rx_pin\":%d,\"can_tx_pin\":%d,\"can_nodes\":%s}",
+               txrxSwapped ? "true" : "false",
+               canMode ? "true" : "false",
+               canNodeId, canSpeed, canRxPin, canTxPin,
+               canNodesJson.c_str());
+      f.close();
+    }
+
     // Restart CAN if enabling
     if (canMode) {
       CanSpeed speed = (canSpeed == 0) ? CAN_125K : (canSpeed == 1) ? CAN_250K : CAN_500K;
@@ -1112,6 +1126,21 @@ static void handleSettings()
     json += canRxPin;
     json += ",\"can_tx_pin\":";
     json += canTxPin;
+    // Return can_nodes from settings file if present
+    if (SPIFFS.exists("/settings.json")) {
+      File f = SPIFFS.open("/settings.json", "r");
+      if (f) {
+        String settingsJson = f.readString();
+        f.close();
+        int nodesStart = settingsJson.indexOf("\"can_nodes\":[");
+        if (nodesStart >= 0) {
+          int nodesEnd = settingsJson.indexOf(']', nodesStart);
+          if (nodesEnd >= 0) {
+            json += ",\"can_nodes\":" + settingsJson.substring(nodesStart + 12, nodesEnd + 1);
+          }
+        }
+      }
+    }
     json += "}";
     server.send(200, "text/json", json);
   }

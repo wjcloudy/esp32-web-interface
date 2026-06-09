@@ -128,7 +128,7 @@ const initialState = {
   logging: false,
   canMode: false,
   canNodeId: 1,
-  canDevices: [],
+  canNodes: [],
   canActiveNodeId: 1,
 };
 
@@ -245,8 +245,15 @@ function reducer(state, action) {
       return { ...state, canMode: action.payload.canMode, canNodeId: action.payload.canNodeId };
     case 'SET_CAN_NODE':
       return { ...state, canActiveNodeId: action.payload };
-    case 'SET_CAN_DEVICES':
-      return { ...state, canDevices: action.payload };
+    case 'SET_CAN_NODES':
+      return { ...state, canNodes: action.payload };
+    case 'ADD_CAN_NODE': {
+      const exists = state.canNodes.find(n => n.nodeId === action.payload.nodeId);
+      if (exists) return { ...state, canNodes: state.canNodes.map(n => n.nodeId === action.payload.nodeId ? { ...n, ...action.payload } : n) };
+      return { ...state, canNodes: [...state.canNodes, action.payload] };
+    }
+    case 'REMOVE_CAN_NODE':
+      return { ...state, canNodes: state.canNodes.filter(n => n.nodeId !== action.payload) };
     case 'SET_PARAM_VALUE':
       const np = { ...state.params };
       if (np[action.name]) np[action.name] = { ...np[action.name], value: action.value };
@@ -350,9 +357,9 @@ const Navbar = () => {
             fetch('/set-can-node?id=' + id);
           }}
             style="width:100%;font-size:.7rem;padding:4px 6px">
-            ${state.canDevices.length > 0
-              ? state.canDevices.map(d => html`<option value=${d.nodeId}>Node #${d.nodeId}${d.serial ? ' (s/n ' + d.serial + ')' : ''}</option>`)
-              : html`<option value=${state.canNodeId}>Node #${state.canNodeId}</option>`}
+            ${state.canNodes.length > 0
+              ? state.canNodes.map(d => html`<option value=${d.nodeId}>Node #${d.nodeId}${d.name ? ' ' + d.name : ''}${d.serial ? ' (s/n ' + d.serial + ')' : ''}</option>`)
+              : html`<option value=${state.canActiveNodeId}>Node #${state.canActiveNodeId}</option>`}
           </select>
         </div>
       `}
@@ -1484,9 +1491,8 @@ const Settings = () => {
 
         ${canMode && html`
         <div class="dash-box" style="margin-bottom:1rem">
-          <h3>CAN Configuration</h3>
+          <h3>CAN Bus</h3>
           <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:.5rem;align-items:center">
-            <label style="font-size:.75rem">Node ID <input type="number" value=${canNodeId} oninput=${e => setCanNodeId(parseInt(e.target.value)||1)} style="width:4em;padding:2px 4px" min="1" max="32" /></label>
             <label style="font-size:.75rem">Speed
               <select value=${canSpeed} onchange=${e => setCanSpeed(parseInt(e.target.value))} class="styled" style="font-size:.7rem">
                 <option value="0">125k</option>
@@ -1496,21 +1502,58 @@ const Settings = () => {
             </label>
             <label style="font-size:.75rem">RX Pin <input type="number" value=${canRxPin} oninput=${e => setCanRxPin(parseInt(e.target.value)||4)} style="width:4em;padding:2px 4px" /></label>
             <label style="font-size:.75rem">TX Pin <input type="number" value=${canTxPin} oninput=${e => setCanTxPin(parseInt(e.target.value)||5)} style="width:4em;padding:2px 4px" /></label>
-            <button onclick=${saveCanSettings} style="font-size:.75rem;padding:4px 12px" disabled=${saving}>${saving ? 'Saving...' : 'Save CAN'}</button>
+            <button onclick=${async () => {
+              setSaving(true);
+              try {
+                const params = new URLSearchParams();
+                params.set('can_mode', '1');
+                params.set('can_node_id', canNodeId);
+                params.set('can_speed', canSpeed);
+                params.set('can_rx_pin', canRxPin);
+                params.set('can_tx_pin', canTxPin);
+                params.set('can_nodes', JSON.stringify(state.canNodes));
+                await fetch('/settings?' + params.toString(), { method: 'POST' });
+                setTimeout(() => setSaving(false), 2000);
+              } catch (e) { setSaving(false); }
+            }} style="font-size:.75rem;padding:4px 12px" disabled=${saving}>${saving ? 'Saving...' : 'Save Bus'}</button>
+          </div>
+          <p style="color:var(--text2);font-size:.8rem;margin:0">Speed and pins apply to all devices on the bus. Default pins: GPIO4 (RX), GPIO5 (TX).</p>
+        </div>
+
+        <div class="dash-box" style="margin-bottom:1rem">
+          <h3>CAN Devices</h3>
+          <div style="display:flex;gap:6px;margin-bottom:.5rem">
             <button onclick=${async () => {
               try {
                 const r = await fetch('/can-scan');
                 const devices = await r.json();
-                dispatch({ type: 'SET_CAN_DEVICES', payload: devices });
                 if (devices.length > 0) {
+                  devices.forEach(d => dispatch({ type: 'ADD_CAN_NODE', payload: d }));
                   dispatch({ type: 'SET_CAN_NODE', payload: devices[0].nodeId });
                 }
               } catch (e) { /* ignore */ }
-            }} style="font-size:.75rem;padding:4px 12px">🔍 Scan Bus</button>
+            }} style="font-size:.75rem;padding:4px 12px">🔍 Scan for devices</button>
+            <button onclick=${() => {
+              const id = parseInt(prompt('Enter node ID (1-32):', '1'));
+              if (id >= 1 && id <= 32) dispatch({ type: 'ADD_CAN_NODE', payload: { nodeId: id, name: '' } });
+            }} style="font-size:.75rem;padding:4px 12px">+ Add node</button>
           </div>
-          <p style="color:var(--text2);font-size:.8rem;margin:0">
-            Node ID is the CANopen node address (1–32). Pins default to GPIO4 (RX) and GPIO5 (TX). Click Scan Bus to discover devices.
-          </p>
+          ${state.canNodes.length > 0 && html`
+            <div style="display:flex;flex-direction:column;gap:3px">
+              ${state.canNodes.map(n => html`
+                <div style="display:flex;align-items:center;gap:8px;padding:3px 6px;background:var(--surface2);border-radius:var(--radius-xs);font-size:.75rem">
+                  <span style="font-weight:600;min-width:60px">Node #${n.nodeId}</span>
+                  ${n.serial ? html`<span style="color:var(--text3);font-size:.7rem">s/n ${n.serial}</span>` : null}
+                  <button onclick=${() => {
+                    dispatch({ type: 'SET_CAN_NODE', payload: n.nodeId });
+                    fetch('/set-can-node?id=' + n.nodeId);
+                  }} style="font-size:.65rem;padding:2px 8px">Select</button>
+                  <button onclick=${() => dispatch({ type: 'REMOVE_CAN_NODE', payload: n.nodeId })} style="font-size:.65rem;padding:2px 6px;color:var(--red)">×</button>
+                </div>
+              `)}
+            </div>
+          `}
+          ${state.canNodes.length === 0 && html`<p style="color:var(--text3);font-size:.75rem">No devices configured. Scan the bus or add a node manually.</p>`}
         </div>
         `}
 
@@ -1988,6 +2031,7 @@ const App = () => {
       const nodeId = data.can_node_id || 1;
       dispatch({ type: 'SET_CAN_CONFIG', payload: { canMode: mode, canNodeId: nodeId } });
       if (mode) dispatch({ type: 'SET_CAN_NODE', payload: nodeId });
+      if (data.can_nodes) dispatch({ type: 'SET_CAN_NODES', payload: data.can_nodes });
     }).catch(() => {});
   }, []);
 
