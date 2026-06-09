@@ -481,7 +481,7 @@ const Parameters = () => {
       </div>
       <div class="main-left">
         <h2>Parameters</h2>
-        <table id="params" class="fullheight">
+        <table id="params" class="fullheight" style="width:auto;table-layout:auto">
           <thead><tr><th></th><th>I</th><th>Name</th><th>Value</th><th>Unit</th><th>Min</th><th>Max</th><th>Default</th></tr></thead>
           <tbody id="paramBody">
             ${Object.keys(cats).map(cat => html`
