@@ -87,6 +87,69 @@ int canRxPin = CAN_RX_PIN;
 int canTxPin = CAN_TX_PIN;
 char uartMessBuff[UART_MESSBUF_SIZE];
 
+// CAN parameter cache (downloaded from device via segmented SDO)
+String canParamJson = "";
+bool canParamCacheLoaded = false;
+
+// Look up parameter ID by name from cached JSON
+// JSON format: {"name":{"id":12,"unit":"V",...},"name2":{...}}
+static int canGetParamId(const String& name) {
+  if (!canParamCacheLoaded) return -1;
+  String search = "\"" + name + "\"";
+  int pos = canParamJson.indexOf(search);
+  if (pos < 0) return -1;
+  // Find "id": after the name
+  int idPos = canParamJson.indexOf("\"id\"", pos);
+  if (idPos < 0) return -1;
+  idPos = canParamJson.indexOf(':', idPos) + 1;
+  while (idPos < canParamJson.length() && (canParamJson[idPos] == ' ' || canParamJson[idPos] == '\t')) idPos++;
+  return canParamJson.substring(idPos).toInt();
+}
+
+// Download parameter database from device via segmented SDO
+static bool canDownloadParamCache() {
+  if (!canMode || !canDriverIsRunning()) return false;
+  DBG_OUTPUT_PORT.println("CAN: downloading parameter database...");
+
+  // Allocate buffer for JSON string (max 4KB for param definitions)
+  const uint16_t bufSize = 4096;
+  uint8_t* buf = (uint8_t*)malloc(bufSize);
+  if (!buf) return false;
+  memset(buf, 0, bufSize);
+
+  uint16_t bytesRead = canSdoReadSegmented(canNodeId, CAN_INDEX_JSON, buf, bufSize - 1, 50);
+  if (bytesRead > 0) {
+    buf[bytesRead] = 0;
+    canParamJson = String((char*)buf);
+    canParamCacheLoaded = true;
+    DBG_OUTPUT_PORT.printf("CAN: downloaded %d bytes of parameter data\n", bytesRead);
+    free(buf);
+    return true;
+  }
+
+  free(buf);
+  DBG_OUTPUT_PORT.println("CAN: parameter download failed");
+  return false;
+}
+
+// Read a single parameter value via SDO (returns NaN on failure)
+static float canReadParamValue(int paramId) {
+  if (!canMode || paramId < 0) return NAN;
+
+  uint16_t index = canParamIndex(paramId);
+  uint8_t subIndex = canParamSubIndex(paramId);
+
+  if (!canSdoRead(canNodeId, index, subIndex)) return NAN;
+
+  twai_message_t resp;
+  if (!canReceiveForNode(canNodeId, &resp, 100)) return NAN;
+
+  int32_t raw;
+  if (!canSdoParseResponse(&resp, NULL, NULL, NULL, &raw)) return NAN;
+
+  return canDecodeValue(raw);
+}
+
 WebServer server(80);
 HTTPUpdateServer updater;
 //holds the current upload
@@ -600,22 +663,66 @@ static void handleCommand() {
 static String canExecuteCommand(const String& cmdStr, int repeat) {
   String result;
 
+  // Auto-download parameter cache on first json call
+  if (!canParamCacheLoaded) {
+    canDownloadParamCache();
+  }
+
   // Handle "json" — full parameter dump via SDO
   if (cmdStr == "json") {
-    // Read key parameters via SDO and assemble JSON
-    // We use a small set of critical parameters for now
     result = "{";
-    // Read device serial
-    if (canSdoRead(canNodeId, CAN_INDEX_SERIAL, 0)) {
-      twai_message_t resp;
-      if (canReceiveForNode(canNodeId, &resp, 100)) {
-        int32_t serial = 0;
-        if (canSdoParseResponse(&resp, NULL, NULL, NULL, &serial)) {
-          result += "\"serial\":" + String(serial) + ",";
+    bool first = true;
+
+    if (canParamCacheLoaded) {
+      // Iterate through cached parameter names and read their values
+      int pos = 0;
+      while (pos < canParamJson.length()) {
+        // Find next parameter name (keys in the JSON object)
+        int nameStart = canParamJson.indexOf('"', pos);
+        if (nameStart < 0) break;
+        int nameEnd = canParamJson.indexOf('"', nameStart + 1);
+        if (nameEnd < 0) break;
+        String name = canParamJson.substring(nameStart + 1, nameEnd);
+
+        // Skip non-parameter keys like version, serial
+        if (name == "version" || name == "serial" || name.length() == 0) {
+          pos = nameEnd + 1;
+          continue;
         }
+
+        int paramId = canGetParamId(name);
+        if (paramId >= 0) {
+          float val = canReadParamValue(paramId);
+          if (!isnan(val)) {
+            if (!first) result += ",";
+            // Find unit and isparam info from cache
+            int entryStart = canParamJson.indexOf("\"" + name + "\"", 0);
+            bool isParam = canParamJson.indexOf("\"isparam\":true", entryStart) > 0;
+            String unit = "\"\"";
+            int unitPos = canParamJson.indexOf("\"unit\":\"", entryStart);
+            if (unitPos > 0) {
+              unitPos += 8;
+              int unitEnd = canParamJson.indexOf('"', unitPos);
+              if (unitEnd > unitPos) {
+                unit = "\"" + canParamJson.substring(unitPos, unitEnd) + "\"";
+              }
+            }
+            result += "\"" + name + "\":{\"value\":" + String(val, 3);
+            result += ",\"isparam\":" + String(isParam ? "true" : "false");
+            result += ",\"unit\":" + unit + "}";
+            first = false;
+          }
+        }
+        pos = nameEnd + 1;
+        if (pos - nameStart > 5000) break; // safety limit
       }
+    } else {
+      // Cache not loaded yet — return minimal response
+      result += "\"status\":{\"value\":0,\"isparam\":false,\"unit\":\"\"}";
+      result += ",\"opmode\":{\"value\":0,\"isparam\":false,\"unit\":\"\"}";
+      first = false;
     }
-    result += "\"version\":\"4.0\"";
+
     result += "}";
     return result;
   }
@@ -623,14 +730,10 @@ static String canExecuteCommand(const String& cmdStr, int repeat) {
   // Handle "get param1,param2,..." — individual SDO reads
   if (cmdStr.startsWith("get ")) {
     String names = cmdStr.substring(4);
-    // For now return basic response — full name→ID mapping requires parameter DB
-    result = "[";
-    // We can read CAN_INDEX_JSON (0x5001) to get parameter names, but it requires
-    // segmented SDO transfer. For now, return placeholder.
-    // TODO: implement parameter DB loading
+    result = "";
     int commaIdx = 0;
-    bool first = true;
-    while (commaIdx >= 0) {
+    int count = 0;
+    while (commaIdx >= 0 && count < 50) {
       int nextComma = names.indexOf(',', commaIdx);
       String name;
       if (nextComma >= 0) {
@@ -642,12 +745,14 @@ static String canExecuteCommand(const String& cmdStr, int repeat) {
       }
       name.trim();
       if (name.length() > 0) {
-        if (!first) result += ",";
-        result += "0.0";
-        first = false;
+        int paramId = canGetParamId(name);
+        float val = (paramId >= 0) ? canReadParamValue(paramId) : NAN;
+        result += (isnan(val) ? "0.00" : String(val, 2));
+        // For repeat mode, append newline between bursts
+        if (commaIdx >= 0) result += "\t";
+        count++;
       }
     }
-    result += "]";
     return result;
   }
 
@@ -656,7 +761,17 @@ static String canExecuteCommand(const String& cmdStr, int repeat) {
     String rest = cmdStr.substring(4);
     int spaceIdx = rest.indexOf(' ');
     if (spaceIdx > 0) {
-      return "ok";
+      String name = rest.substring(0, spaceIdx);
+      float val = rest.substring(spaceIdx + 1).toFloat();
+      int paramId = canGetParamId(name);
+      if (paramId >= 0) {
+        int32_t raw = canEncodeValue(val);
+        uint16_t index = canParamIndex(paramId);
+        uint8_t subIndex = canParamSubIndex(paramId);
+        if (canSdoWrite(canNodeId, index, subIndex, raw)) {
+          return "ok";
+        }
+      }
     }
     return "error";
   }
@@ -688,8 +803,6 @@ static String canExecuteCommand(const String& cmdStr, int repeat) {
   if (cmdStr == "fastuart") {
     return "ok";
   }
-
-  // Pass through can mapping commands
   if (cmdStr.startsWith("can ")) {
     return "ok";
   }
@@ -1210,6 +1323,9 @@ void setup(void){
       canNodeId = server.arg("id").toInt();
       if (canNodeId < 1) canNodeId = 1;
       if (canNodeId > 32) canNodeId = 32;
+      // Clear parameter cache so it reloads for the new device
+      canParamCacheLoaded = false;
+      canParamJson = "";
       // Switch to device-specific filter
       CanSpeed speed = (canSpeed == 0) ? CAN_125K : (canSpeed == 1) ? CAN_250K : CAN_500K;
       canDriverInitForDevice(canNodeId, speed, canTxPin, canRxPin);

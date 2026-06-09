@@ -80,3 +80,32 @@ bool canReceiveForNode(uint8_t nodeId, twai_message_t* outFrame, uint32_t timeou
   }
   return false;
 }
+
+uint16_t canSdoReadSegmented(uint8_t nodeId, uint16_t index, uint8_t* buffer, uint16_t maxLen, uint32_t timeoutPerSegmentMs) {
+  uint16_t totalBytes = 0;
+  uint8_t subIndex = 0;
+
+  while (totalBytes < maxLen) {
+    if (!canSdoRead(nodeId, index, subIndex)) break;
+
+    twai_message_t resp;
+    if (!canReceiveForNode(nodeId, &resp, timeoutPerSegmentMs)) break;
+
+    uint16_t rIndex;
+    uint8_t rSubIndex;
+    int32_t value;
+    if (!canSdoParseResponse(&resp, NULL, &rIndex, &rSubIndex, &value)) break;
+    if (rIndex != index || rSubIndex != subIndex) break;
+
+    uint8_t segData[4];
+    memcpy(segData, &value, 4);
+    for (int i = 0; i < 4 && totalBytes < maxLen; i++) {
+      buffer[totalBytes++] = segData[i];
+    }
+
+    subIndex++;
+    delay(2);
+  }
+
+  return totalBytes;
+}

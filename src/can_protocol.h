@@ -67,3 +67,8 @@ inline int32_t canEncodeValue(float value) {
 inline float canDecodeValue(int32_t raw) {
   return (float)raw / 32.0f;
 }
+
+// Segmented SDO download: reads a multi-byte object (like JSON string) from the device.
+// Each SDO segment returns 4 bytes. Reads sequentially until complete or maxLen reached.
+// Returns number of bytes read, 0 on failure.
+uint16_t canSdoReadSegmented(uint8_t nodeId, uint16_t index, uint8_t* buffer, uint16_t maxLen, uint32_t timeoutPerSegmentMs);
