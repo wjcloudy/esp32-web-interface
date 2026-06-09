@@ -142,7 +142,7 @@ static float canReadParamValue(int paramId) {
   if (!canSdoRead(canNodeId, index, subIndex)) return NAN;
 
   twai_message_t resp;
-  if (!canReceiveForNode(canNodeId, &resp, 100)) return NAN;
+  if (!canReceiveForNode(canNodeId, &resp, 20)) return NAN;
 
   int32_t raw;
   if (!canSdoParseResponse(&resp, NULL, NULL, NULL, &raw)) return NAN;
@@ -727,7 +727,7 @@ static String canExecuteCommand(const String& cmdStr, int repeat) {
     return result;
   }
 
-  // Handle "get param1,param2,..." — individual SDO reads
+  // Handle "get param1,param2,..." — individual SDO reads (optimized for speed)
   if (cmdStr.startsWith("get ")) {
     String names = cmdStr.substring(4);
     result = "";
@@ -748,7 +748,6 @@ static String canExecuteCommand(const String& cmdStr, int repeat) {
         int paramId = canGetParamId(name);
         float val = (paramId >= 0) ? canReadParamValue(paramId) : NAN;
         result += (isnan(val) ? "0.00" : String(val, 2));
-        // For repeat mode, append newline between bursts
         if (commaIdx >= 0) result += "\t";
         count++;
       }
@@ -798,13 +797,128 @@ static String canExecuteCommand(const String& cmdStr, int repeat) {
     return "loaded";
   }
   if (cmdStr == "errors") {
-    return "[]";
+    // Read error log via SDO (index 0x5003, subIndex 0 = count, 1+ = error codes)
+    result = "[";
+    // First read error count
+    int32_t errCount = 0;
+    if (canSdoRead(canNodeId, CAN_INDEX_ERRORS, 0)) {
+      twai_message_t resp;
+      if (canReceiveForNode(canNodeId, &resp, 30)) {
+        canSdoParseResponse(&resp, NULL, NULL, NULL, &errCount);
+      }
+    }
+    // Read up to 10 most recent errors
+    if (errCount > 10) errCount = 10;
+    bool firstErr = true;
+    for (int i = 0; i < errCount; i++) {
+      if (canSdoRead(canNodeId, CAN_INDEX_ERRORS, i + 1)) {
+        twai_message_t resp;
+        if (canReceiveForNode(canNodeId, &resp, 30)) {
+          int32_t code = 0;
+          if (canSdoParseResponse(&resp, NULL, NULL, NULL, &code)) {
+            if (!firstErr) result += ",";
+            result += String(code);
+            firstErr = false;
+          }
+        }
+      }
+    }
+    result += "]";
+    return result;
   }
   if (cmdStr == "fastuart") {
     return "ok";
   }
   if (cmdStr.startsWith("can ")) {
-    return "ok";
+    String rest = cmdStr.substring(4);
+    rest.trim();
+
+    if (rest == "clear") {
+      canSdoWrite(canNodeId, CAN_INDEX_MAP_TX, 0, 0);
+      canSdoWrite(canNodeId, CAN_INDEX_MAP_RX, 0, 0);
+      return "cleared";
+    }
+
+    if (rest == "list" || rest.startsWith("list")) {
+      result = "[";
+      bool first = true;
+      for (int i = 1; i <= 20; i++) {
+        if (canSdoRead(canNodeId, CAN_INDEX_MAP_TX, i)) {
+          twai_message_t resp;
+          if (canReceiveForNode(canNodeId, &resp, 20)) {
+            int32_t val = 0;
+            if (canSdoParseResponse(&resp, NULL, NULL, NULL, &val) && val != 0) {
+              if (!first) result += ",";
+              result += "{\"type\":\"tx\",\"entry\":" + String(i) + ",\"value\":" + String(val) + "}";
+              first = false;
+            }
+          }
+        }
+      }
+      for (int i = 1; i <= 20; i++) {
+        if (canSdoRead(canNodeId, CAN_INDEX_MAP_RX, i)) {
+          twai_message_t resp;
+          if (canReceiveForNode(canNodeId, &resp, 20)) {
+            int32_t val = 0;
+            if (canSdoParseResponse(&resp, NULL, NULL, NULL, &val) && val != 0) {
+              if (!first) result += ",";
+              result += "{\"type\":\"rx\",\"entry\":" + String(i) + ",\"value\":" + String(val) + "}";
+              first = false;
+            }
+          }
+        }
+      }
+      result += "]";
+      return result;
+    }
+
+    // can tx/rx name canid pos bits gain
+    int space1 = rest.indexOf(' ');
+    if (space1 < 0) return "error: usage: can tx/rx name canid pos bits gain";
+    String type = rest.substring(0, space1);
+    bool isTx = (type == "tx");
+
+    String args = rest.substring(space1 + 1);
+    int space2 = args.indexOf(' ');
+    if (space2 < 0) return "error: missing arguments";
+    String name = args.substring(0, space2);
+
+    args = args.substring(space2 + 1);
+    int space3 = args.indexOf(' ');
+    if (space3 < 0) return "error: missing canid";
+    uint32_t canId = strtoul(args.substring(0, space3).c_str(), NULL, 16);
+
+    args = args.substring(space3 + 1);
+    int space4 = args.indexOf(' ');
+    if (space4 < 0) return "error: missing pos";
+    int pos = args.substring(0, space4).toInt();
+
+    args = args.substring(space4 + 1);
+    int space5 = args.indexOf(' ');
+    int bits = (space5 >= 0) ? args.substring(0, space5).toInt() : args.toInt();
+    int gain = 1;
+    if (space5 >= 0) gain = args.substring(space5 + 1).toInt();
+
+    int paramId = canGetParamId(name);
+    if (paramId < 0) return "error: unknown parameter";
+
+    uint16_t mapIndex = isTx ? CAN_INDEX_MAP_TX : CAN_INDEX_MAP_RX;
+    int slot = 0;
+    for (int i = 1; i <= 20; i++) {
+      if (canSdoRead(canNodeId, mapIndex, i)) {
+        twai_message_t resp;
+        if (canReceiveForNode(canNodeId, &resp, 20)) {
+          int32_t val = 0;
+          canSdoParseResponse(&resp, NULL, NULL, NULL, &val);
+          if (val == 0) { slot = i; break; }
+        }
+      } else { slot = i; break; }
+    }
+    if (slot == 0) return "error: no free mapping slots";
+
+    int32_t packed = (paramId << 16) | ((canId & 0x7FF) << 5) | (pos & 0x3F);
+    if (canSdoWrite(canNodeId, mapIndex, slot, packed)) return "ok";
+    return "error: write failed";
   }
 
   return "unknown command";
@@ -832,6 +946,96 @@ static uint32_t crc32(uint32_t* data, uint32_t len, uint32_t crc)
    return crc;
 }
 
+
+// CAN bootloader firmware update
+// Protocol: CAN ID 0x7DD = command, 0x7DE = response
+// Command bytes: byte0: cmd (0=enter, 1=erase, 2=write, 3=verify, 4=run)
+// Write: byte1-2: pageNum (LE), byte3-7: data (first 5 of 1024)
+// Remaining 1019 bytes sent as subsequent 8-byte frames
+static void handleCanFwUpdate()
+{
+  if (!canMode) { server.send(400, "text/plain", "CAN mode required"); return; }
+  if(!server.hasArg("step") || !server.hasArg("file")) { server.send(500, "text/plain", "BAD ARGS"); return; }
+
+  int step = server.arg("step").toInt();
+  File file = SPIFFS.open(server.arg("file"), "r");
+  if (!file) { server.send(500, "text/json", "{\"message\":\"Failed to open file\"}"); return; }
+
+  size_t fileSize = file.size();
+  size_t PAGE_SIZE = 1024;
+  uint16_t pages = (fileSize + PAGE_SIZE - 1) / PAGE_SIZE;
+  String message;
+
+  if (step == -1) {
+    // Enter CAN bootloader
+    uint8_t cmd[8] = {0};
+    cmd[0] = 0x00; // enter bootloader
+    if (!canDriverSend(CAN_BOOTLOADER_CMD, cmd, 8)) {
+      file.close(); server.send(500, "text/json", "{\"message\":\"CAN send failed\"}"); return;
+    }
+    delay(100);
+    server.send(200, "text/json", "{\"pages\":" + String(pages) + ",\"message\":\"Bootloader entered\"}");
+    file.close();
+    return;
+  }
+
+  if (step == -2) {
+    // Erase flash
+    uint8_t cmd[8] = {0};
+    cmd[0] = 0x01; // erase
+    if (!canDriverSend(CAN_BOOTLOADER_CMD, cmd, 8)) {
+      file.close(); server.send(500, "text/json", "{\"message\":\"CAN erase failed\"}"); return;
+    }
+    // Wait for bootloader response
+    twai_message_t resp;
+    int retries = 0;
+    while (retries < 50) {
+      if (canDriverReceive(&resp) && resp.identifier == CAN_BOOTLOADER_RESP) break;
+      delay(100);
+      retries++;
+    }
+    server.send(200, "text/json", "{\"pages\":" + String(pages) + ",\"message\":\"Flash erased\"}");
+    file.close();
+    return;
+  }
+
+  if (step >= 0 && step < pages) {
+    // Write page
+    uint8_t pageData[1024];
+    file.seek(step * PAGE_SIZE);
+    size_t bytesRead = file.read(pageData, PAGE_SIZE);
+    // Pad with 0xFF if needed
+    while (bytesRead < PAGE_SIZE) pageData[bytesRead++] = 0xFF;
+
+    // Send page in chunks of 8 bytes (128 frames for 1024 bytes)
+    for (size_t offset = 0; offset < PAGE_SIZE; offset += 8) {
+      uint8_t frame[8];
+      size_t chunkSize = min((size_t)8, PAGE_SIZE - offset);
+      memcpy(frame, pageData + offset, chunkSize);
+      // Pad remaining bytes
+      for (size_t p = chunkSize; p < 8; p++) frame[p] = 0xFF;
+      canDriverSend(CAN_BOOTLOADER_CMD, frame, 8);
+      delay(2); // Small gap between frames
+    }
+
+    file.close();
+    server.send(200, "text/json", "{\"pages\":" + String(pages) + ",\"message\":\"Page " + String(step) + " written\"}");
+    return;
+  }
+
+  if (step >= pages) {
+    // Run application
+    uint8_t cmd[8] = {0};
+    cmd[0] = 0x04; // run app
+    canDriverSend(CAN_BOOTLOADER_CMD, cmd, 8);
+    file.close();
+    server.send(200, "text/json", "{\"pages\":" + String(pages) + ",\"message\":\"Done\"}");
+    return;
+  }
+
+  file.close();
+  server.send(200, "text/json", "{\"pages\":" + String(pages) + "}");
+}
 
 static void handleUpdate()
 {
@@ -1266,6 +1470,7 @@ void setup(void){
   server.on("/wifi", handleWifi);
   server.on("/cmd", handleCommand);
   server.on("/fwupdate", handleUpdate);
+  server.on("/can-fwupdate", handleCanFwUpdate);
   server.on("/baud", handleBaud);
   server.on("/settings", HTTP_GET, handleSettings);
   server.on("/settings", HTTP_POST, handleSettings);

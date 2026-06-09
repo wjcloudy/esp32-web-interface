@@ -22,6 +22,9 @@
 #define CAN_INDEX_COMMANDS     0x5002 // device commands
 #define CAN_INDEX_ERRORS       0x5003 // error log
 #define CAN_INDEX_JSON         0x5001 // JSON parameter strings
+#define CAN_INDEX_MAP_TX       0x3000 // TX CAN mapping
+#define CAN_INDEX_MAP_RX       0x3001 // RX CAN mapping
+#define CAN_INDEX_MAP_RD       0x3100 // Read CAN mapping entries
 
 // Device command values (sub-index to CAN_INDEX_COMMANDS)
 #define CAN_CMD_SAVE           0
