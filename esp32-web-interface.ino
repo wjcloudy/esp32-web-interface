@@ -867,15 +867,32 @@ void setup(void){
   else
     DBG_OUTPUT_PORT.println("No RTC found, defaulting to sequential file names"); 
 
-  //initialise SD card in SDIO mode - skipped: SD_MMC.begin() blocks without card on this platform
-  //if (SD_MMC.begin("/sdcard", true, false, 40000, 5U)) {
-  //if (SD_MMC.begin()) {
-  //  DBG_OUTPUT_PORT.println("Started SD_MMC");    
-  //  haveSDCard = true;    
-  //}
-  //else
-  //  DBG_OUTPUT_PORT.println("Couldn't start SD_MMC");  
-  haveSDCard = false;
+  //initialise SD card in SDIO mode with timeout (SD_MMC.begin blocks without card)
+  {
+    TaskHandle_t sdTask = NULL;
+    bool sdDone = false;
+    xTaskCreate([](void* param) {
+      bool* done = (bool*)param;
+      if (SD_MMC.begin("/sdcard", true, false, 40000, 5U)) {
+        *done = true;
+      }
+      vTaskDelete(NULL);
+    }, "sdinit", 4096, &sdDone, 1, &sdTask);
+    
+    // Wait up to 3 seconds for SD card init
+    for (int i = 0; i < 30 && !sdDone; i++) {
+      delay(100);
+    }
+    if (sdTask) vTaskDelete(sdTask);
+    
+    if (sdDone) {
+      haveSDCard = true;
+      DBG_OUTPUT_PORT.println("Started SD_MMC");
+    } else {
+      haveSDCard = false;
+      DBG_OUTPUT_PORT.println("SD_MMC timed out or no card");
+    }
+  }
 
   //SPIFFS already started above (before UART init to load settings)
 
