@@ -58,11 +58,11 @@
 
 #define DBG_OUTPUT_PORT Serial2
 #define INVERTER_PORT UART_NUM_0
-#define INVERTER_RX 3
-#define INVERTER_TX 1
+#define INVERTER_RX 1 //3 - Swapped for Wemos board onto Zombie and other OI boards
+#define INVERTER_TX 3 //1 - Swapped for Wemos board onto Zombie and other OI boards
 #define UART_TIMEOUT (100 / portTICK_PERIOD_MS)
 #define UART_MESSBUF_SIZE 100
-#define LED_BUILTIN 13 //clashes with SDIO, need to change to suit hardware and uncomment lines
+#define LED_BUILTIN 2 //clashes with SDIO, need to change to suit hardware and uncomment lines
 
 #define RESERVED_SD_SPACE 2000000000
 #define SDIO_BUFFER_SIZE 16384
@@ -77,6 +77,7 @@
 const char* host = "inverter";
 bool fastUart = false;
 bool fastUartAvailable = true;
+bool txrxSwapped = true; // default: swapped for Wemos/OI/Zombie boards
 char uartMessBuff[UART_MESSBUF_SIZE];
 
 WebServer server(80);
@@ -236,6 +237,9 @@ String getContentType(String filename){
 
 bool handleFileRead(String path){
   //DBG_OUTPUT_PORT.println("handleFileRead: " + path);
+  // Strip query string (e.g. /ui.js?v=2 -> /ui.js)
+  int qs = path.indexOf('?');
+  if (qs >= 0) path = path.substring(0, qs);
   if(path.endsWith("/")) path += "index.html";
   String contentType = getContentType(path);
   String pathWithGz = path + ".gz";
@@ -243,6 +247,17 @@ bool handleFileRead(String path){
     if(SPIFFS.exists(pathWithGz))
       path += ".gz";
     File file = SPIFFS.open(path, "r");
+
+    // Set Cache-Control for static assets to reduce ESP32 load
+    if (path.endsWith(".css") || path.endsWith(".js") ||
+        path.endsWith(".png") || path.endsWith(".gif") ||
+        path.endsWith(".jpg") || path.endsWith(".ico") ||
+        path.endsWith(".woff2") || path.endsWith(".svg")) {
+      server.sendHeader("Cache-Control", "public, max-age=3600");
+    } else {
+      server.sendHeader("Cache-Control", "no-cache");
+    }
+
     size_t sent = server.streamFile(file, contentType);
     file.close();
     return true;
@@ -272,15 +287,21 @@ void handleFileUpload(){
     if(!filename.startsWith("/")) filename = "/"+filename;
     //DBG_OUTPUT_PORT.print("handleFileUpload Name: "); DBG_OUTPUT_PORT.println(filename);
     fsUploadFile = SPIFFS.open(filename, "w");
+    if (!fsUploadFile) {
+      DBG_OUTPUT_PORT.println("ERROR: SPIFFS open failed for " + filename + " - filesystem may be full or fragmented");
+    }
     filename = String();
   } else if(upload.status == UPLOAD_FILE_WRITE){
     //DBG_OUTPUT_PORT.print("handleFileUpload Data: "); DBG_OUTPUT_PORT.println(upload.currentSize);
     if(fsUploadFile)
       fsUploadFile.write(upload.buf, upload.currentSize);
   } else if(upload.status == UPLOAD_FILE_END){
-    if(fsUploadFile)
+    if(fsUploadFile) {
       fsUploadFile.close();
-    //DBG_OUTPUT_PORT.print("handleFileUpload Size: "); DBG_OUTPUT_PORT.println(upload.totalSize);
+      DBG_OUTPUT_PORT.println("Upload complete: " + upload.filename + " (" + String(upload.totalSize) + " bytes)");
+    } else {
+      DBG_OUTPUT_PORT.println("ERROR: Upload failed - file was not written (SPIFFS open failed)");
+    }
   }
 }
 
@@ -459,6 +480,42 @@ bool uart_readStartsWith(const char *val)
 
 
 
+static void initUART(bool reinit = false)
+{
+  if (reinit) {
+    // Just swap the pins — no need to delete/reinstall driver
+    uart_set_pin(INVERTER_PORT,
+      txrxSwapped ? INVERTER_TX : INVERTER_RX,
+      txrxSwapped ? INVERTER_RX : INVERTER_TX,
+      UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    DBG_OUTPUT_PORT.println(txrxSwapped ? "UART: swapped mode (TX=3, RX=1)" : "UART: normal mode (TX=1, RX=3)");
+    return;
+  }
+  
+  uart_config_t uart_config = {
+        .baud_rate = 115200,
+        .data_bits = UART_DATA_8_BITS,
+        .parity    = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE};
+
+  uart_param_config(INVERTER_PORT, &uart_config);
+  
+  if (txrxSwapped)
+  {
+    uart_set_pin(INVERTER_PORT, INVERTER_TX, INVERTER_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    DBG_OUTPUT_PORT.println("UART: swapped mode (TX=3, RX=1)");
+  }
+  else
+  {
+    uart_set_pin(INVERTER_PORT, INVERTER_RX, INVERTER_TX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    DBG_OUTPUT_PORT.println("UART: normal mode (TX=1, RX=3)");
+  }
+  
+  uart_driver_install(INVERTER_PORT, SDIO_BUFFER_SIZE * 3, 0, 0, NULL, 0);
+  delay(100);
+}
+
 static void sendCommand(String cmd)
 {
   DBG_OUTPUT_PORT.println("Sending '" + cmd + "' to inverter");
@@ -546,7 +603,23 @@ static void handleUpdate()
   size_t PAGE_SIZE_BYTES = 1024;
   int step = server.arg("step").toInt();
   File file = SPIFFS.open(server.arg("file"), "r");
-  uint8_t pages = (file.size() + PAGE_SIZE_BYTES - 1) / PAGE_SIZE_BYTES;
+
+  // Check if file was opened successfully
+  if (!file) {
+    server.send(500, "text/json", "{ \"message\": \"Failed to open firmware file\" }");
+    return;
+  }
+
+  size_t fileSize = file.size();
+  if (fileSize == 0) {
+    file.close();
+    server.send(500, "text/json", "{ \"message\": \"Firmware file is empty\" }");
+    return;
+  }
+
+  // Use uint16_t to support firmware files up to ~64 MB (1024 * 65535 bytes)
+  // Previously uint8_t overflowed for files > 255 KB
+  uint16_t pages = (uint16_t)((fileSize + PAGE_SIZE_BYTES - 1) / PAGE_SIZE_BYTES);
   String message;
 
   if (server.hasArg("pagesize"))
@@ -554,41 +627,54 @@ static void handleUpdate()
     PAGE_SIZE_BYTES = server.arg("pagesize").toInt();
   }
 
+  // Timeout/retry helper macro for bootloader handshake loops
+  #define HANDSHAKE_TIMEOUT 100  // ~10 seconds (100 * 100ms)
+
   if (step == -1)
   {
-    //int c;
-    char c;
+    char c = 0;
+    uint16_t retries = 0;
     sendCommand("reset");
 
     if (fastUart)
     {
-      //Inverter.begin(115200, SERIAL_8N1, INVERTER_RX, INVERTER_TX);
-      //Inverter.updateBaudRate(115200);
       uart_set_baudrate(INVERTER_PORT, 115200);
       fastUart = false;
       fastUartAvailable = true; //retry after reboot
     }
     do {
-      //c = Inverter.read();
       uart_read_bytes(INVERTER_PORT, &c, 1, UART_TIMEOUT);
+      if (++retries > HANDSHAKE_TIMEOUT) {
+        file.close();
+        server.send(500, "text/json", "{ \"message\": \"Bootloader handshake timeout waiting for S/2\" }");
+        return;
+      }
     } while (c != 'S' && c != '2');
 
     if (c == '2') //version 2 bootloader
     {
-      //Inverter.write(0xAA); //Send magic
       c = 0xAA;
       uart_write_bytes(INVERTER_PORT, &c, 1);
-      //while (Inverter.read() != 'P');
+      retries = 0;
       do {
         uart_read_bytes(INVERTER_PORT, &c, 1, UART_TIMEOUT);
+        if (++retries > HANDSHAKE_TIMEOUT) {
+          file.close();
+          server.send(500, "text/json", "{ \"message\": \"Bootloader v2 handshake timeout\" }");
+          return;
+        }
       } while (c != 'S');
     }
     
-    //Inverter.write(pages);
     uart_write_bytes(INVERTER_PORT, &pages, 1);
-    //while (Inverter.read() != 'P');
+    retries = 0;
     do {
       uart_read_bytes(INVERTER_PORT, &c, 1, UART_TIMEOUT);
+      if (++retries > HANDSHAKE_TIMEOUT) {
+        file.close();
+        server.send(500, "text/json", "{ \"message\": \"Bootloader handshake timeout waiting for P\" }");
+        return;
+      }
     } while (c != 'P');
     message = "reset";
   }
@@ -604,20 +690,32 @@ static void handleUpdate()
     
     uint32_t crc = crc32((uint32_t*)buffer, PAGE_SIZE_BYTES / 4, 0xffffffff);
 
+    uint16_t pageRetries = 0;
+    #define PAGE_RETRY_MAX 10
+
     while (repeat)
     {
-      //Inverter.write(buffer, sizeof(buffer));
       uart_write_bytes(INVERTER_PORT, buffer, sizeof(buffer));
-      //while (!Inverter.available());
-      char res;// = Inverter.read();
-      while(uart_read_bytes(INVERTER_PORT, &res, 1, UART_TIMEOUT)<=0);
+      char res = 0;
+      uint16_t readRetries = 0;
+      while(uart_read_bytes(INVERTER_PORT, &res, 1, UART_TIMEOUT)<=0) {
+        if (++readRetries > HANDSHAKE_TIMEOUT) {
+          file.close();
+          server.send(500, "text/json", "{ \"message\": \"Page write timeout: no response from bootloader\" }");
+          return;
+        }
+      }
 
       if ('C' == res) {
-        //Inverter.write((char*)&crc, sizeof(uint32_t));
         uart_write_bytes(INVERTER_PORT, (char*)&crc, sizeof(uint32_t));
-        //while (!Inverter.available());
-        //res = Inverter.read();
-        while(uart_read_bytes(INVERTER_PORT, &res, 1, UART_TIMEOUT)<=0);
+        readRetries = 0;
+        while(uart_read_bytes(INVERTER_PORT, &res, 1, UART_TIMEOUT)<=0) {
+          if (++readRetries > HANDSHAKE_TIMEOUT) {
+            file.close();
+            server.send(500, "text/json", "{ \"message\": \"CRC check timeout\" }");
+            return;
+          }
+        }
       }
 
       switch (res) {
@@ -627,10 +725,20 @@ static void handleUpdate()
           fastUartAvailable = true;
           break;
         case 'E':
-          //while (Inverter.read() != 'T');
+          readRetries = 0;
           do {
             uart_read_bytes(INVERTER_PORT, uartMessBuff, 1, UART_TIMEOUT);
+            if (++readRetries > HANDSHAKE_TIMEOUT) {
+              file.close();
+              server.send(500, "text/json", "{ \"message\": \"Flash error timeout\" }");
+              return;
+            }
           } while (uartMessBuff[0] != 'T');
+          pageRetries++;
+          if (pageRetries >= PAGE_RETRY_MAX) {
+            repeat = false;
+            message = "Page write failed after max retries";
+          }
           break;
         case 'P':
           message = "Page write success";
@@ -686,6 +794,42 @@ static void handleBaud()
     server.send(200, "text/html", "fastUart off");
 }
 
+static void saveSettings()
+{
+  File f = SPIFFS.open("/settings.json", "w");
+  if (f) {
+    f.printf("{\"txrx_swapped\":%s}", txrxSwapped ? "true" : "false");
+    f.close();
+  }
+}
+
+static void loadSettings()
+{
+  if (SPIFFS.exists("/settings.json")) {
+    File f = SPIFFS.open("/settings.json", "r");
+    if (f) {
+      String json = f.readString();
+      f.close();
+      txrxSwapped = json.indexOf("\"txrx_swapped\":false") < 0; // default true if not explicitly false
+    }
+  }
+}
+
+static void handleSettings()
+{
+  if (server.hasArg("txrx_swap")) {
+    txrxSwapped = (server.arg("txrx_swap") == "1");
+    saveSettings();
+    initUART(true);
+    server.send(200, "text/json", "{\"result\":\"ok\"}");
+  } else {
+    String json = "{\"txrx_swapped\":";
+    json += txrxSwapped ? "true" : "false";
+    json += "}";
+    server.send(200, "text/json", json);
+  }
+}
+
 void staCheck(){
   sta_tick.detach();
   if(!(uint32_t)WiFi.localIP()){
@@ -698,17 +842,11 @@ void setup(void){
   //Inverter.setRxBufferSize(50000);
   //Inverter.begin(115200, SERIAL_8N1, INVERTER_RX, INVERTER_TX);
   //Need to use low level Espressif IDF API instead of Serial to get high enough data rates
-  uart_config_t uart_config = {
-        .baud_rate = 115200,
-        .data_bits = UART_DATA_8_BITS,
-        .parity    = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE};
-
-  uart_param_config(INVERTER_PORT, &uart_config);
-  uart_set_pin(INVERTER_PORT, INVERTER_TX, INVERTER_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-  uart_driver_install(INVERTER_PORT, SDIO_BUFFER_SIZE * 3, 0, 0, NULL, 0); //x3 allows twice card write size to buffer while writes
-  delay(100); 
+  
+  // Initialize SPIFFS early so we can load settings before UART init
+  SPIFFS.begin();
+  loadSettings();
+  initUART(); 
   
 
   //check for external RTC and if present use to initialise on-chip RTC
@@ -729,17 +867,17 @@ void setup(void){
   else
     DBG_OUTPUT_PORT.println("No RTC found, defaulting to sequential file names"); 
 
-  //initialise SD card in SDIO mode
+  //initialise SD card in SDIO mode - skipped: SD_MMC.begin() blocks without card on this platform
   //if (SD_MMC.begin("/sdcard", true, false, 40000, 5U)) {
-  if (SD_MMC.begin()) {
-    DBG_OUTPUT_PORT.println("Started SD_MMC");    
-    haveSDCard = true;    
-  }
-  else
-    DBG_OUTPUT_PORT.println("Couldn't start SD_MMC");  
+  //if (SD_MMC.begin()) {
+  //  DBG_OUTPUT_PORT.println("Started SD_MMC");    
+  //  haveSDCard = true;    
+  //}
+  //else
+  //  DBG_OUTPUT_PORT.println("Couldn't start SD_MMC");  
+  haveSDCard = false;
 
-  //Start SPI Flash file system
-  SPIFFS.begin();
+  //SPIFFS already started above (before UART init to load settings)
 
   //WIFI INIT
   #ifdef WIFI_IS_OFF_AT_BOOT
@@ -783,7 +921,9 @@ void setup(void){
   server.on("/cmd", handleCommand);
   server.on("/fwupdate", handleUpdate);
   server.on("/baud", handleBaud);
-  server.on("/version", [](){ server.send(200, "text/plain", "1.1.R"); });
+  server.on("/settings", HTTP_GET, handleSettings);
+  server.on("/settings", HTTP_POST, handleSettings);
+  server.on("/version", [](){ server.send(200, "text/plain", "4.0"); });
   
   //called when the url is not defined here
   //use it to load content from SPIFFS
