@@ -925,11 +925,13 @@ const Plot = () => {
             <input type="number" value=${burstLength} oninput=${e => setBurstLength(parseInt(e.target.value)||1)} style="width:4em;font-size:.8rem;padding:4px 6px" />
           </div>
         </div>
-        <button onclick=${togglePlotting} style=${{ background: plotting ? 'var(--red)' : 'var(--green)', color: '#fff', borderColor: 'transparent', fontWeight: 600 }}>
-          ${plotting ? '⏹ Stop' : '▶ Start'}
-        </button>
-        ${!plotting && html`<button onclick=${addPlot}>+ Add plot</button>`}
-        <button onclick=${savePlots} style="margin-top:4px">Save Layout</button>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px">
+          <button onclick=${togglePlotting} style=${{ background: plotting ? 'var(--red)' : 'var(--green)', color: '#fff', borderColor: 'transparent', fontWeight: 600 }}>
+            ${plotting ? '⏹ Stop' : '▶ Start'}
+          </button>
+          ${!plotting && html`<button onclick=${addPlot}>+ Add plot</button>`}
+          <button onclick=${savePlots}>Save Layout</button>
+        </div>
 
         ${plots.map(p => html`
           <div key=${p.id} style="margin-bottom:8px;padding:8px;background:var(--surface2);border-radius:var(--radius-xs)">
@@ -1277,14 +1279,17 @@ const Support = () => html`
 
 // ==================== Gauges ====================
 
-// Mini line chart for gauge line mode — value passed as prop
-const GaugeLine = ({ name, min, max, value }) => {
+// Mini line chart for gauge line mode — value and unit passed as props
+const GaugeLine = ({ name, min, max, value, unit }) => {
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
   const historyRef = useRef([]);
+  const MAX_POINTS = 20;
 
   useEffect(() => {
     if (canvasRef.current && !chartRef.current && typeof Chart !== 'undefined') {
+      const yMin = min != null ? min : 0;
+      const yMax = max != null && max !== 0 ? max : 100;
       chartRef.current = new Chart(canvasRef.current, {
         type: 'line', data: { datasets: [{ label: name, data: [], borderColor: colours[0], backgroundColor: colours[0] + '22', fill: true, pointRadius: 0, tension: 0.3 }] },
         options: {
@@ -1292,12 +1297,20 @@ const GaugeLine = ({ name, min, max, value }) => {
           plugins: { legend: { display: false } },
           scales: {
             x: { type: 'linear', display: true, ticks: { maxTicksLimit: 4, font: { size: 9 } }, grid: { display: false } },
-            y: { type: 'linear', display: true, min: min || 0, max: max || 100, ticks: { font: { size: 9 } } }
+            y: { type: 'linear', display: true, min: yMin, max: yMax, ticks: { font: { size: 9 } } }
           }
         }
       });
     }
   }, []);
+
+  useEffect(() => {
+    if (!chartRef.current) return;
+    const chart = chartRef.current;
+    chart.options.scales.y.min = min != null ? min : 0;
+    chart.options.scales.y.max = (max != null && max !== 0) ? max : 100;
+    chart.update('none');
+  }, [min, max]);
 
   useEffect(() => {
     if (value == null || isNaN(value) || !chartRef.current) return;
@@ -1306,15 +1319,18 @@ const GaugeLine = ({ name, min, max, value }) => {
     if (!ds) return;
     const t = historyRef.current.length;
     historyRef.current.push({ x: t, y: value });
-    if (historyRef.current.length > 200) historyRef.current.shift();
+    if (historyRef.current.length > MAX_POINTS) historyRef.current.shift();
     ds.data = [...historyRef.current];
     chart.update('none');
   }, [value]);
 
   return html`
-    <div style="width:280px">
-      <div style="font-size:2rem;font-weight:700;color:var(--accent);line-height:1.2">${value != null ? value.toFixed(1) : '—'}</div>
-      <canvas ref=${canvasRef} width="280" height="130" style="width:280px;height:130px"></canvas>
+    <div style="width:250px">
+      <div style="font-size:1.6rem;font-weight:700;color:var(--accent);line-height:1.2;margin-bottom:2px">
+        ${value != null ? value.toFixed(1) : '—'}
+        ${unit && html`<span style="font-size:.7rem;font-weight:500;color:var(--text2)"> ${unit}</span>`}
+      </div>
+      <canvas ref=${canvasRef} width="250" height="200" style="width:250px;height:200px"></canvas>
     </div>
   `;
 };
@@ -1561,8 +1577,10 @@ const Gauges = () => {
     <div id="gauges" class="tabdiv main-content" style="display:flex">
       <div class="main-right">
         <h3 class="underline">Gauges</h3>
-        <button onclick=${addGauge}>+ Add Gauge</button>
-        <button onclick=${() => saveLayout(gaugeItems)} style="margin-top:4px">Save Layout</button>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px">
+          <button onclick=${addGauge}>+ Add Gauge</button>
+          <button onclick=${() => saveLayout(gaugeItems)}>Save Layout</button>
+        </div>
         ${gaugeItems.length > 0 && html`
           <h3>Active (${gaugeItems.length})</h3>
           ${gaugeItems.map(g => html`
@@ -1594,8 +1612,8 @@ const Gauges = () => {
             <div class="gauge-wrapper" style="text-align:center" key="${g.id}">
               <div style="font-weight:600;font-size:.9rem;margin-bottom:4px">${g.name || '—'}</div>
               ${(g.type === 'line')
-                ? html`<${GaugeLine} name=${g.name} min=${g.min} max=${g.max} value=${lineVals[g.id]} /></div>`
-                : html`<canvas id="${gaugeId(g.id)}" width="250" height="250"></canvas></div>`
+                ? html`<${GaugeLine} name=${g.name} min=${g.min} max=${g.max} value=${lineVals[g.id]} unit=${(state.spotValues && state.spotValues[g.name] && state.spotValues[g.name].unit && state.spotValues[g.name].unit.indexOf('=') === -1) ? state.spotValues[g.name].unit : ''} />`
+                : html`<canvas id="${gaugeId(g.id)}" width="250" height="250"></canvas>`
               }
             </div>
           `)}

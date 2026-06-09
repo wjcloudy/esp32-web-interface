@@ -25,6 +25,8 @@ Web interface for Huebner inverter
 </details>
 
 # About
+> **v4.0** — This fork features a complete frontend rewrite using Preact + HTM, replacing jQuery with a modern single-page application. New pages include real-time Gauges (radial & line charts), multi-chart Plotting, UART pin swap Settings, and a searchable interface throughout. See the [commit history](https://github.com/wjcloudy/esp32-web-interface/commits/uart-backend) for details.
+
 This repository hosts the source code for the Web Interface for the Huebner inverter, and derivated projects:
 * [OpenInverter Sine (and FOC) firmware](https://github.com/jsphuebner/stm32-sine)
 * [Vehicle Control Unit for Electric Vehicle Conversion Projects](https://github.com/damienmaguire/Stm32-vcu)
