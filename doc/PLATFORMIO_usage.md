@@ -264,6 +264,8 @@ pio run --target uploadfsota --environment release
 
 ## Combined binary build (for web flasher)
 
+**Before building:** set `board_build.flash_mode = dio` in `platformio.ini` under `[env]`. `dio` (dual I/O) is the safest mode for universal ESP32 compatibility — web flashers and unknown flash chips may not support `qout`.
+
 ```bash
 # 1. Gzip assets (see above)
 # 2. Build firmware
@@ -298,9 +300,9 @@ C:\Users\$env:USERNAME\.platformio\penv\Scripts\python.exe `
   0x290000 .pio\build\release\spiffs.bin
 ```
 
-This produces `esp32-web-interface_4.00-0x000.bin` (~4MB) which contains the complete flash image. Flash it at offset `0x0`.
+This produces `esp32-web-interface_4.00-0x000.bin` (~4MB) — a complete flash image. Flash it at offset `0x0` with any ESP32 flasher tool.
 
-> **Note:** The SPIFFS offset (`0x290000`) matches the default 4MB partition scheme. If you use a custom partition table, adjust accordingly.
+> **Note:** The SPIFFS offset (`0x290000`) matches the default 4MB partition scheme (`default.csv`). If you use a custom partition table, adjust the `0x290000` offset accordingly. The `dio` flash mode is required for the combined binary to work reliably across all ESP32 modules.
 
 # Check device output
 

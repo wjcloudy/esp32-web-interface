@@ -65,7 +65,7 @@ Tompile it follow the [instructions below](#development).
 
 # Flashing / Upgrading
 ## Web Flasher (recommended for first install)
-A pre-built combined binary (`firmware-combined.bin`) is available in [releases](https://github.com/wjcloudy/esp32-web-interface/releases). Flash it at offset `0x0` using [ESP Web Tools](https://espressif.github.io/esptool-js/) or any ESP32 flasher.
+A pre-built combined binary (`esp32-web-interface_4.00-0x000.bin`) is available in [releases](https://github.com/wjcloudy/esp32-web-interface/releases). Flash it at offset `0x0` using [ESP Web Tools](https://espressif.github.io/esptool-js/) or any ESP32 flasher. The binary uses `dio` flash mode for universal compatibility.
 
 To build your own combined binary, see [PlatformIO usage — Building a combined binary](doc/PLATFORMIO_usage.md#building-a-combined-binary-for-web-flasher).
 
