@@ -342,6 +342,8 @@ const Dashboard = () => {
   const [cmd, setCmd] = useState('');
   const [cmdOutput, setCmdOutput] = useState('');
   const [confirmAction, setConfirmAction] = useState(null); // 'inverter' | 'esp32'
+  const [canId, setCanId] = useState('0x180');
+  const [canData, setCanData] = useState('00 00 00 00 00 00 00 00');
 
   const send = async () => {
     if (!cmd.trim()) return;
@@ -357,8 +359,20 @@ const Dashboard = () => {
         <button onclick=${() => api.getText('start 2').then(r => dispatch({ type: 'SET_MESSAGES', payload: r }))}>Start inverter in manual mode</button>
         <button onclick=${() => api.getText('stop').then(r => dispatch({ type: 'SET_MESSAGES', payload: r }))}>Stop inverter</button>
         <h3 class="underline">Reset</h3>
-        <button onclick=${() => setConfirmAction('inverter')}>Reset inverter</button>
+        <button onclick=${() => setConfirmAction('inverter')}>Reboot Inverter</button>
         <button onclick=${() => setConfirmAction('esp32')}>Reboot ESP32</button>
+        <h3 class="underline">CAN Message</h3>
+        <div style="display:flex;flex-direction:column;gap:4px">
+          <label style="font-size:.75rem">CAN ID (hex)</label>
+          <input type="text" value=${canId} oninput=${e => setCanId(e.target.value)} style="font-size:.75rem;padding:4px 6px;font-family:var(--mono)" />
+          <label style="font-size:.75rem">Data bytes (hex, space/comma separated)</label>
+          <input type="text" value=${canData} oninput=${e => setCanData(e.target.value)} style="font-size:.75rem;padding:4px 6px;font-family:var(--mono)" />
+          <button onclick=${async () => {
+            const r = await fetch('/can-send?canId=' + encodeURIComponent(canId) + '&data=' + encodeURIComponent(canData));
+            const json = await r.json();
+            setCmdOutput(o => o + 'CAN: ' + JSON.stringify(json) + '\n');
+          }} style="font-size:.75rem;padding:4px 10px">Send CAN Message</button>
+        </div>
       </div>
       <div class="main-left">
         <h2>Dashboard</h2>
@@ -1298,6 +1312,11 @@ const Settings = () => {
   const [staPW, setStaPW] = useState('');
   const [staIP, setStaIP] = useState('');
   const [wifiMsg, setWifiMsg] = useState('');
+  const [canMode, setCanMode] = useState(false);
+  const [canNodeId, setCanNodeId] = useState(1);
+  const [canSpeed, setCanSpeed] = useState(2);
+  const [canRxPin, setCanRxPin] = useState(4);
+  const [canTxPin, setCanTxPin] = useState(5);
 
   useEffect(() => {
     (async () => {
@@ -1306,6 +1325,11 @@ const Settings = () => {
         if (r.ok) {
           const data = await r.json();
           setTxrxSwapped(data.txrx_swapped !== false);
+          setCanMode(data.can_mode === true);
+          if (data.can_node_id) setCanNodeId(data.can_node_id);
+          if (data.can_speed !== undefined) setCanSpeed(data.can_speed);
+          if (data.can_rx_pin) setCanRxPin(data.can_rx_pin);
+          if (data.can_tx_pin) setCanTxPin(data.can_tx_pin);
         }
       } catch (e) { /* use default */ }
       // Load WiFi info
@@ -1333,6 +1357,20 @@ const Settings = () => {
       await fetch('/settings?txrx_swap=' + (val ? '1' : '0'), { method: 'POST' });
       setTimeout(() => setSaving(false), 2000);
     } catch (e) { setTxrxSwapped(!val); setSaving(false); }
+  };
+
+  const saveCanSettings = async () => {
+    setSaving(true);
+    try {
+      const params = new URLSearchParams();
+      params.set('can_mode', canMode ? '1' : '0');
+      params.set('can_node_id', canNodeId);
+      params.set('can_speed', canSpeed);
+      params.set('can_rx_pin', canRxPin);
+      params.set('can_tx_pin', canTxPin);
+      await fetch('/settings?' + params.toString(), { method: 'POST' });
+      setTimeout(() => setSaving(false), 2000);
+    } catch (e) { setSaving(false); }
   };
 
   const saveWiFi = async (type) => {
@@ -1379,6 +1417,37 @@ const Settings = () => {
             TX/RX are swapped on Wemos boards used with OpenInverter / ZombieVerter VCU boards.
             ${txrxSwapped ? 'Currently using TX=3, RX=1 (swapped).' : 'Currently using TX=1, RX=3 (normal).'}
           </p>
+        </div>
+
+        <div class="dash-box" style="margin-bottom:1rem">
+          <h3>Interface Mode</h3>
+          <div style="display:flex;align-items:center;gap:12px;margin-bottom:.5rem">
+            <label class="switch">
+              <input type="checkbox" checked=${canMode} onchange=${e => setCanMode(e.target.checked)} />
+              <span class="slider"></span>
+            </label>
+            <span style="font-weight:600">${canMode ? 'CAN Bus' : 'UART (Serial)'}</span>
+          </div>
+          <p style="color:var(--text2);font-size:.8rem;margin:0">
+            ${canMode
+              ? 'Commands route through the CAN bus using the TWAI controller. UART is disabled.'
+              : 'Commands route through UART serial to the inverter. CAN is disabled.'}
+          </p>
+          ${canMode && html`
+            <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:.5rem;align-items:center">
+              <label style="font-size:.75rem">Node ID <input type="number" value=${canNodeId} oninput=${e => setCanNodeId(parseInt(e.target.value)||1)} style="width:4em;padding:2px 4px" min="1" max="32" /></label>
+              <label style="font-size:.75rem">Speed
+                <select value=${canSpeed} onchange=${e => setCanSpeed(parseInt(e.target.value))} class="styled" style="font-size:.7rem">
+                  <option value="0">125k</option>
+                  <option value="1">250k</option>
+                  <option value="2">500k</option>
+                </select>
+              </label>
+              <label style="font-size:.75rem">RX Pin <input type="number" value=${canRxPin} oninput=${e => setCanRxPin(parseInt(e.target.value)||4)} style="width:4em;padding:2px 4px" /></label>
+              <label style="font-size:.75rem">TX Pin <input type="number" value=${canTxPin} oninput=${e => setCanTxPin(parseInt(e.target.value)||5)} style="width:4em;padding:2px 4px" /></label>
+              <button onclick=${saveCanSettings} style="font-size:.75rem;padding:4px 12px" disabled=${saving}>${saving ? 'Saving...' : 'Save CAN'}</button>
+            </div>
+          `}
         </div>
 
         <div class="dash-box" style="margin-bottom:1rem">

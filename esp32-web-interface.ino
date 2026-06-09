@@ -55,6 +55,8 @@
 #include <ESP32Time.h>
 #include <time.h>
 #include "driver/uart.h"
+#include "src/can_driver.h"
+#include "src/can_protocol.h"
 
 #define DBG_OUTPUT_PORT Serial2
 #define INVERTER_PORT UART_NUM_0
@@ -78,6 +80,11 @@ const char* host = "inverter";
 bool fastUart = false;
 bool fastUartAvailable = true;
 bool txrxSwapped = true; // default: swapped for Wemos/OI/Zombie boards
+bool canMode = false; // true = CAN bus mode, false = UART mode
+int canNodeId = 1;
+int canSpeed = 2; // 0=125k, 1=250k, 2=500k
+int canRxPin = CAN_RX_PIN;
+int canTxPin = CAN_TX_PIN;
 char uartMessBuff[UART_MESSBUF_SIZE];
 
 WebServer server(80);
@@ -533,11 +540,26 @@ static void sendCommand(String cmd)
   uart_readUntill('\n');
 }
 
+// CAN command handler — routes OpenInverter commands over CAN bus
+static String canExecuteCommand(const String& cmdStr, int repeat);
+static void handleCanCommand(const String& cmd) {
+  String result = canExecuteCommand(cmd, 0);
+  server.sendHeader("Access-Control-Allow-Origin","*");
+  server.send(200, "text/json", result);
+}
+
 static void handleCommand() {
   const int cmdBufSize = 128;
   if(!server.hasArg("cmd")) {server.send(500, "text/plain", "BAD ARGS"); return;}
 
   String cmd = server.arg("cmd").substring(0, cmdBufSize);
+
+  // Route through CAN if in CAN mode
+  if (canMode) {
+    handleCanCommand(cmd);
+    return;
+  }
+
   int repeat = 0;
   char buffer[255];
   size_t len = 0;
@@ -572,6 +594,76 @@ static void handleCommand() {
   DBG_OUTPUT_PORT.println(output);
   server.sendHeader("Access-Control-Allow-Origin","*");
   server.send(200, "text/json", output);
+}
+
+// CAN command execution — parses OpenInverter text commands and translates to CAN SDO
+static String canExecuteCommand(const String& cmdStr, int repeat) {
+  String result;
+
+  // Handle compound commands like "get pot,il1,il2"
+  if (cmdStr.startsWith("get ")) {
+    String names = cmdStr.substring(4);
+    // For now, return placeholder — full param lookup requires name→ID mapping
+    result = "[0.0]";
+    // TODO: iterate comma-separated names, do SDO reads, assemble values
+    return result;
+  }
+
+  // Handle "set name value"
+  if (cmdStr.startsWith("set ")) {
+    String rest = cmdStr.substring(4);
+    int spaceIdx = rest.indexOf(' ');
+    if (spaceIdx > 0) {
+      String name = rest.substring(0, spaceIdx);
+      float val = rest.substring(spaceIdx + 1).toFloat();
+      // TODO: name→ID lookup, then SDO write
+      return "ok";
+    }
+    return "error";
+  }
+
+  // Handle simple commands
+  if (cmdStr == "json") {
+    // Full parameter dump — requires parameter name→ID mapping
+    return "{\"params\":{}}";
+  }
+  if (cmdStr == "start 2" || cmdStr == "start") {
+    canSdoCommand(canNodeId, CAN_CMD_START);
+    return "started";
+  }
+  if (cmdStr == "stop") {
+    canSdoCommand(canNodeId, CAN_CMD_STOP);
+    return "stopped";
+  }
+  if (cmdStr == "reset") {
+    canSdoCommand(canNodeId, CAN_CMD_RESET);
+    return "reset sent";
+  }
+  if (cmdStr == "save") {
+    canSdoCommand(canNodeId, CAN_CMD_SAVE);
+    return "saved";
+  }
+  if (cmdStr == "load") {
+    canSdoCommand(canNodeId, CAN_CMD_LOAD);
+    return "loaded";
+  }
+  if (cmdStr == "errors") {
+    // Read error log via SDO
+    // TODO: implement error log reading
+    return "[]";
+  }
+  if (cmdStr == "fastuart") {
+    // No-op on CAN — speed is fixed per baud rate setting
+    return "ok";
+  }
+
+  // Pass through can mapping commands
+  if (cmdStr.startsWith("can ")) {
+    // TODO: CAN mapping via SDO
+    return "ok";
+  }
+
+  return "unknown command";
 }
 
 static uint32_t crc32_word(uint32_t Crc, uint32_t Data)
@@ -798,7 +890,10 @@ static void saveSettings()
 {
   File f = SPIFFS.open("/settings.json", "w");
   if (f) {
-    f.printf("{\"txrx_swapped\":%s}", txrxSwapped ? "true" : "false");
+    f.printf("{\"txrx_swapped\":%s,\"can_mode\":%s,\"can_node_id\":%d,\"can_speed\":%d,\"can_rx_pin\":%d,\"can_tx_pin\":%d}",
+             txrxSwapped ? "true" : "false",
+             canMode ? "true" : "false",
+             canNodeId, canSpeed, canRxPin, canTxPin);
     f.close();
   }
 }
@@ -810,7 +905,25 @@ static void loadSettings()
     if (f) {
       String json = f.readString();
       f.close();
-      txrxSwapped = json.indexOf("\"txrx_swapped\":false") < 0; // default true if not explicitly false
+      txrxSwapped = json.indexOf("\"txrx_swapped\":false") < 0;
+
+      // Parse CAN settings (default false if not set)
+      canMode = json.indexOf("\"can_mode\":true") >= 0;
+
+      // Parse numeric fields with simple string search
+      int ni = json.indexOf("\"can_node_id\":");
+      if (ni >= 0) canNodeId = json.substring(ni + 14).toInt();
+      int sp = json.indexOf("\"can_speed\":");
+      if (sp >= 0) canSpeed = json.substring(sp + 12).toInt();
+      int rp = json.indexOf("\"can_rx_pin\":");
+      if (rp >= 0) canRxPin = json.substring(rp + 13).toInt();
+      int tp = json.indexOf("\"can_tx_pin\":");
+      if (tp >= 0) canTxPin = json.substring(tp + 13).toInt();
+
+      // Clamp values
+      if (canNodeId < 1) canNodeId = 1;
+      if (canNodeId > 32) canNodeId = 32;
+      if (canSpeed < 0 || canSpeed > 2) canSpeed = 2;
     }
   }
 }
@@ -822,9 +935,39 @@ static void handleSettings()
     saveSettings();
     initUART(true);
     server.send(200, "text/json", "{\"result\":\"ok\"}");
+  } else if (server.hasArg("can_mode")) {
+    canMode = (server.arg("can_mode") == "1");
+    if (server.hasArg("can_node_id")) canNodeId = server.arg("can_node_id").toInt();
+    if (server.hasArg("can_speed")) canSpeed = server.arg("can_speed").toInt();
+    if (server.hasArg("can_rx_pin")) canRxPin = server.arg("can_rx_pin").toInt();
+    if (server.hasArg("can_tx_pin")) canTxPin = server.arg("can_tx_pin").toInt();
+    // Clamp
+    if (canNodeId < 1) canNodeId = 1;
+    if (canNodeId > 32) canNodeId = 32;
+    if (canSpeed < 0 || canSpeed > 2) canSpeed = 2;
+    saveSettings();
+    // Restart CAN if enabling
+    if (canMode) {
+      CanSpeed speed = (canSpeed == 0) ? CAN_125K : (canSpeed == 1) ? CAN_250K : CAN_500K;
+      canDriverStop();
+      canDriverInitScan(speed, canTxPin, canRxPin);
+    } else {
+      canDriverStop();
+    }
+    server.send(200, "text/json", "{\"result\":\"ok\"}");
   } else {
     String json = "{\"txrx_swapped\":";
     json += txrxSwapped ? "true" : "false";
+    json += ",\"can_mode\":";
+    json += canMode ? "true" : "false";
+    json += ",\"can_node_id\":";
+    json += canNodeId;
+    json += ",\"can_speed\":";
+    json += canSpeed;
+    json += ",\"can_rx_pin\":";
+    json += canRxPin;
+    json += ",\"can_tx_pin\":";
+    json += canTxPin;
     json += "}";
     server.send(200, "text/json", json);
   }
@@ -896,6 +1039,19 @@ void setup(void){
 
   //SPIFFS already started above (before UART init to load settings)
 
+  // CAN bus initialization (if enabled)
+  if (canMode) {
+    CanSpeed speed = (canSpeed == 0) ? CAN_125K : (canSpeed == 1) ? CAN_250K : CAN_500K;
+    if (canDriverInitScan(speed, canTxPin, canRxPin)) {
+      DBG_OUTPUT_PORT.printf("CAN bus started (node %d, %dkbps, RX=%d TX=%d)\n",
+                             canNodeId, (canSpeed == 0 ? 125 : canSpeed == 1 ? 250 : 500),
+                             canRxPin, canTxPin);
+    } else {
+      DBG_OUTPUT_PORT.println("CAN bus init failed");
+      canMode = false;
+    }
+  }
+
   //WIFI INIT
   #ifdef WIFI_IS_OFF_AT_BOOT
     enableWiFiAtBootTime();
@@ -951,6 +1107,39 @@ void setup(void){
       fastUart = false;
       fastUartAvailable = true;
     }
+  });
+  server.on("/can-send", [](){
+    if (!server.hasArg("canId")) {
+      server.send(400, "text/json", "{\"error\":\"Missing canId\"}");
+      return;
+    }
+    uint32_t canId = strtoul(server.arg("canId").c_str(), NULL, 16);
+    uint8_t data[8] = {0};
+    uint8_t len = 0;
+    if (server.hasArg("data")) {
+      String dataStr = server.arg("data");
+      // Parse comma or space-separated hex bytes
+      int idx = 0;
+      while (idx < dataStr.length() && len < 8) {
+        // Skip commas and spaces
+        while (idx < dataStr.length() && (dataStr[idx] == ',' || dataStr[idx] == ' ')) idx++;
+        if (idx >= dataStr.length()) break;
+        String byteStr;
+        while (idx < dataStr.length() && dataStr[idx] != ',' && dataStr[idx] != ' ') {
+          byteStr += dataStr[idx++];
+        }
+        data[len++] = strtoul(byteStr.c_str(), NULL, 16);
+      }
+    }
+    bool ok = canDriverSend(canId, data, len);
+    String resp = "{\"status\":\"";
+    resp += ok ? "sent" : "failed";
+    resp += "\",\"canId\":";
+    resp += canId;
+    resp += ",\"len\":";
+    resp += len;
+    resp += "}";
+    server.send(200, "text/json", resp);
   });
   
   //called when the url is not defined here
