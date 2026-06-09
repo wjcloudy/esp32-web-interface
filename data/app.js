@@ -128,6 +128,8 @@ const initialState = {
   logging: false,
   canMode: false,
   canNodeId: 1,
+  canDevices: [],
+  canActiveNodeId: 1,
 };
 
 function reducer(state, action) {
@@ -241,6 +243,10 @@ function reducer(state, action) {
       return { ...state, navbarBig: !state.navbarBig };
     case 'SET_CAN_CONFIG':
       return { ...state, canMode: action.payload.canMode, canNodeId: action.payload.canNodeId };
+    case 'SET_CAN_NODE':
+      return { ...state, canActiveNodeId: action.payload };
+    case 'SET_CAN_DEVICES':
+      return { ...state, canDevices: action.payload };
     case 'SET_PARAM_VALUE':
       const np = { ...state.params };
       if (np[action.name]) np[action.name] = { ...np[action.name], value: action.value };
@@ -335,7 +341,22 @@ const Navbar = () => {
         </div>
       `}
       ${state.logging && html`<div style="text-align:center;padding:4px 0 0"><span style="background:var(--accent);color:#fff;padding:2px 8px;border-radius:10px;font-size:.65rem;font-weight:600;letter-spacing:.03em">⚡ FAST</span></div>`}
-      ${state.canMode && html`<div style="text-align:center;padding:4px 0 0"><span style="background:var(--green);color:#fff;padding:2px 8px;border-radius:10px;font-size:.65rem;font-weight:600;letter-spacing:.03em">CAN #${state.canNodeId}</span></div>`}
+      ${state.canMode && html`
+        <div class="control" style="flex-direction:column;align-items:flex-start;gap:2px">
+          <span style="font-size:.65rem;text-transform:uppercase;letter-spacing:.05em">CAN Device</span>
+          <select value=${state.canActiveNodeId} onchange=${e => {
+            const id = parseInt(e.target.value);
+            dispatch({ type: 'SET_CAN_NODE', payload: id });
+            fetch('/set-can-node?id=' + id);
+          }}
+            style="width:100%;font-size:.7rem;padding:4px 6px">
+            ${state.canDevices.length > 0
+              ? state.canDevices.map(d => html`<option value=${d.nodeId}>Node #${d.nodeId}${d.serial ? ' (s/n ' + d.serial + ')' : ''}</option>`)
+              : html`<option value=${state.canNodeId}>Node #${state.canNodeId}</option>`}
+          </select>
+        </div>
+      `}
+      ${state.canMode && html`<div style="text-align:center;padding:4px 0 0"><span style="background:var(--green);color:#fff;padding:2px 8px;border-radius:10px;font-size:.65rem;font-weight:600;letter-spacing:.03em">CAN #${state.canActiveNodeId}</span></div>`}
     </aside>
   `;
 };
@@ -1462,9 +1483,19 @@ const Settings = () => {
             <label style="font-size:.75rem">RX Pin <input type="number" value=${canRxPin} oninput=${e => setCanRxPin(parseInt(e.target.value)||4)} style="width:4em;padding:2px 4px" /></label>
             <label style="font-size:.75rem">TX Pin <input type="number" value=${canTxPin} oninput=${e => setCanTxPin(parseInt(e.target.value)||5)} style="width:4em;padding:2px 4px" /></label>
             <button onclick=${saveCanSettings} style="font-size:.75rem;padding:4px 12px" disabled=${saving}>${saving ? 'Saving...' : 'Save CAN'}</button>
+            <button onclick=${async () => {
+              try {
+                const r = await fetch('/can-scan');
+                const devices = await r.json();
+                dispatch({ type: 'SET_CAN_DEVICES', payload: devices });
+                if (devices.length > 0) {
+                  dispatch({ type: 'SET_CAN_NODE', payload: devices[0].nodeId });
+                }
+              } catch (e) { /* ignore */ }
+            }} style="font-size:.75rem;padding:4px 12px">🔍 Scan Bus</button>
           </div>
           <p style="color:var(--text2);font-size:.8rem;margin:0">
-            Node ID is the CANopen node address (1–32). Pins default to GPIO4 (RX) and GPIO5 (TX).
+            Node ID is the CANopen node address (1–32). Pins default to GPIO4 (RX) and GPIO5 (TX). Click Scan Bus to discover devices.
           </p>
         </div>
         `}
@@ -1939,7 +1970,10 @@ const App = () => {
   // Load CAN settings on mount
   useEffect(() => {
     fetch('/settings').then(r => r.json()).then(data => {
-      dispatch({ type: 'SET_CAN_CONFIG', payload: { canMode: data.can_mode === true, canNodeId: data.can_node_id || 1 } });
+      const mode = data.can_mode === true;
+      const nodeId = data.can_node_id || 1;
+      dispatch({ type: 'SET_CAN_CONFIG', payload: { canMode: mode, canNodeId: nodeId } });
+      if (mode) dispatch({ type: 'SET_CAN_NODE', payload: nodeId });
     }).catch(() => {});
   }, []);
 

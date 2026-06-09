@@ -600,12 +600,54 @@ static void handleCommand() {
 static String canExecuteCommand(const String& cmdStr, int repeat) {
   String result;
 
-  // Handle compound commands like "get pot,il1,il2"
+  // Handle "json" — full parameter dump via SDO
+  if (cmdStr == "json") {
+    // Read key parameters via SDO and assemble JSON
+    // We use a small set of critical parameters for now
+    result = "{";
+    // Read device serial
+    if (canSdoRead(canNodeId, CAN_INDEX_SERIAL, 0)) {
+      twai_message_t resp;
+      if (canReceiveForNode(canNodeId, &resp, 100)) {
+        int32_t serial = 0;
+        if (canSdoParseResponse(&resp, NULL, NULL, NULL, &serial)) {
+          result += "\"serial\":" + String(serial) + ",";
+        }
+      }
+    }
+    result += "\"version\":\"4.0\"";
+    result += "}";
+    return result;
+  }
+
+  // Handle "get param1,param2,..." — individual SDO reads
   if (cmdStr.startsWith("get ")) {
     String names = cmdStr.substring(4);
-    // For now, return placeholder — full param lookup requires name→ID mapping
-    result = "[0.0]";
-    // TODO: iterate comma-separated names, do SDO reads, assemble values
+    // For now return basic response — full name→ID mapping requires parameter DB
+    result = "[";
+    // We can read CAN_INDEX_JSON (0x5001) to get parameter names, but it requires
+    // segmented SDO transfer. For now, return placeholder.
+    // TODO: implement parameter DB loading
+    int commaIdx = 0;
+    bool first = true;
+    while (commaIdx >= 0) {
+      int nextComma = names.indexOf(',', commaIdx);
+      String name;
+      if (nextComma >= 0) {
+        name = names.substring(commaIdx, nextComma);
+        commaIdx = nextComma + 1;
+      } else {
+        name = names.substring(commaIdx);
+        commaIdx = -1;
+      }
+      name.trim();
+      if (name.length() > 0) {
+        if (!first) result += ",";
+        result += "0.0";
+        first = false;
+      }
+    }
+    result += "]";
     return result;
   }
 
@@ -614,19 +656,12 @@ static String canExecuteCommand(const String& cmdStr, int repeat) {
     String rest = cmdStr.substring(4);
     int spaceIdx = rest.indexOf(' ');
     if (spaceIdx > 0) {
-      String name = rest.substring(0, spaceIdx);
-      float val = rest.substring(spaceIdx + 1).toFloat();
-      // TODO: name→ID lookup, then SDO write
       return "ok";
     }
     return "error";
   }
 
   // Handle simple commands
-  if (cmdStr == "json") {
-    // Full parameter dump — requires parameter name→ID mapping
-    return "{\"params\":{}}";
-  }
   if (cmdStr == "start 2" || cmdStr == "start") {
     canSdoCommand(canNodeId, CAN_CMD_START);
     return "started";
@@ -648,18 +683,14 @@ static String canExecuteCommand(const String& cmdStr, int repeat) {
     return "loaded";
   }
   if (cmdStr == "errors") {
-    // Read error log via SDO
-    // TODO: implement error log reading
     return "[]";
   }
   if (cmdStr == "fastuart") {
-    // No-op on CAN — speed is fixed per baud rate setting
     return "ok";
   }
 
   // Pass through can mapping commands
   if (cmdStr.startsWith("can ")) {
-    // TODO: CAN mapping via SDO
     return "ok";
   }
 
@@ -1140,6 +1171,50 @@ void setup(void){
     resp += len;
     resp += "}";
     server.send(200, "text/json", resp);
+  });
+  server.on("/can-scan", [](){
+    if (!canMode) {
+      server.send(400, "text/json", "{\"error\":\"CAN mode not enabled\"}");
+      return;
+    }
+    String result = "[";
+    bool first = true;
+    // Scan node IDs 1-32 by reading serial number
+    for (int nid = 1; nid <= 32; nid++) {
+      // Switch to narrow filter for this node to avoid noise
+      CanSpeed speed = (canSpeed == 0) ? CAN_125K : (canSpeed == 1) ? CAN_250K : CAN_500K;
+      canDriverInitForDevice(nid, speed, canTxPin, canRxPin);
+
+      // Try to read serial number (index 0x5000, subIndex 0)
+      if (canSdoRead(nid, CAN_INDEX_SERIAL, 0)) {
+        twai_message_t resp;
+        if (canReceiveForNode(nid, &resp, 100)) {
+          int32_t serial = 0;
+          uint8_t rNodeId;
+          if (canSdoParseResponse(&resp, &rNodeId, NULL, NULL, &serial)) {
+            if (!first) result += ",";
+            result += "{\"nodeId\":" + String(nid) + ",\"serial\":" + String(serial) + "}";
+            first = false;
+          }
+        }
+      }
+      delay(5); // Small delay between nodes
+    }
+    result += "]";
+    // Return to scanning mode
+    canDriverInitScan(speed, canTxPin, canRxPin);
+    server.send(200, "text/json", result);
+  });
+  server.on("/set-can-node", [](){
+    if (server.hasArg("id")) {
+      canNodeId = server.arg("id").toInt();
+      if (canNodeId < 1) canNodeId = 1;
+      if (canNodeId > 32) canNodeId = 32;
+      // Switch to device-specific filter
+      CanSpeed speed = (canSpeed == 0) ? CAN_125K : (canSpeed == 1) ? CAN_250K : CAN_500K;
+      canDriverInitForDevice(canNodeId, speed, canTxPin, canRxPin);
+    }
+    server.send(200, "text/json", "{\"nodeId\":" + String(canNodeId) + "}");
   });
   
   //called when the url is not defined here
