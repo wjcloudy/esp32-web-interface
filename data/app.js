@@ -133,8 +133,20 @@ function reducer(state, action) {
     case 'SET_PARAMS': {
       const p = action.payload;
       const params = {}, spotValues = {};
-      // Extract dashboard status fields directly
-      const getVal = (name) => p[name] ? (p[name].enums ? p[name].value : p[name].value) : null;
+      // Extract dashboard status fields directly, resolving enums
+      const getVal = (name) => {
+        const v = p[name];
+        if (!v) return null;
+        const enums = parseEnums(v.unit);
+        if (enums && enums[v.value] !== undefined) return enums[v.value];
+        // Bitmask enum (e.g. status, canio)
+        if (enums && v.value > 0) {
+          const active = [];
+          for (const k in enums) if (v.value & parseInt(k)) active.push(enums[k]);
+          if (active.length > 0) return active.join(' | ');
+        }
+        return v.value;
+      };
       const status = getVal('status'); const opmode = getVal('opmode');
       const lasterr = getVal('lasterr'); const udc = getVal('udc'); const tmphs = getVal('tmphs');
       // Version: resolve enum if present (matches original paramsCache.get behavior)
@@ -354,7 +366,10 @@ const Dashboard = () => {
           <div id="bottom-left" class="dash-box">
             <h3>Command</h3>
             <div id="commandoutput">${cmdOutput}</div>
-            <input type="text" id="commandinput" value=${cmd} oninput=${e => setCmd(e.target.value)} onkeyup=${e => e.keyCode === 13 && send()} />
+            <div style="display:flex;gap:6px;margin-top:8px">
+              <input type="text" id="commandinput" value=${cmd} oninput=${e => setCmd(e.target.value)} onkeyup=${e => e.keyCode === 13 && send()} style="flex:1" />
+              <button onclick=${send} style="padding:8px 18px;font-weight:600">Send</button>
+            </div>
           </div>
         </div>
       </div>
@@ -717,19 +732,18 @@ const PlotChart = ({ plot, pushValue, maxValues }) => {
       chartRef.current = new Chart(canvasRef.current, {
         type: 'line', data: { datasets: [] },
         options: {
-          animation: false,
-          parsing: false,
+          animation: false, parsing: false,
+          plugins: { legend: { labels: { boxWidth: 12, font: { size: 11 }, usePointStyle: true } } },
           scales: {
-            x: { type: 'linear', display: true, title: { display: false } },
-            left: { type: 'linear', display: true, position: 'left' },
-            right: { type: 'linear', display: true, position: 'right', grid: { drawOnChartArea: false } }
+            x: { type: 'linear', display: true, ticks: { maxTicksLimit: 6, font: { size: 10 } }, grid: { display: false } },
+            left: { type: 'linear', display: true, position: 'left', ticks: { font: { size: 10 } } },
+            right: { type: 'linear', display: true, position: 'right', grid: { drawOnChartArea: false }, ticks: { font: { size: 10 } } }
           }
         }
       });
     }
   }, []);
 
-  // Rebuild datasets when items change
   useEffect(() => {
     if (!chartRef.current) return;
     const chart = chartRef.current;
@@ -744,13 +758,11 @@ const PlotChart = ({ plot, pushValue, maxValues }) => {
     chart.update('none');
   }, [items]);
 
-  // Push new data point when pushValue fires
   useEffect(() => {
     if (!pushValue || !chartRef.current) return;
     const chart = chartRef.current;
     const active = items.filter(p => p.name);
     if (active.length === 0 || chart.data.datasets.length !== active.length) return;
-
     const t = timeRef.current++;
     active.forEach((p, si) => {
       const val = pushValue(p.name);
@@ -762,7 +774,7 @@ const PlotChart = ({ plot, pushValue, maxValues }) => {
     chart.update('none');
   }, [pushValue]);
 
-  return html`<canvas ref=${canvasRef} width="100%" height="40" style="width:100%;max-height:300px;margin-bottom:1rem"></canvas>`;
+  return html`<div style="margin-bottom:1.5rem"><canvas ref=${canvasRef} width="100%" height="40" style="width:100%;max-height:300px"></canvas></div>`;
 };
 
 // Searchable field picker
@@ -873,36 +885,66 @@ const Plot = () => {
 
   const spotNames = state.spotValues ? Object.keys(state.spotValues) : [];
 
+  const loadPlots = async () => {
+    try {
+      const r = await fetch('/plots.json');
+      if (r.ok) {
+        const data = await r.json();
+        if (data.plots && Array.isArray(data.plots)) {
+          const items = data.plots.map(p => ({ ...p, id: p.id || nextId.current++ }));
+          setPlots(items);
+          setMaxValues(data.maxValues || 500);
+          setBurstLength(data.burstLength || 5);
+          if (items.length > 0) nextId.current = Math.max(...items.map(p => p.id)) + 1;
+        }
+      }
+    } catch (e) { /* ignore */ }
+  };
+
+  const savePlots = async () => {
+    try {
+      const json = JSON.stringify({ plots, maxValues, burstLength });
+      const blob = new Blob([json], { type: 'application/json' });
+      const fd = new FormData();
+      fd.append('updatefile', blob, 'plots.json');
+      await fetch('/edit', { method: 'POST', body: fd });
+    } catch (e) { /* ignore */ }
+  };
+
+  useEffect(() => { loadPlots(); }, []);
+
   return html`
     <div id="plot" class="tabdiv main-content" style="display:flex">
       <div class="main-right">
         <h3 class="underline">Plots</h3>
-        <div style="display:flex;gap:4px;align-items:center;margin-bottom:6px">
-          <label style="font-size:.7rem;white-space:nowrap">Pts:</label>
-          <input type="number" value=${maxValues} oninput=${e => setMaxValues(parseInt(e.target.value)||100)} style="width:4em;font-size:.7rem;padding:2px 4px" />
-          <label style="font-size:.7rem;white-space:nowrap">Burst:</label>
-          <input type="number" value=${burstLength} oninput=${e => setBurstLength(parseInt(e.target.value)||1)} style="width:3em;font-size:.7rem;padding:2px 4px" />
+        <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:8px">
+          <div style="display:flex;gap:6px;align-items:center">
+            <label style="font-size:.8rem;font-weight:500">Points</label>
+            <input type="number" value=${maxValues} oninput=${e => setMaxValues(parseInt(e.target.value)||100)} style="width:5em;font-size:.8rem;padding:4px 6px" />
+            <label style="font-size:.8rem;font-weight:500">Burst</label>
+            <input type="number" value=${burstLength} oninput=${e => setBurstLength(parseInt(e.target.value)||1)} style="width:4em;font-size:.8rem;padding:4px 6px" />
+          </div>
         </div>
-        <button onclick=${togglePlotting} style=${{ background: plotting ? 'var(--red)' : 'var(--green)', color: '#fff', borderColor: 'transparent' }}>
-          ${plotting ? 'Stop' : 'Start'}
+        <button onclick=${togglePlotting} style=${{ background: plotting ? 'var(--red)' : 'var(--green)', color: '#fff', borderColor: 'transparent', fontWeight: 600 }}>
+          ${plotting ? '⏹ Stop' : '▶ Start'}
         </button>
         ${!plotting && html`<button onclick=${addPlot}>+ Add plot</button>`}
-        <p style="font-size:.7rem;color:var(--text2)">All plots share a single data fetch.</p>
+        <button onclick=${savePlots} style="margin-top:4px">Save Layout</button>
 
         ${plots.map(p => html`
-          <div key=${p.id} style="margin-bottom:8px;padding:8px;background:var(--surface2);border-radius:var(--radius-xs);font-size:.7rem">
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
-              <span style="font-weight:600">Plot ${p.id}</span>
-              ${!plotting && html`<span onclick=${() => removePlot(p.id)} style="cursor:pointer;color:var(--red);font-weight:700">×</span>`}
+          <div key=${p.id} style="margin-bottom:8px;padding:8px;background:var(--surface2);border-radius:var(--radius-xs)">
+            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+              <span style="font-weight:600;font-size:.8rem">Plot ${p.id}</span>
+              ${!plotting && html`<span onclick=${() => removePlot(p.id)} style="cursor:pointer;color:var(--red);font-weight:700;font-size:1rem">×</span>`}
             </div>
             ${!plotting && html`
-              <div style="margin-bottom:2px">
-                <button onclick=${() => addItem(p.id)} style="font-size:.7rem;padding:2px 6px;min-width:24px;text-align:center">+</button>
+              <div style="margin-bottom:4px">
+                <button onclick=${() => addItem(p.id)} style="font-size:.7rem;padding:2px 8px">+ Field</button>
               </div>
               ${p.items.map((item, i) => html`
                 <div key=${i} style="display:flex;gap:3px;align-items:center;margin-bottom:2px">
                   <${FieldPicker} value=${item.name} spotNames=${spotNames} onChange=${name => updateItem(p.id, i, 'name', name)} />
-                  <select value=${item.axis || 'left'} onchange=${e => updateItem(p.id, i, 'axis', e.target.value)} style="width:3.5em;font-size:.6rem;padding:1px 2px">
+                  <select value=${item.axis || 'left'} onchange=${e => updateItem(p.id, i, 'axis', e.target.value)} style="width:3.2em;font-size:.65rem;padding:1px 2px;border-radius:var(--radius-xs)">
                     <option value="left">L</option>
                     <option value="right">R</option>
                   </select>
@@ -1235,6 +1277,48 @@ const Support = () => html`
 
 // ==================== Gauges ====================
 
+// Mini line chart for gauge line mode — value passed as prop
+const GaugeLine = ({ name, min, max, value }) => {
+  const canvasRef = useRef(null);
+  const chartRef = useRef(null);
+  const historyRef = useRef([]);
+
+  useEffect(() => {
+    if (canvasRef.current && !chartRef.current && typeof Chart !== 'undefined') {
+      chartRef.current = new Chart(canvasRef.current, {
+        type: 'line', data: { datasets: [{ label: name, data: [], borderColor: colours[0], backgroundColor: colours[0] + '22', fill: true, pointRadius: 0, tension: 0.3 }] },
+        options: {
+          animation: false, parsing: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { type: 'linear', display: true, ticks: { maxTicksLimit: 4, font: { size: 9 } }, grid: { display: false } },
+            y: { type: 'linear', display: true, min: min || 0, max: max || 100, ticks: { font: { size: 9 } } }
+          }
+        }
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (value == null || isNaN(value) || !chartRef.current) return;
+    const chart = chartRef.current;
+    const ds = chart.data.datasets[0];
+    if (!ds) return;
+    const t = historyRef.current.length;
+    historyRef.current.push({ x: t, y: value });
+    if (historyRef.current.length > 200) historyRef.current.shift();
+    ds.data = [...historyRef.current];
+    chart.update('none');
+  }, [value]);
+
+  return html`
+    <div style="width:280px">
+      <div style="font-size:2rem;font-weight:700;color:var(--accent);line-height:1.2">${value != null ? value.toFixed(1) : '—'}</div>
+      <canvas ref=${canvasRef} width="280" height="130" style="width:280px;height:130px"></canvas>
+    </div>
+  `;
+};
+
 // Resolve a CSS variable to its computed color, with fallback
 function getCSSColor(varname, fallback) {
   try {
@@ -1248,6 +1332,7 @@ const gaugeId = (id) => 'gauge-' + id;
 const Gauges = () => {
   const { state, dispatch } = useContext(Store);
   const [gaugeItems, setGaugeItems] = useState([]);
+  const [lineVals, setLineVals] = useState({});
   const gaugeRefs = useRef({});
   const createdRef = useRef({});
   const fetchRef = useRef(null);
@@ -1267,10 +1352,10 @@ const Gauges = () => {
           const data = await r.json();
           if (data.items && Array.isArray(data.items)) {
             const items = data.items.map(g => {
-              if (typeof g === 'string') return { id: nextId.current++, name: g, min: 0, max: 100 };
-              if (!g.id) return { id: nextId.current++, ...g };
+              if (typeof g === 'string') return { id: nextId.current++, name: g, min: 0, max: 100, type: 'radial' };
+              if (!g.id) return { id: nextId.current++, ...g, type: g.type || 'radial' };
               if (g.id >= nextId.current) nextId.current = g.id + 1;
-              return g;
+              return { ...g, type: g.type || 'radial' };
             });
             setGaugeItems(items);
           }
@@ -1301,27 +1386,17 @@ const Gauges = () => {
   };
 
   const addGauge = () => {
-    const updated = [...gaugeItems, { id: nextId.current++, name: '', min: 0, max: 100 }];
-    setGaugeItems(updated);
-    saveLayout(updated);
+    setGaugeItems([...gaugeItems, { id: nextId.current++, name: '', min: 0, max: 100, type: 'radial' }]);
   };
 
   const removeGauge = (id) => {
-    const updated = gaugeItems.filter(g => g.id !== id);
+    setGaugeItems(gaugeItems.filter(g => g.id !== id));
     if (gaugeRefs.current[id]) { gaugeRefs.current[id] = null; }
     delete createdRef.current[id];
-    setGaugeItems(updated);
-    saveLayout(updated);
   };
 
   const updateGaugeConfig = (id, field, value) => {
-    const updated = gaugeItems.map(g => {
-      if (g.id !== id) return g;
-      return { ...g, [field]: value };
-    });
-    setGaugeItems(updated);
-    clearTimeout(updateGaugeConfig._timer);
-    updateGaugeConfig._timer = setTimeout(() => saveLayout(updated), 600);
+    setGaugeItems(gaugeItems.map(g => g.id !== id ? g : { ...g, [field]: value }));
   };
 
   // Helper to get spot value for a name (from params or spotValues)
@@ -1424,10 +1499,14 @@ const Gauges = () => {
         if (!active) return;
         const vals = text.match(/[\-\d\.]+/g) || [];
         gaugeItems.forEach((g, i) => {
-          const gauge = gaugeRefs.current[g.id];
-          if (!gauge) return;
           const val = parseFloat(vals[i]);
-          if (!isNaN(val)) gauge.value = val;
+          if (isNaN(val)) return;
+          if (g.type === 'line') {
+            setLineVals(prev => ({ ...prev, [g.id]: val }));
+          } else {
+            const gauge = gaugeRefs.current[g.id];
+            if (gauge) gauge.value = val;
+          }
         });
       } catch (e) { /* ignore */ }
       // Schedule next fetch — respects actual response time to avoid pileup
@@ -1483,6 +1562,7 @@ const Gauges = () => {
       <div class="main-right">
         <h3 class="underline">Gauges</h3>
         <button onclick=${addGauge}>+ Add Gauge</button>
+        <button onclick=${() => saveLayout(gaugeItems)} style="margin-top:4px">Save Layout</button>
         ${gaugeItems.length > 0 && html`
           <h3>Active (${gaugeItems.length})</h3>
           ${gaugeItems.map(g => html`
@@ -1491,7 +1571,11 @@ const Gauges = () => {
                 <${FieldPicker} value=${g.name} spotNames=${spotNames} onChange=${name => updateGaugeConfig(g.id, 'name', name)} />
                 <span onclick=${() => removeGauge(g.id)} style="cursor:pointer;color:var(--red);font-weight:700;padding:0 4px" title="Remove">×</span>
               </div>
-              <div style="display:flex;gap:4px;align-items:center">
+              <div style="display:flex;gap:4px;align-items:center;margin-bottom:3px">
+                <select value=${g.type || 'radial'} onchange=${e => updateGaugeConfig(g.id, 'type', e.target.value)} style="font-size:.65rem;padding:1px 3px;width:5em">
+                  <option value="radial">Radial</option>
+                  <option value="line">Line</option>
+                </select>
                 <label style="white-space:nowrap;font-size:.7rem">Min</label>
                 <input type="number" value=${g.min} oninput=${e => updateGaugeConfig(g.id, 'min', parseFloat(e.target.value) || 0)}
                   style="width:100%;padding:2px 4px;font-size:.7rem" step="any" />
@@ -1509,7 +1593,10 @@ const Gauges = () => {
           ${gaugeItems.map(g => html`
             <div class="gauge-wrapper" style="text-align:center" key="${g.id}">
               <div style="font-weight:600;font-size:.9rem;margin-bottom:4px">${g.name || '—'}</div>
-              <canvas id="${gaugeId(g.id)}" width="250" height="250"></canvas>
+              ${(g.type === 'line')
+                ? html`<${GaugeLine} name=${g.name} min=${g.min} max=${g.max} value=${lineVals[g.id]} /></div>`
+                : html`<canvas id="${gaugeId(g.id)}" width="250" height="250"></canvas></div>`
+              }
             </div>
           `)}
         </div>

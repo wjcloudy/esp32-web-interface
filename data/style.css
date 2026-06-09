@@ -204,7 +204,7 @@ tbody tr:hover { background: var(--surface3); }
 
 /* ===== COMMAND ===== */
 #commandoutput {
-  flex: 1; min-height: 0; overflow-y: auto;
+  flex: 1; min-height: 120px; max-height: 400px; overflow-y: auto;
   padding: 10px 12px; margin-bottom: 8px;
   background: var(--bg); border-radius: var(--radius-xs);
   font-family: var(--mono); font-size: .82rem; line-height: 1.6; white-space: pre-wrap;
