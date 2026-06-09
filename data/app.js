@@ -1442,6 +1442,20 @@ const Settings = () => {
               <span class="slider"></span>
             </label>
             <span style="font-weight:600">${canMode ? 'CAN Bus' : 'UART (Serial)'}</span>
+            <button onclick=${async () => {
+              setSaving(true);
+              try {
+                const params = new URLSearchParams();
+                params.set('can_mode', canMode ? '1' : '0');
+                params.set('can_node_id', canNodeId);
+                params.set('can_speed', canSpeed);
+                params.set('can_rx_pin', canRxPin);
+                params.set('can_tx_pin', canTxPin);
+                await fetch('/settings?' + params.toString(), { method: 'POST' });
+                dispatch({ type: 'SET_CAN_CONFIG', payload: { canMode, canNodeId } });
+                setTimeout(() => setSaving(false), 2000);
+              } catch (e) { setSaving(false); }
+            }} style="font-size:.75rem;padding:4px 12px;margin-left:auto" disabled=${saving}>${saving ? 'Saving...' : 'Save'}</button>
           </div>
           <p style="color:var(--text2);font-size:.8rem;margin:0">
             ${canMode
