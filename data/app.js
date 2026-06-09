@@ -126,6 +126,8 @@ const initialState = {
   fps: 0,
   rightPanelOpen: true,
   logging: false,
+  canMode: false,
+  canNodeId: 1,
 };
 
 function reducer(state, action) {
@@ -237,6 +239,8 @@ function reducer(state, action) {
 
     case 'TOGGLE_NAVBAR':
       return { ...state, navbarBig: !state.navbarBig };
+    case 'SET_CAN_CONFIG':
+      return { ...state, canMode: action.payload.canMode, canNodeId: action.payload.canNodeId };
     case 'SET_PARAM_VALUE':
       const np = { ...state.params };
       if (np[action.name]) np[action.name] = { ...np[action.name], value: action.value };
@@ -331,6 +335,7 @@ const Navbar = () => {
         </div>
       `}
       ${state.logging && html`<div style="text-align:center;padding:4px 0 0"><span style="background:var(--accent);color:#fff;padding:2px 8px;border-radius:10px;font-size:.65rem;font-weight:600;letter-spacing:.03em">⚡ FAST</span></div>`}
+      ${state.canMode && html`<div style="text-align:center;padding:4px 0 0"><span style="background:var(--green);color:#fff;padding:2px 8px;border-radius:10px;font-size:.65rem;font-weight:600;letter-spacing:.03em">CAN #${state.canNodeId}</span></div>`}
     </aside>
   `;
 };
@@ -361,8 +366,10 @@ const Dashboard = () => {
         <h3 class="underline">Reset</h3>
         <button onclick=${() => setConfirmAction('inverter')}>Reboot Inverter</button>
         <button onclick=${() => setConfirmAction('esp32')}>Reboot ESP32</button>
+        ${state.canMode && html`
         <h3 class="underline">CAN Message</h3>
         <div style="display:flex;flex-direction:column;gap:4px">
+          <label style="font-size:.7rem;color:var(--text2)">Target: Node #${state.canNodeId} — change in Settings</label>
           <label style="font-size:.75rem">CAN ID (hex)</label>
           <input type="text" value=${canId} oninput=${e => setCanId(e.target.value)} style="font-size:.75rem;padding:4px 6px;font-family:var(--mono)" />
           <label style="font-size:.75rem">Data bytes (hex, space/comma separated)</label>
@@ -373,6 +380,7 @@ const Dashboard = () => {
             setCmdOutput(o => o + 'CAN: ' + JSON.stringify(json) + '\n');
           }} style="font-size:.75rem;padding:4px 10px">Send CAN Message</button>
         </div>
+        `}
       </div>
       <div class="main-left">
         <h2>Dashboard</h2>
@@ -1302,6 +1310,7 @@ function setTheme(theme) {
 })();
 
 const Settings = () => {
+  const { state, dispatch } = useContext(Store);
   const [txrxSwapped, setTxrxSwapped] = useState(true);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -1369,6 +1378,7 @@ const Settings = () => {
       params.set('can_rx_pin', canRxPin);
       params.set('can_tx_pin', canTxPin);
       await fetch('/settings?' + params.toString(), { method: 'POST' });
+      dispatch({ type: 'SET_CAN_CONFIG', payload: { canMode, canNodeId } });
       setTimeout(() => setSaving(false), 2000);
     } catch (e) { setSaving(false); }
   };
@@ -1404,6 +1414,23 @@ const Settings = () => {
         </div>
 
         <div class="dash-box" style="margin-bottom:1rem">
+          <h3>Interface Mode</h3>
+          <div style="display:flex;align-items:center;gap:12px;margin-bottom:.5rem">
+            <label class="switch">
+              <input type="checkbox" checked=${canMode} onchange=${e => setCanMode(e.target.checked)} />
+              <span class="slider"></span>
+            </label>
+            <span style="font-weight:600">${canMode ? 'CAN Bus' : 'UART (Serial)'}</span>
+          </div>
+          <p style="color:var(--text2);font-size:.8rem;margin:0">
+            ${canMode
+              ? 'Commands route through the CAN bus using the TWAI controller. Configure pins below and save.'
+              : 'Commands route through UART serial to the inverter.'}
+          </p>
+        </div>
+
+        ${!canMode && html`
+        <div class="dash-box" style="margin-bottom:1rem">
           <h3>UART Configuration</h3>
           <div style="display:flex;align-items:center;gap:12px;margin-bottom:.5rem">
             <label class="switch">
@@ -1418,37 +1445,29 @@ const Settings = () => {
             ${txrxSwapped ? 'Currently using TX=3, RX=1 (swapped).' : 'Currently using TX=1, RX=3 (normal).'}
           </p>
         </div>
+        `}
 
+        ${canMode && html`
         <div class="dash-box" style="margin-bottom:1rem">
-          <h3>Interface Mode</h3>
-          <div style="display:flex;align-items:center;gap:12px;margin-bottom:.5rem">
-            <label class="switch">
-              <input type="checkbox" checked=${canMode} onchange=${e => setCanMode(e.target.checked)} />
-              <span class="slider"></span>
+          <h3>CAN Configuration</h3>
+          <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:.5rem;align-items:center">
+            <label style="font-size:.75rem">Node ID <input type="number" value=${canNodeId} oninput=${e => setCanNodeId(parseInt(e.target.value)||1)} style="width:4em;padding:2px 4px" min="1" max="32" /></label>
+            <label style="font-size:.75rem">Speed
+              <select value=${canSpeed} onchange=${e => setCanSpeed(parseInt(e.target.value))} class="styled" style="font-size:.7rem">
+                <option value="0">125k</option>
+                <option value="1">250k</option>
+                <option value="2">500k</option>
+              </select>
             </label>
-            <span style="font-weight:600">${canMode ? 'CAN Bus' : 'UART (Serial)'}</span>
+            <label style="font-size:.75rem">RX Pin <input type="number" value=${canRxPin} oninput=${e => setCanRxPin(parseInt(e.target.value)||4)} style="width:4em;padding:2px 4px" /></label>
+            <label style="font-size:.75rem">TX Pin <input type="number" value=${canTxPin} oninput=${e => setCanTxPin(parseInt(e.target.value)||5)} style="width:4em;padding:2px 4px" /></label>
+            <button onclick=${saveCanSettings} style="font-size:.75rem;padding:4px 12px" disabled=${saving}>${saving ? 'Saving...' : 'Save CAN'}</button>
           </div>
           <p style="color:var(--text2);font-size:.8rem;margin:0">
-            ${canMode
-              ? 'Commands route through the CAN bus using the TWAI controller. UART is disabled.'
-              : 'Commands route through UART serial to the inverter. CAN is disabled.'}
+            Node ID is the CANopen node address (1–32). Pins default to GPIO4 (RX) and GPIO5 (TX).
           </p>
-          ${canMode && html`
-            <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:.5rem;align-items:center">
-              <label style="font-size:.75rem">Node ID <input type="number" value=${canNodeId} oninput=${e => setCanNodeId(parseInt(e.target.value)||1)} style="width:4em;padding:2px 4px" min="1" max="32" /></label>
-              <label style="font-size:.75rem">Speed
-                <select value=${canSpeed} onchange=${e => setCanSpeed(parseInt(e.target.value))} class="styled" style="font-size:.7rem">
-                  <option value="0">125k</option>
-                  <option value="1">250k</option>
-                  <option value="2">500k</option>
-                </select>
-              </label>
-              <label style="font-size:.75rem">RX Pin <input type="number" value=${canRxPin} oninput=${e => setCanRxPin(parseInt(e.target.value)||4)} style="width:4em;padding:2px 4px" /></label>
-              <label style="font-size:.75rem">TX Pin <input type="number" value=${canTxPin} oninput=${e => setCanTxPin(parseInt(e.target.value)||5)} style="width:4em;padding:2px 4px" /></label>
-              <button onclick=${saveCanSettings} style="font-size:.75rem;padding:4px 12px" disabled=${saving}>${saving ? 'Saving...' : 'Save CAN'}</button>
-            </div>
-          `}
         </div>
+        `}
 
         <div class="dash-box" style="margin-bottom:1rem">
           <h3>WiFi Access Point</h3>
@@ -1916,6 +1935,13 @@ function calcTicks(min, max) {
 const App = () => {
   const [state, dispatch] = useReducer(reducer, initialState);
   const store = useMemo(() => ({ state, dispatch }), [state]);
+
+  // Load CAN settings on mount
+  useEffect(() => {
+    fetch('/settings').then(r => r.json()).then(data => {
+      dispatch({ type: 'SET_CAN_CONFIG', payload: { canMode: data.can_mode === true, canNodeId: data.can_node_id || 1 } });
+    }).catch(() => {});
+  }, []);
 
   // Unified data fetching — respects refreshRate setting
   useEffect(() => {
