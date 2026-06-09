@@ -879,8 +879,8 @@ void setup(void){
       vTaskDelete(NULL);
     }, "sdinit", 4096, &sdDone, 1, &sdTask);
     
-    // Wait up to 3 seconds for SD card init
-    for (int i = 0; i < 30 && !sdDone; i++) {
+    // Wait up to 1 second for SD card init
+    for (int i = 0; i < 10 && !sdDone; i++) {
       delay(100);
     }
     if (sdTask) vTaskDelete(sdTask);
