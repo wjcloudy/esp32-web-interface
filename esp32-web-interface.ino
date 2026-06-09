@@ -1321,10 +1321,10 @@ void setup(void){
     }
     String result = "[";
     bool first = true;
+    CanSpeed speed = (canSpeed == 0) ? CAN_125K : (canSpeed == 1) ? CAN_250K : CAN_500K;
     // Scan node IDs 1-32 by reading serial number
     for (int nid = 1; nid <= 32; nid++) {
       // Switch to narrow filter for this node to avoid noise
-      CanSpeed speed = (canSpeed == 0) ? CAN_125K : (canSpeed == 1) ? CAN_250K : CAN_500K;
       canDriverInitForDevice(nid, speed, canTxPin, canRxPin);
 
       // Try to read serial number (index 0x5000, subIndex 0)
