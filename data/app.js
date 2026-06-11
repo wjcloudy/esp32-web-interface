@@ -13,7 +13,7 @@ const api = {
   async getJSON(cmd) {
     if (this._pending[cmd]) return this._pending[cmd];
     this._pending[cmd] = fetch('/cmd?cmd=' + encodeURIComponent(cmd))
-      .then(r => r.json())
+      .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
       .then(data => { this._pending[cmd] = null; return data; })
       .catch(e => { this._pending[cmd] = null; throw e; });
     return this._pending[cmd];
@@ -37,11 +37,13 @@ const api = {
     let url = '/cmd?cmd=' + encodeURIComponent(cmd);
     if (repeat) url += '&repeat=' + repeat;
     const r = await fetch(url);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
     return r.text();
   },
 
   async uploadFile(formData) {
     const r = await fetch('/edit', { method: 'POST', body: formData });
+    if (!r.ok) throw new Error('Upload failed (HTTP ' + r.status + ')');
     return r.text();
   },
 
@@ -1824,7 +1826,10 @@ const Gauges = () => {
   const getValue = useCallback((name) => {
     if (!state.spotValues) return null;
     const sv = state.spotValues[name];
-    if (sv) return { value: parseFloat(sv.value), unit: sv.unit || '' };
+    if (sv) {
+      const v = parseFloat(sv.value);
+      return { value: isNaN(v) ? null : v, unit: sv.unit || '' };
+    }
     if (state.params && state.params[name]) {
       const pv = parseFloat(state.params[name].value);
       return { value: isNaN(pv) ? null : pv, unit: state.params[name].unit || '' };
@@ -1845,7 +1850,7 @@ const Gauges = () => {
         if (createdRef.current[g.id]) return;
 
         const valInfo = getValue(g.name);
-        const val = valInfo ? valInfo.value : 0;
+        const val = (valInfo && valInfo.value != null) ? valInfo.value : 0;
         const min = (g.min != null && g.min !== 0) ? g.min : 0;
         const max = (g.max != null && g.max !== 100) ? g.max : Math.max(100, Math.ceil(val * 1.2));
 

@@ -594,8 +594,8 @@ void handleSdCardList() {
 
 void handleFileList() {
   String path = "/";
-  if(server.hasArg("dir")) 
-    String path = server.arg("dir");
+  if(server.hasArg("dir"))
+    path = server.arg("dir");
   //DBG_OUTPUT_PORT.println("handleFileList: " + path);
   File root = SPIFFS.open(path);
   String output = "[";
@@ -910,7 +910,7 @@ static String canExecuteCommand(const String& cmdStr, int repeat) {
     return "stopped";
   }
   if (cmdStr == "reset") {
-    canSdoCommand(canNodeId, CAN_CMD_RESET);
+    canSdoWrite(canNodeId, CAN_INDEX_COMMANDS, CAN_CMD_RESET, 1);
     return "reset sent";
   }
   if (cmdStr == "save") {
@@ -1705,6 +1705,11 @@ void setup(void){
   server.on("/reboot", [](){ server.send(200, "text/plain", "Rebooting..."); ESP.restart(); });
   server.on("/reset-inverter", [](){
     server.send(200, "text/plain", "Inverter reset sent");
+    if (canMode) {
+      // SDO reset command (same as the firmware update flow uses)
+      canSdoWrite(canNodeId, CAN_INDEX_COMMANDS, CAN_CMD_RESET, 1);
+      return;
+    }
     sendCommand("reset");
     // Reset UART state so baud rate renegotiates after inverter reboot
     if (fastUart) {
