@@ -75,6 +75,11 @@ bool canDriverInitForDevice(uint8_t nodeId, CanSpeed speed, int txPin, int rxPin
   return configureTwai(speed, txPin, rxPin, &filter);
 }
 
+bool canDriverInitAcceptAll(CanSpeed speed, int txPin, int rxPin) {
+  twai_filter_config_t filter = TWAI_FILTER_CONFIG_ACCEPT_ALL();
+  return configureTwai(speed, txPin, rxPin, &filter);
+}
+
 void canDriverStop() {
   if (driverInstalled) {
     twai_stop();

@@ -31,6 +31,9 @@ bool canDriverInitScan(CanSpeed speed, int txPin, int rxPin);
 // Initialize CAN bus for a specific device (narrow filter on node ID)
 bool canDriverInitForDevice(uint8_t nodeId, CanSpeed speed, int txPin, int rxPin);
 
+// Initialize CAN bus accepting all frames (diagnostics/sniffing)
+bool canDriverInitAcceptAll(CanSpeed speed, int txPin, int rxPin);
+
 // Stop and uninstall CAN driver
 void canDriverStop();
 

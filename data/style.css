@@ -237,9 +237,14 @@ tbody tr:hover { background: var(--surface3); }
 #upload-firmware-bar, #bar {
   height: 100%; border-radius: 13px; transition: width .3s ease;
   background: linear-gradient(90deg, var(--accent2), var(--accent));
-  display: flex; align-items: center; justify-content: center;
 }
-#upload-firmware-bar p, #bar p { font-size: .75rem; font-weight: 600; color: #fff; margin: 0; }
+#progress-label {
+  position: absolute; inset: 0; margin: 0;
+  display: flex; align-items: center; justify-content: center;
+  font-size: .75rem; font-weight: 600; color: var(--text);
+  text-shadow: 0 1px 2px rgba(0,0,0,.25);
+}
+#progress-msg { font-size: .7rem; color: var(--text2); margin: 4px 0 0; text-align: center; }
 
 /* ===== ERROR ===== */
 .communication-error-bar {

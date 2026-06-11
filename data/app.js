@@ -66,7 +66,9 @@ const api = {
 
   async runUpdateStep(step, file) {
     const r = await fetch('/fwupdate?step=' + step + '&file=' + encodeURIComponent(file));
-    return r.json();
+    const json = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(json.message || 'Update step failed (HTTP ' + r.status + ')');
+    return json;
   },
 
   async loadFavorites() {
@@ -758,7 +760,7 @@ const SpotValues = () => {
 // ==================== Update ====================
 
 const Update = () => {
-  const { state } = useContext(Store);
+  const { state, dispatch } = useContext(Store);
   const [updating, setUpdating] = useState(false);
   const [progress, setProgress] = useState(0);
   const [updateMsg, setUpdateMsg] = useState('');
@@ -772,23 +774,29 @@ const Update = () => {
     if (!file) return;
     if (!file.name.endsWith('.bin')) { alert('Use .bin file'); return; }
     setUpdating(true); setProgress(0); setUpdateMsg('Uploading...');
+    // Pause json polling — its UART/CAN traffic would corrupt the bootloader transfer
+    dispatch({ type: 'SET_LOGGING', payload: true });
     const fd = new FormData();
     fd.append('update-firmware-file', file);
     await api.uploadFile(fd);
+    if (fileRef.current) fileRef.current.value = ''; // allow re-selecting the same file
     setUpdateMsg('Installing firmware...');
     const doStep = async (step) => {
       try {
         const result = await api.runUpdateStep(step, '/' + file.name);
+        if (!(result.pages > 0)) throw new Error(result.message || 'Device reported no page count');
         const pct = Math.round(100 * (step + 1) / result.pages);
         setProgress(pct);
         if (step + 1 < result.pages) setTimeout(() => doStep(step + 1), 50);
         else {
           setUpdateMsg('Update Done!');
           api.deleteFile('/' + file.name);
+          dispatch({ type: 'SET_LOGGING', payload: false });
           setTimeout(() => setUpdating(false), 3000);
         }
       } catch (e) {
         setUpdateMsg('Error: ' + e.message);
+        dispatch({ type: 'SET_LOGGING', payload: false });
       }
     };
     doStep(-1);
@@ -817,14 +825,27 @@ const Update = () => {
       await api.uploadFile(fd);
       setOtaMsg('Flashing...');
       setUpdating(true); setProgress(0); setUpdateMsg('Installing...');
+      // Pause json polling — its UART/CAN traffic would corrupt the bootloader transfer
+      dispatch({ type: 'SET_LOGGING', payload: true });
       const doStep = async (step) => {
-        const result = await api.runUpdateStep(step, '/stm32.bin');
-        setProgress(Math.round(100 * (step + 1) / result.pages));
-        if (step + 1 < result.pages) setTimeout(() => doStep(step + 1), 50);
-        else { setUpdateMsg('Done!'); api.deleteFile('/stm32.bin'); setTimeout(() => setUpdating(false), 3000); }
+        try {
+          const result = await api.runUpdateStep(step, '/stm32.bin');
+          if (!(result.pages > 0)) throw new Error(result.message || 'Device reported no page count');
+          setProgress(Math.round(100 * (step + 1) / result.pages));
+          if (step + 1 < result.pages) setTimeout(() => doStep(step + 1), 50);
+          else {
+            setUpdateMsg('Done!');
+            api.deleteFile('/stm32.bin');
+            dispatch({ type: 'SET_LOGGING', payload: false });
+            setTimeout(() => setUpdating(false), 3000);
+          }
+        } catch (e) {
+          setUpdateMsg('Error: ' + e.message);
+          dispatch({ type: 'SET_LOGGING', payload: false });
+        }
       };
       doStep(-1);
-    } catch (e) { setOtaMsg('Error: ' + e.message); }
+    } catch (e) { setOtaMsg('Error: ' + e.message); dispatch({ type: 'SET_LOGGING', payload: false }); }
   };
 
   const uploadWebFile = async () => {
@@ -833,6 +854,7 @@ const Update = () => {
     const fd = new FormData();
     fd.append('updatefile', file);
     await api.uploadFile(fd);
+    if (webFileRef.current) webFileRef.current.value = '';
     alert('File uploaded');
     dispatch({ type: 'SET_FILE_LIST', payload: await api.getFileList() });
   };
@@ -842,9 +864,8 @@ const Update = () => {
       <div class="main-right">
         <h3 class="underline">Firmware</h3>
         <form id="upload-firmware-form" enctype="multipart/form-data">
-          <input id="update-firmware-file" name="update-firmware-file" type="file" ref=${fileRef} hidden />
-          <label class="butt" for="update-firmware-file" onclick=${() => fileRef.current?.click()}>Install firmware from file</label>
-          <button onclick=${installFirmware} style="display:none" id="firmware-go"></button>
+          <input id="update-firmware-file" name="update-firmware-file" type="file" accept=".bin" ref=${fileRef} hidden onchange=${installFirmware} />
+          <label class="butt" for="update-firmware-file">Install firmware from file</label>
         </form>
         <div>
           <button onclick=${loadReleases}>Load OTA releases</button>
@@ -858,16 +879,15 @@ const Update = () => {
         </div>
         <h3 class="underline">Web Interface</h3>
         <form id="uploadform" enctype="multipart/form-data">
-          <input id="updatefile" name="updatefile" type="file" ref=${webFileRef} hidden />
-          <label class="butt" for="updatefile" onclick=${() => webFileRef.current?.click()}>Upload file</label>
-          <button onclick=${uploadWebFile} style="display:none"></button>
+          <input id="updatefile" name="updatefile" type="file" ref=${webFileRef} hidden onchange=${uploadWebFile} />
+          <label class="butt" for="updatefile">Upload file</label>
         </form>
         ${updating && html`
           <div id="progress" class="graph">
-            <div id="upload-firmware-bar" style=${{ width: progress + '%' }}>
-              <p>${progress}% ${updateMsg}</p>
-            </div>
+            <div id="upload-firmware-bar" style=${{ width: progress + '%' }}></div>
+            <p id="progress-label">${progress}%</p>
           </div>
+          <p id="progress-msg">${updateMsg}</p>
         `}
       </div>
       <div class="main-left">

@@ -420,21 +420,18 @@ bool handleFileRead(String path){
   if (qs >= 0) path = path.substring(0, qs);
   if(path.endsWith("/")) path += "index.html";
   String contentType = getContentType(path);
+  // Decide cacheability from the requested path (before the .gz fallback):
+  // long-cache images/fonts, always revalidate code so UI updates take effect
+  bool longCache = path.endsWith(".png") || path.endsWith(".gif") ||
+                   path.endsWith(".jpg") || path.endsWith(".ico") ||
+                   path.endsWith(".woff2") || path.endsWith(".svg");
   String pathWithGz = path + ".gz";
   if(SPIFFS.exists(pathWithGz) || SPIFFS.exists(path)){
     if(SPIFFS.exists(pathWithGz))
       path += ".gz";
     File file = SPIFFS.open(path, "r");
 
-    // Set Cache-Control for static assets to reduce ESP32 load
-    if (path.endsWith(".css") || path.endsWith(".js") ||
-        path.endsWith(".png") || path.endsWith(".gif") ||
-        path.endsWith(".jpg") || path.endsWith(".ico") ||
-        path.endsWith(".woff2") || path.endsWith(".svg")) {
-      server.sendHeader("Cache-Control", "public, max-age=3600");
-    } else {
-      server.sendHeader("Cache-Control", "no-cache");
-    }
+    server.sendHeader("Cache-Control", longCache ? "public, max-age=86400" : "no-cache");
 
     size_t sent = server.streamFile(file, contentType);
     file.close();
@@ -1008,89 +1005,163 @@ static uint32_t crc32(uint32_t* data, uint32_t len, uint32_t crc)
 }
 
 
-// CAN bootloader firmware update
-// Protocol: CAN ID 0x7DD = command, 0x7DE = response
-// Command bytes: byte0: cmd (0=enter, 1=erase, 2=write, 3=verify, 4=run)
-// Write: byte1-2: pageNum (LE), byte3-7: data (first 5 of 1024)
-// Remaining 1019 bytes sent as subsequent 8-byte frames
+// Wait for a frame from the CAN bootloader (0x7DE), skipping other traffic
+static bool canWaitBootFrame(twai_message_t* f, uint32_t timeoutMs)
+{
+  uint32_t start = millis();
+  while (millis() - start < timeoutMs) {
+    if (canDriverReceive(f) && f->identifier == CAN_BOOTLOADER_RESP) return true;
+    delay(1);
+  }
+  return false;
+}
+
+// Send the next 8 bytes of the firmware file (0xFF padded) and fold them
+// into the running page CRC (STM32 hardware CRC32, two words per chunk)
+static void canSendBootChunk(File& file, size_t pos, size_t fileSize, uint32_t* crc)
+{
+  uint8_t buf[8];
+  size_t n = 0;
+  if (pos < fileSize) {
+    file.seek(pos);
+    n = file.read(buf, 8);
+  }
+  while (n < 8) buf[n++] = 0xFF;
+  *crc = crc32_word(*crc, *(uint32_t*)&buf[0]);
+  *crc = crc32_word(*crc, *(uint32_t*)&buf[4]);
+  canDriverSend(CAN_BOOTLOADER_CMD, buf, 8);
+}
+
+// CAN bootloader firmware update — OpenInverter CAN bootloader protocol.
+// The bootloader drives the transfer over 0x7DE; the host answers on 0x7DD:
+//   0x33 magic after reset -> reflect device ID to enter update mode
+//   'S' -> send page count (1 byte)
+//   'P' -> send next 8 bytes of page data
+//   'C' -> send page CRC32; reply 'P' = ok (and requests next page's data),
+//          'E' = CRC error (resend page), 'D' = done
+// Mapped to HTTP steps: -1 = reset + handshake (consumes the first 'P'),
+// 0..pages-1 = transfer one 1KB page each.
 static void handleCanFwUpdate()
 {
   if (!canMode) { server.send(400, "text/plain", "CAN mode required"); return; }
   if(!server.hasArg("step") || !server.hasArg("file")) { server.send(500, "text/plain", "BAD ARGS"); return; }
 
+  const size_t PAGE_SIZE = 1024;
   int step = server.arg("step").toInt();
   File file = SPIFFS.open(server.arg("file"), "r");
   if (!file) { server.send(500, "text/json", "{\"message\":\"Failed to open file\"}"); return; }
 
   size_t fileSize = file.size();
-  size_t PAGE_SIZE = 1024;
-  uint16_t pages = (fileSize + PAGE_SIZE - 1) / PAGE_SIZE;
-  String message;
-
-  if (step == -1) {
-    // Enter CAN bootloader
-    uint8_t cmd[8] = {0};
-    cmd[0] = 0x00; // enter bootloader
-    if (!canDriverSend(CAN_BOOTLOADER_CMD, cmd, 8)) {
-      file.close(); server.send(500, "text/json", "{\"message\":\"CAN send failed\"}"); return;
-    }
-    delay(100);
-    server.send(200, "text/json", "{\"pages\":" + String(pages) + ",\"message\":\"Bootloader entered\"}");
+  if (fileSize == 0) {
     file.close();
+    server.send(500, "text/json", "{\"message\":\"Firmware file is empty\"}");
     return;
   }
+  uint16_t pages = (fileSize + PAGE_SIZE - 1) / PAGE_SIZE;
+  twai_message_t frame;
 
-  if (step == -2) {
-    // Erase flash
-    uint8_t cmd[8] = {0};
-    cmd[0] = 0x01; // erase
-    if (!canDriverSend(CAN_BOOTLOADER_CMD, cmd, 8)) {
-      file.close(); server.send(500, "text/json", "{\"message\":\"CAN erase failed\"}"); return;
+  if (step == -1) {
+    // Reset the device and catch the bootloader magic
+    while (canDriverReceive(&frame)) {} // drain stale frames
+    canSdoWrite(canNodeId, CAN_INDEX_COMMANDS, CAN_CMD_RESET, 1);
+
+    bool gotMagic = false;
+    uint32_t start = millis();
+    while (millis() - start < 10000) {
+      if (canDriverReceive(&frame) && frame.identifier == CAN_BOOTLOADER_RESP && frame.data[0] == 0x33) {
+        gotMagic = true;
+        break;
+      }
+      delay(1);
     }
-    // Wait for bootloader response
-    twai_message_t resp;
-    int retries = 0;
-    while (retries < 50) {
-      if (canDriverReceive(&resp) && resp.identifier == CAN_BOOTLOADER_RESP) break;
-      delay(100);
-      retries++;
+    if (!gotMagic) {
+      file.close();
+      server.send(500, "text/json", "{\"message\":\"No bootloader magic after reset\"}");
+      return;
     }
-    server.send(200, "text/json", "{\"pages\":" + String(pages) + ",\"message\":\"Flash erased\"}");
+
+    // Reflect the device ID back to enter update mode
+    uint8_t id[4] = {frame.data[4], frame.data[5], frame.data[6], frame.data[7]};
+    bool oldBootloader = frame.data[1] < 1;
+    canDriverSend(CAN_BOOTLOADER_CMD, id, 4);
+    if (oldBootloader) delay(100); // bootloader with timing quirk
+
+    // Wait for size request, answer with the page count
+    if (!canWaitBootFrame(&frame, 5000) || frame.data[0] != 'S') {
+      file.close();
+      server.send(500, "text/json", "{\"message\":\"Bootloader did not request size\"}");
+      return;
+    }
+    uint8_t pageCount = pages;
+    canDriverSend(CAN_BOOTLOADER_CMD, &pageCount, 1);
+
+    // Consume the first page-data request so step 0 starts by sending data
+    if (!canWaitBootFrame(&frame, 15000) || frame.data[0] != 'P') {
+      file.close();
+      server.send(500, "text/json", "{\"message\":\"Bootloader did not request data\"}");
+      return;
+    }
+
     file.close();
+    DBG_OUTPUT_PORT.printf("CAN fwupdate: bootloader ready, %d pages\n", pages);
+    server.send(200, "text/json", "{\"pages\":" + String(pages) + ",\"message\":\"Bootloader ready\"}");
     return;
   }
 
   if (step >= 0 && step < pages) {
-    // Write page
-    uint8_t pageData[1024];
-    file.seek(step * PAGE_SIZE);
-    size_t bytesRead = file.read(pageData, PAGE_SIZE);
-    // Pad with 0xFF if needed
-    while (bytesRead < PAGE_SIZE) pageData[bytesRead++] = 0xFF;
+    // Transfer one page: the previous step consumed this page's first 'P',
+    // so send the first chunk immediately, then answer further requests
+    for (int attempt = 0; attempt < 3; attempt++) {
+      uint32_t crc = 0xFFFFFFFF;
+      size_t pos = (size_t)step * PAGE_SIZE;
+      bool crcSent = false;
+      bool timeout = false;
+      bool pageOk = false;
 
-    // Send page in chunks of 8 bytes (128 frames for 1024 bytes)
-    for (size_t offset = 0; offset < PAGE_SIZE; offset += 8) {
-      uint8_t frame[8];
-      size_t chunkSize = min((size_t)8, PAGE_SIZE - offset);
-      memcpy(frame, pageData + offset, chunkSize);
-      // Pad remaining bytes
-      for (size_t p = chunkSize; p < 8; p++) frame[p] = 0xFF;
-      canDriverSend(CAN_BOOTLOADER_CMD, frame, 8);
-      delay(2); // Small gap between frames
+      canSendBootChunk(file, pos, fileSize, &crc);
+      pos += 8;
+
+      while (!pageOk && !timeout) {
+        if (!canWaitBootFrame(&frame, 5000)) { timeout = true; break; }
+        uint8_t c = frame.data[0];
+
+        if (!crcSent && c == 'P') {            // next chunk request
+          canSendBootChunk(file, pos, fileSize, &crc);
+          pos += 8;
+        }
+        else if (!crcSent && c == 'C') {       // CRC request
+          uint8_t crcBytes[4] = {(uint8_t)crc, (uint8_t)(crc >> 8), (uint8_t)(crc >> 16), (uint8_t)(crc >> 24)};
+          canDriverSend(CAN_BOOTLOADER_CMD, crcBytes, 4);
+          crcSent = true;
+        }
+        else if (crcSent && (c == 'P' || c == 'D')) { // page accepted ('P' doubles as next page's first request)
+          pageOk = true;
+        }
+        else if (crcSent && c == 'E') {        // CRC error — resend this page
+          break;
+        }
+      }
+
+      if (pageOk) {
+        file.close();
+        server.send(200, "text/json", "{\"pages\":" + String(pages) + ",\"message\":\"Page " + String(step) + " written\"}");
+        return;
+      }
+      if (timeout) {
+        file.close();
+        server.send(500, "text/json", "{\"message\":\"Bootloader timeout at page " + String(step) + "\"}");
+        return;
+      }
+      // 'E' received: bootloader will re-request the page with a fresh 'P'
+      if (!canWaitBootFrame(&frame, 5000) || frame.data[0] != 'P') {
+        file.close();
+        server.send(500, "text/json", "{\"message\":\"Bootloader lost sync after CRC error\"}");
+        return;
+      }
+      DBG_OUTPUT_PORT.printf("CAN fwupdate: CRC error on page %d, retrying\n", step);
     }
-
     file.close();
-    server.send(200, "text/json", "{\"pages\":" + String(pages) + ",\"message\":\"Page " + String(step) + " written\"}");
-    return;
-  }
-
-  if (step >= pages) {
-    // Run application
-    uint8_t cmd[8] = {0};
-    cmd[0] = 0x04; // run app
-    canDriverSend(CAN_BOOTLOADER_CMD, cmd, 8);
-    file.close();
-    server.send(200, "text/json", "{\"pages\":" + String(pages) + ",\"message\":\"Done\"}");
+    server.send(500, "text/json", "{\"message\":\"Page " + String(step) + " failed after retries\"}");
     return;
   }
 
@@ -1100,6 +1171,9 @@ static void handleCanFwUpdate()
 
 static void handleUpdate()
 {
+  // Route to the CAN bootloader flow when in CAN mode
+  if (canMode) { handleCanFwUpdate(); return; }
+
   if(!server.hasArg("step") || !server.hasArg("file")) {server.send(500, "text/plain", "BAD ARGS"); return;}
   size_t PAGE_SIZE_BYTES = 1024;
   int step = server.arg("step").toInt();
@@ -1118,15 +1192,18 @@ static void handleUpdate()
     return;
   }
 
-  // Use uint16_t to support firmware files up to ~64 MB (1024 * 65535 bytes)
-  // Previously uint8_t overflowed for files > 255 KB
-  uint16_t pages = (uint16_t)((fileSize + PAGE_SIZE_BYTES - 1) / PAGE_SIZE_BYTES);
   String message;
 
   if (server.hasArg("pagesize"))
   {
     PAGE_SIZE_BYTES = server.arg("pagesize").toInt();
+    // Clamp: buffer below lives on the stack and the bootloader uses 1KB pages
+    if (PAGE_SIZE_BYTES < 256 || PAGE_SIZE_BYTES > 1024) PAGE_SIZE_BYTES = 1024;
   }
+
+  // Note: the bootloader receives the page count as a single byte, so files
+  // larger than 255 pages cannot be transferred with this protocol
+  uint16_t pages = (uint16_t)((fileSize + PAGE_SIZE_BYTES - 1) / PAGE_SIZE_BYTES);
 
   // Timeout/retry helper macro for bootloader handshake loops
   #define HANDSHAKE_TIMEOUT 100  // ~10 seconds (100 * 100ms)
@@ -1629,6 +1706,39 @@ void setup(void){
     server.send(200, "text/json", result);
   });
   server.on("/can-debug", [](){
+    // ?reset=1: reset the device and capture all frames seen on the bus for 8s
+    // (diagnoses whether a CAN bootloader announces itself after reset)
+    if (server.hasArg("reset")) {
+      CanSpeed speed = (canSpeed == 0) ? CAN_125K : (canSpeed == 1) ? CAN_250K : CAN_500K;
+      canDriverInitAcceptAll(speed, canTxPin, canRxPin); // see ALL bus traffic
+      twai_message_t frame;
+      while (canDriverReceive(&frame)) {} // drain
+      canSdoWrite(canNodeId, CAN_INDEX_COMMANDS, CAN_CMD_RESET, 1);
+
+      String r = "{\"frames\":[";
+      int count = 0;
+      uint32_t start = millis();
+      while (millis() - start < 8000 && count < 40) {
+        if (canDriverReceive(&frame)) {
+          if (count) r += ',';
+          r += "{\"t\":" + String(millis() - start) + ",\"id\":\"0x" + String(frame.identifier, HEX) + "\",\"data\":\"";
+          for (int i = 0; i < frame.data_length_code; i++) {
+            char hex[4]; sprintf(hex, "%02X ", frame.data[i]); r += hex;
+          }
+          r += "\"}";
+          count++;
+        } else {
+          delay(1);
+        }
+      }
+      twai_status_info_t st;
+      twai_get_status_info(&st);
+      r += "],\"count\":" + String(count) + ",\"twai_state\":" + String(st.state) +
+           ",\"rx_errors\":" + String(st.rx_error_counter) + ",\"tx_errors\":" + String(st.tx_error_counter) + "}";
+      canDriverInitForDevice(canNodeId, speed, canTxPin, canRxPin); // restore device filter
+      server.send(200, "text/json", r);
+      return;
+    }
     // Run a single segmented download attempt and report where it ended up
     const uint32_t bufSize = 49152;
     uint8_t* buf = (uint8_t*)malloc(bufSize);
