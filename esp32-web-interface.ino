@@ -166,6 +166,8 @@ static String canBuildJsonWithValues() {
   i++;
   bool firstEntry = true;
   int failedReads = 0;
+  int successReads = 0;
+  bool skipReads = false; // set when the device looks offline — avoids 240 timeouts
 
   while (i < len) {
     // Next top-level key
@@ -198,9 +200,10 @@ static String canBuildJsonWithValues() {
     int idPos = entry.indexOf("\"id\":");
     if (idPos >= 0) {
       int paramId = entry.substring(idPos + 5).toInt();
-      if (paramId > 0) {
+      if (paramId > 0 && !skipReads) {
         float val = canReadParamValue(paramId);
         if (!isnan(val)) {
+          successReads++;
           String valStr = String(val, 2);
           int vPos = entry.indexOf("\"value\":");
           if (vPos >= 0) {
@@ -213,6 +216,7 @@ static String canBuildJsonWithValues() {
           }
         } else {
           failedReads++;
+          if (failedReads >= 8 && successReads == 0) skipReads = true;
         }
       }
     }
@@ -764,6 +768,71 @@ static void handleCommand() {
   server.send(200, "text/json", output);
 }
 
+// SDO read with abort detection and index verification (for walking mapping/error tables)
+static bool canSdoReadEntry(uint16_t index, uint8_t subIndex, int32_t* value) {
+  twai_message_t resp;
+  while (canDriverReceive(&resp)) {} // drain stale frames
+
+  if (!canSdoRead(canNodeId, index, subIndex)) return false;
+  if (!canReceiveForNode(canNodeId, &resp, 50)) return false;
+  if (resp.data[0] == SDO_ABORT) return false;
+
+  uint16_t rIndex;
+  uint8_t rSubIndex;
+  if (!canSdoParseResponse(&resp, NULL, &rIndex, &rSubIndex, value)) return false;
+  return rIndex == index && rSubIndex == subIndex;
+}
+
+// SDO write that waits for and verifies the confirmation
+// Returns 0 on success, the SDO abort code on rejection, -1 on comm failure
+static int32_t canSdoWriteChecked(uint16_t index, uint8_t subIndex, int32_t value) {
+  twai_message_t resp;
+  while (canDriverReceive(&resp)) {} // drain stale frames
+
+  if (!canSdoWrite(canNodeId, index, subIndex, value)) return -1;
+  if (!canReceiveForNode(canNodeId, &resp, 200)) return -1;
+  if (resp.data[0] == SDO_WRITE_RESPONSE) return 0;
+  if (resp.data[0] == SDO_ABORT) {
+    int32_t code;
+    memcpy(&code, &resp.data[4], 4);
+    return code ? code : -1;
+  }
+  return -1;
+}
+
+// Translate an error/enum value to its name using a unit string like "0=None, 1=UdcLow"
+static String canLookupEnum(const String& unitStr, uint32_t value) {
+  String key = String(value) + "=";
+  int pos = -1;
+  if (unitStr.startsWith(key)) pos = key.length();
+  else {
+    int i = unitStr.indexOf("," + key);
+    if (i >= 0) pos = i + 1 + key.length();
+    else {
+      i = unitStr.indexOf(", " + key);
+      if (i >= 0) pos = i + 2 + key.length();
+    }
+  }
+  if (pos < 0) return String(value);
+  int end = unitStr.indexOf(',', pos);
+  if (end < 0) end = unitStr.length();
+  String name = unitStr.substring(pos, end);
+  name.trim();
+  return name.length() ? name : String(value);
+}
+
+// Extract a parameter's unit string from the cached JSON
+static String canGetParamUnit(const String& name) {
+  int entry = canParamJson.indexOf("\"" + name + "\"");
+  if (entry < 0) return "";
+  int unitPos = canParamJson.indexOf("\"unit\":\"", entry);
+  if (unitPos < 0) return "";
+  unitPos += 8;
+  int unitEnd = canParamJson.indexOf('"', unitPos);
+  if (unitEnd < 0) return "";
+  return canParamJson.substring(unitPos, unitEnd);
+}
+
 // CAN command execution — parses OpenInverter text commands and translates to CAN SDO
 static String canExecuteCommand(const String& cmdStr, int repeat) {
   String result;
@@ -821,14 +890,12 @@ static String canExecuteCommand(const String& cmdStr, int repeat) {
       String name = rest.substring(0, spaceIdx);
       float val = rest.substring(spaceIdx + 1).toFloat();
       int paramId = canGetParamId(name);
-      if (paramId >= 0) {
-        int32_t raw = canEncodeValue(val);
-        uint16_t index = canParamIndex(paramId);
-        uint8_t subIndex = canParamSubIndex(paramId);
-        if (canSdoWrite(canNodeId, index, subIndex, raw)) {
-          return "ok";
-        }
-      }
+      if (paramId < 0) return "Unknown parameter";
+
+      int32_t err = canSdoWriteChecked(canParamIndex(paramId), canParamSubIndex(paramId), canEncodeValue(val));
+      if (err == 0) return "Set OK";
+      if (err == (int32_t)SDO_ERR_RANGE) return "Value out of range";
+      return "Set failed";
     }
     return "error";
   }
@@ -855,33 +922,17 @@ static String canExecuteCommand(const String& cmdStr, int repeat) {
     return "loaded";
   }
   if (cmdStr == "errors") {
-    // Read error log via SDO (index 0x5003, subIndex 0 = count, 1+ = error codes)
-    result = "[";
-    // First read error count
-    int32_t errCount = 0;
-    if (canSdoRead(canNodeId, CAN_INDEX_ERRORS, 0)) {
-      twai_message_t resp;
-      if (canReceiveForNode(canNodeId, &resp, 30)) {
-        canSdoParseResponse(&resp, NULL, NULL, NULL, &errCount);
-      }
+    // Walk the error log: timestamps at 0x5004, codes at 0x5003, one pair
+    // per subindex until the device aborts or the timestamp is zero
+    String unitStr = canGetParamUnit("lasterr");
+    result = "";
+    for (int i = 0; i < 100; i++) {
+      int32_t errTime, errNum;
+      if (!canSdoReadEntry(CAN_INDEX_ERROR_TIME, i, &errTime)) break;
+      if (errTime == 0) break;
+      if (!canSdoReadEntry(CAN_INDEX_ERRORS, i, &errNum)) break;
+      result += "[" + String(errTime) + "]: " + canLookupEnum(unitStr, (uint32_t)errNum) + "\r\n";
     }
-    // Read up to 10 most recent errors
-    if (errCount > 10) errCount = 10;
-    bool firstErr = true;
-    for (int i = 0; i < errCount; i++) {
-      if (canSdoRead(canNodeId, CAN_INDEX_ERRORS, i + 1)) {
-        twai_message_t resp;
-        if (canReceiveForNode(canNodeId, &resp, 30)) {
-          int32_t code = 0;
-          if (canSdoParseResponse(&resp, NULL, NULL, NULL, &code)) {
-            if (!firstErr) result += ",";
-            result += String(code);
-            firstErr = false;
-          }
-        }
-      }
-    }
-    result += "]";
     return result;
   }
   if (cmdStr == "fastuart") {
@@ -892,48 +943,73 @@ static String canExecuteCommand(const String& cmdStr, int repeat) {
     rest.trim();
 
     if (rest == "clear") {
-      canSdoWrite(canNodeId, CAN_INDEX_MAP_TX, 0, 0);
-      canSdoWrite(canNodeId, CAN_INDEX_MAP_RX, 0, 0);
-      return "cleared";
+      // Device command 6 clears all mappings
+      if (canSdoWriteChecked(CAN_INDEX_COMMANDS, CAN_CMD_CLEAR_MAP, 0) == 0) return "cleared";
+      return "error: clear failed";
     }
 
     if (rest == "list" || rest.startsWith("list")) {
+      // Walk the read indices: each message holds sub0 = COB ID, then item
+      // pairs (paramid/pos/len, gain/offset) until the device aborts
       result = "[";
       bool first = true;
-      for (int i = 1; i <= 20; i++) {
-        if (canSdoRead(canNodeId, CAN_INDEX_MAP_TX, i)) {
-          twai_message_t resp;
-          if (canReceiveForNode(canNodeId, &resp, 20)) {
-            int32_t val = 0;
-            if (canSdoParseResponse(&resp, NULL, NULL, NULL, &val) && val != 0) {
-              if (!first) result += ",";
-              result += "{\"type\":\"tx\",\"entry\":" + String(i) + ",\"value\":" + String(val) + "}";
-              first = false;
-            }
+      for (int dir = 0; dir < 2; dir++) {
+        uint16_t index = dir ? CAN_INDEX_MAP_RD_RX : CAN_INDEX_MAP_RD;
+        while (true) {
+          int32_t cobid;
+          if (!canSdoReadEntry(index, 0, &cobid)) break; // no more messages
+          int sub = 1;
+          bool gotItem = false;
+          while (sub < 100) {
+            int32_t posLen, gainOfs;
+            if (!canSdoReadEntry(index, sub, &posLen)) break;       // no more items
+            if (!canSdoReadEntry(index, sub + 1, &gainOfs)) break;
+            uint16_t paramid = posLen & 0xFFFF;
+            int pos = (posLen >> 16) & 0xFF;
+            int len = (int8_t)((posLen >> 24) & 0xFF);
+            // gain: signed 24-bit fixed point (x1000); offset: signed byte
+            int32_t gainFp = ((gainOfs & 0xFFFFFF) << 8) >> 8;
+            float gain = gainFp / 1000.0f;
+            int offset = (int8_t)((gainOfs >> 24) & 0xFF);
+
+            if (!first) result += ",";
+            result += "{\"isrx\":" + String(dir ? "true" : "false") +
+                      ",\"id\":" + String(cobid) +
+                      ",\"paramid\":" + String(paramid) +
+                      ",\"position\":" + String(pos) +
+                      ",\"length\":" + String(len) +
+                      ",\"gain\":" + String(gain, 3) +
+                      ",\"offset\":" + String(offset) +
+                      ",\"index\":" + String(index) +
+                      ",\"subindex\":" + String(sub) + "}";
+            first = false;
+            gotItem = true;
+            sub += 2;
           }
-        }
-      }
-      for (int i = 1; i <= 20; i++) {
-        if (canSdoRead(canNodeId, CAN_INDEX_MAP_RX, i)) {
-          twai_message_t resp;
-          if (canReceiveForNode(canNodeId, &resp, 20)) {
-            int32_t val = 0;
-            if (canSdoParseResponse(&resp, NULL, NULL, NULL, &val) && val != 0) {
-              if (!first) result += ",";
-              result += "{\"type\":\"rx\",\"entry\":" + String(i) + ",\"value\":" + String(val) + "}";
-              first = false;
-            }
-          }
+          if (!gotItem) break; // empty message — stop walking this direction
+          index++;
         }
       }
       result += "]";
       return result;
     }
 
-    // can tx/rx name canid pos bits gain
+    if (rest.startsWith("rm ")) {
+      // can rm <index> <subindex> — write 0 to a read-index entry to remove it
+      String args = rest.substring(3);
+      int sp = args.indexOf(' ');
+      if (sp < 0) return "error: usage: can rm index subindex";
+      uint16_t index = args.substring(0, sp).toInt();
+      uint8_t sub = args.substring(sp + 1).toInt();
+      if (canSdoWriteChecked(index, sub, 0) == 0) return "ok";
+      return "error: remove failed";
+    }
+
+    // can tx/rx name canid pos bits gain [offset]
     int space1 = rest.indexOf(' ');
     if (space1 < 0) return "error: usage: can tx/rx name canid pos bits gain";
     String type = rest.substring(0, space1);
+    if (type != "tx" && type != "rx") return "error: usage: can tx/rx name canid pos bits gain";
     bool isTx = (type == "tx");
 
     String args = rest.substring(space1 + 1);
@@ -944,7 +1020,8 @@ static String canExecuteCommand(const String& cmdStr, int repeat) {
     args = args.substring(space2 + 1);
     int space3 = args.indexOf(' ');
     if (space3 < 0) return "error: missing canid";
-    uint32_t canId = strtoul(args.substring(0, space3).c_str(), NULL, 16);
+    // base 0: decimal by default, hex with 0x prefix
+    uint32_t canId = strtoul(args.substring(0, space3).c_str(), NULL, 0);
 
     args = args.substring(space3 + 1);
     int space4 = args.indexOf(' ');
@@ -954,29 +1031,26 @@ static String canExecuteCommand(const String& cmdStr, int repeat) {
     args = args.substring(space4 + 1);
     int space5 = args.indexOf(' ');
     int bits = (space5 >= 0) ? args.substring(0, space5).toInt() : args.toInt();
-    int gain = 1;
-    if (space5 >= 0) gain = args.substring(space5 + 1).toInt();
+    float gain = 1;
+    int offset = 0;
+    if (space5 >= 0) {
+      args = args.substring(space5 + 1);
+      int space6 = args.indexOf(' ');
+      gain = (space6 >= 0) ? args.substring(0, space6).toFloat() : args.toFloat();
+      if (space6 >= 0) offset = args.substring(space6 + 1).toInt();
+    }
 
     int paramId = canGetParamId(name);
     if (paramId < 0) return "error: unknown parameter";
 
+    // Three-stage add: COB ID, then param/pos/len, then gain/offset
     uint16_t mapIndex = isTx ? CAN_INDEX_MAP_TX : CAN_INDEX_MAP_RX;
-    int slot = 0;
-    for (int i = 1; i <= 20; i++) {
-      if (canSdoRead(canNodeId, mapIndex, i)) {
-        twai_message_t resp;
-        if (canReceiveForNode(canNodeId, &resp, 20)) {
-          int32_t val = 0;
-          canSdoParseResponse(&resp, NULL, NULL, NULL, &val);
-          if (val == 0) { slot = i; break; }
-        }
-      } else { slot = i; break; }
-    }
-    if (slot == 0) return "error: no free mapping slots";
-
-    int32_t packed = (paramId << 16) | ((canId & 0x7FF) << 5) | (pos & 0x3F);
-    if (canSdoWrite(canNodeId, mapIndex, slot, packed)) return "ok";
-    return "error: write failed";
+    if (canSdoWriteChecked(mapIndex, 0, canId) != 0) return "error: COB ID rejected";
+    if (canSdoWriteChecked(mapIndex, 1, (uint32_t)paramId | ((uint32_t)(pos & 0xFF) << 16) | ((uint32_t)(bits & 0xFF) << 24)) != 0)
+      return "error: position/length rejected";
+    if (canSdoWriteChecked(mapIndex, 2, ((int32_t)(gain * 1000) & 0xFFFFFF) | ((uint32_t)(offset & 0xFF) << 24)) != 0)
+      return "error: gain/offset rejected";
+    return "ok";
   }
 
   return "unknown command";

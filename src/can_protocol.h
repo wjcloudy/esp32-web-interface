@@ -28,11 +28,16 @@
 #define CAN_INDEX_PARAM_UID    0x2100 // parameter by UID
 #define CAN_INDEX_SERIAL       0x5000 // device serial number
 #define CAN_INDEX_COMMANDS     0x5002 // device commands
-#define CAN_INDEX_ERRORS       0x5003 // error log
+#define CAN_INDEX_ERRORS       0x5003 // error log: error codes
+#define CAN_INDEX_ERROR_TIME   0x5004 // error log: timestamps
 #define CAN_INDEX_JSON         0x5001 // JSON parameter strings
-#define CAN_INDEX_MAP_TX       0x3000 // TX CAN mapping
-#define CAN_INDEX_MAP_RX       0x3001 // RX CAN mapping
-#define CAN_INDEX_MAP_RD       0x3100 // Read CAN mapping entries
+#define CAN_INDEX_MAP_TX       0x3000 // add TX CAN mapping (write-only, 3-stage)
+#define CAN_INDEX_MAP_RX       0x3001 // add RX CAN mapping (write-only, 3-stage)
+#define CAN_INDEX_MAP_RD       0x3100 // read TX mappings (RX mappings at +0x80)
+#define CAN_INDEX_MAP_RD_RX    0x3180 // read RX mappings
+
+// SDO abort codes
+#define SDO_ERR_RANGE          0x06090030
 
 // Device command values (sub-index to CAN_INDEX_COMMANDS)
 #define CAN_CMD_SAVE           0
@@ -41,6 +46,7 @@
 #define CAN_CMD_DEFAULTS       3
 #define CAN_CMD_START          4
 #define CAN_CMD_STOP           5
+#define CAN_CMD_CLEAR_MAP      6
 
 // Build an SDO read request and send via CAN
 // Returns true if queued successfully

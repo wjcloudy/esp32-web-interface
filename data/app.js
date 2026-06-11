@@ -1260,29 +1260,88 @@ const Logger = () => {
 
 const CanMapping = () => {
   const { state } = useContext(Store);
-  const [mappings, setMappings] = useState([]);
+  const [mappings, setMappings] = useState([]);   // new rows being edited
+  const [existing, setExisting] = useState([]);   // mappings read from the device
+  const [loading, setLoading] = useState(false);
   const spotNames = state.spotValues ? Object.keys(state.spotValues) : [];
+
+  // paramid -> name lookup from the loaded parameter database
+  const idToName = {};
+  for (const src of [state.params || {}, state.spotValues || {}]) {
+    for (const n in src) if (src[n].id) idToName[src[n].id] = n;
+  }
+
+  const loadMappings = async () => {
+    if (!state.canMode) return;
+    setLoading(true);
+    try {
+      const text = await api.getText('can list');
+      setExisting(JSON.parse(text));
+    } catch (e) { setExisting([]); }
+    setLoading(false);
+  };
+
+  useEffect(() => { loadMappings(); }, [state.canMode]);
+
+  const saveMappings = async () => {
+    for (const m of mappings) {
+      if (!m.name) continue;
+      const cmd = 'can ' + m.txrx + ' ' + m.name + ' ' + Number(m.canid||0) + ' ' + Number(m.pos||0) + ' ' + Number(m.bits||8) + ' ' + Number(m.gain||1);
+      const r = await api.getText(cmd);
+      if (r.indexOf('error') === 0) { alert(m.name + ': ' + r); return; }
+    }
+    const r = await api.getText('save');
+    alert(r || 'Mappings saved');
+    setMappings([]);
+    loadMappings();
+  };
 
   return html`
     <div id="canmapping" class="tabdiv main-content" style="display:flex">
       <div class="main-right">
         <h3 class="underline">Actions</h3>
         <button onclick=${() => setMappings([...mappings, { name: '', txrx: 'tx', canid: 0, pos: 0, bits: 8, gain: 1 }])}>Add new mapping</button>
-        <button onclick=${() => api.getText('can clear').then(() => setMappings([]))}>Remove all mappings</button>
-          <button onclick=${async () => {
-            for (const m of mappings) {
-              if (!m.name) continue;
-              const cmd = 'can ' + m.txrx + ' ' + m.name + ' ' + Number(m.canid||0) + ' ' + Number(m.pos||0) + ' ' + Number(m.bits||8) + ' ' + Number(m.gain||1);
-              await api.getText(cmd);
-            }
-            const r = await api.getText('save');
-            alert(r || 'Mappings saved');
-          }}>Save mappings to flash</button>
+        <button onclick=${saveMappings}>Save mappings to flash</button>
+        ${state.canMode && html`<button onclick=${loadMappings}>Reload from device</button>`}
+        <button onclick=${async () => {
+          if (!confirm('Remove ALL CAN mappings from the device?')) return;
+          await api.getText('can clear');
+          await api.getText('save');
+          setMappings([]);
+          loadMappings();
+        }} style="color:var(--red)">Remove all mappings</button>
       </div>
       <div class="main-left">
         <h2>CAN Mapping</h2>
         <p>Configure CAN mapping settings for your OpenInverter board.</p>
-        <h3 class="underline">Existing CAN Mappings</h3>
+        ${state.canMode && html`
+          <h3 class="underline">Mappings on device ${loading ? '(loading...)' : ''}</h3>
+          ${existing.length === 0 && !loading && html`<p style="color:var(--text3)">No mappings configured on the device.</p>`}
+          ${existing.length > 0 && html`
+            <table style="width:auto;table-layout:auto">
+              <thead><tr><th style="min-width:110px">Parameter</th><th>TX/RX</th><th>CAN ID</th><th>Offset</th><th>Length</th><th>Gain</th><th>Bias</th><th></th></tr></thead>
+              <tbody>
+                ${existing.map((m, i) => html`
+                  <tr key=${'e'+i}>
+                    <td>${idToName[m.paramid] || ('#' + m.paramid)}</td>
+                    <td>${m.isrx ? 'RX' : 'TX'}</td>
+                    <td>0x${Number(m.id).toString(16).toUpperCase()}</td>
+                    <td>${m.position}</td>
+                    <td>${m.length}</td>
+                    <td>${m.gain}</td>
+                    <td>${m.offset}</td>
+                    <td><button onclick=${async () => {
+                      await api.getText('can rm ' + m.index + ' ' + m.subindex);
+                      await api.getText('save');
+                      loadMappings();
+                    }} style="padding:2px 6px;font-size:.7rem;color:var(--red)">✕</button></td>
+                  </tr>
+                `)}
+              </tbody>
+            </table>
+          `}
+        `}
+        <h3 class="underline">New mappings</h3>
         <table style="width:auto;table-layout:auto">
           <thead><tr><th style="min-width:110px">Spot Value</th><th>TX/RX</th><th style="min-width:60px">CAN ID</th><th style="min-width:50px">Offset</th><th style="min-width:50px">Length</th><th style="min-width:50px">Gain</th><th></th></tr></thead>
           <tbody>
