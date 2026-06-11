@@ -112,11 +112,10 @@ const initialState = {
   firmwareVersion: '',
   fetchAge: 0,
   activeTab: 'dashboard',
-  autoReload: true,
-  refreshRate: 3000,
+  refreshRate: 3000, // -1 = off, else ms interval
   paramFavorites: [],
   spotFavorites: [],
-  showFavoritesOnly: true, // 5000, 3000, 1000
+  showFavoritesOnly: true,
   fileList: [],
   categoryVisible: {},
   fetching: false,
@@ -229,8 +228,6 @@ function reducer(state, action) {
                canConnected: state.canMode ? (fc < 2 && state.canConnected) : false };
     case 'SET_ACTIVE_TAB':
       return { ...state, activeTab: action.payload };
-    case 'SET_AUTO_RELOAD':
-      return { ...state, autoReload: action.payload };
     case 'SET_FILE_LIST':
       return { ...state, fileList: action.payload };
     case 'TOGGLE_CATEGORY':
@@ -334,25 +331,20 @@ const Navbar = () => {
           <option value="5000">5s</option>
           <option value="3000">3s</option>
           <option value="1000">1s</option>
+          <option value="-1">Off</option>
         </select>
       </div>
       <div id="data-age" style="display:flex;align-items:center;gap:6px">
         ${state.fetching && !state.logging && html`<div class="css-spinner"></div>`}
-        <span style="flex:1;text-align:center">${state.fetchAge}s ago</span>
+        ${state.logging
+          ? html`<span style="flex:1;text-align:center"><span class="fast-badge">⚡ FAST</span></span>`
+          : html`<span style="flex:1;text-align:center">${state.fetchAge}s ago</span>`}
       </div>
-      <div class="control" style="margin-top:4px;justify-content:center">
-        <label class="switch" style=${{ opacity: state.logging ? '0.4' : '1', pointerEvents: state.logging ? 'none' : 'auto' }}>
-          <input type="checkbox" checked=${state.autoReload} disabled=${state.logging} onchange=${e => dispatch({ type: 'SET_AUTO_RELOAD', payload: e.target.checked })} />
-          <span class="slider"></span>
-        </label>
-        <span style=${{ opacity: state.logging ? '0.5' : '1' }}>Auto ${state.logging ? '(paused)' : ''}</span>
-      </div>
-      ${!state.autoReload && !state.logging && html`
+      ${state.refreshRate === -1 && !state.logging && html`
         <div style="text-align:center;padding:4px 0 0">
           <button onclick=${() => { dispatch({ type: 'SET_FETCHING' }); api.getJSON('json').then(json => dispatch({ type: 'SET_PARAMS', payload: json })).catch(() => {}); }} style="font-size:.7rem;padding:4px 12px">Refresh now</button>
         </div>
       `}
-      ${state.logging && html`<div style="text-align:center;padding:4px 0 0"><span style="background:var(--accent);color:#fff;padding:2px 8px;border-radius:10px;font-size:.65rem;font-weight:600;letter-spacing:.03em">⚡ FAST</span></div>`}
       ${state.canMode && html`
         <div class="control" style="flex-direction:column;align-items:flex-start;gap:2px">
           <span style="font-size:.65rem;text-transform:uppercase;letter-spacing:.05em">CAN Device</span>
@@ -1102,11 +1094,12 @@ const Plot = () => {
             <input type="number" value=${burstLength} oninput=${e => setBurstLength(parseInt(e.target.value)||1)} style="width:4em;font-size:.8rem;padding:4px 6px" />
           </div>
         </div>
-        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px">
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
           <button onclick=${addPlot}>+ Add plot</button>
           <button onclick=${() => { savePlots(); setEditing(false); }}>Save & Done</button>
         </div>
 
+        ${plots.length > 0 && html`<h3>Active (${plots.length})</h3>`}
         ${plots.map(p => html`
           <div key=${p.id} style="margin-bottom:8px;padding:8px;background:var(--surface2);border-radius:var(--radius-xs)">
             <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
@@ -2030,10 +2023,10 @@ const App = () => {
   // Unified data fetching — respects refreshRate setting
   useEffect(() => {
     let running = true;
-    const rate = state.refreshRate; // 0 = max speed (continuous), else ms interval
+    const rate = state.refreshRate; // -1 = off, 0 = max speed (continuous), else ms interval
 
     const fetchOnce = async () => {
-      if (document.hidden || !state.autoReload || state.logging) return;
+      if (document.hidden || state.refreshRate === -1 || state.logging) return;
       dispatch({ type: 'SET_FETCHING' });
       try {
         const json = await api.getJSON('json');
@@ -2056,7 +2049,10 @@ const App = () => {
       dispatch({ type: 'SET_FPS', payload: tickTimes.length });
     };
 
-    if (rate === 0) {
+    if (rate === -1) {
+      // Refresh off — no polling loop
+      return () => { running = false; };
+    } else if (rate === 0) {
       (async function loop() {
         while (running) {
           await fetchOnce();
@@ -2077,7 +2073,7 @@ const App = () => {
       return () => { running = false; if (timer) clearTimeout(timer); };
     }
     return () => { running = false; };
-  }, [state.autoReload, state.refreshRate, state.logging]);
+  }, [state.refreshRate, state.logging]);
 
   // Age ticker
   useEffect(() => {

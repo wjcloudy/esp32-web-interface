@@ -89,7 +89,9 @@ p { margin: 0 0 .5rem; color: var(--text2); line-height: 1.6; }
   display: flex; flex-direction: column;
   overflow-y: auto; overflow-x: hidden;
   transition: width var(--transition);
+  scrollbar-width: none; /* scrollbar steals width from the slim bar */
 }
+#navbar::-webkit-scrollbar { display: none; }
 
 #logo { padding: 1.5rem 1.25rem .75rem; flex-shrink: 0; }
 #logo img { width: 40px; height: auto; display: block; margin: 0 auto; cursor: pointer; opacity: .8; transition: opacity var(--transition); }
@@ -118,6 +120,7 @@ p { margin: 0 0 .5rem; color: var(--text2); line-height: 1.6; }
 
 #version { margin: auto 10px 0; padding: 10px 12px; font-size: .7rem; color: var(--text3); background: var(--surface2); border-radius: var(--radius-xs); line-height: 1.6; }
 #data-age { margin: 8px 10px 10px; padding: 6px 12px; font-size: .75rem; font-weight: 600; color: var(--accent); background: var(--accent-glow); border-radius: var(--radius-xs); text-align: center; }
+.fast-badge { background: var(--accent); color: #fff; padding: 2px 8px; border-radius: 10px; font-size: .65rem; font-weight: 600; letter-spacing: .03em; white-space: nowrap; }
 
 .control { padding: 4px 16px; display: flex; align-items: center; gap: 8px; font-size: .75rem; color: var(--text3); }
 .switch { position: relative; display: inline-block; width: 34px; height: 20px; flex-shrink: 0; }
@@ -276,6 +279,7 @@ tbody tr:hover { background: var(--surface3); }
   .control span { width: 100%; text-align: center; font-size: .65rem; }
   #version { text-align: center; font-size: .6rem; padding: 4px 6px; line-height: 1.4; }
   #data-age { text-align: center; font-size: .6rem; padding: 2px 4px; margin: 2px 4px 0; }
+  .fast-badge { font-size: .55rem; padding: 2px 4px; letter-spacing: 0; }
   .main-content { flex-direction: column !important; gap: .5rem; }
   .main-right { width: 100%; flex-direction: row; flex-wrap: wrap; gap: 4px; padding: .5rem 0; position: static; box-shadow: none; min-width: auto; }
   .main-right button, .main-right .butt { width: auto; font-size: .75rem; padding: 5px 10px; }
