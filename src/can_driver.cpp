@@ -87,7 +87,7 @@ bool canDriverSend(uint32_t canId, const uint8_t* data, uint8_t len) {
   if (!driverInstalled) return false;
   if (len > 8) len = 8;
 
-  twai_message_t msg;
+  twai_message_t msg = {};
   msg.identifier = canId;
   msg.data_length_code = len;
   msg.extd = (canId > 0x7FF) ? 1 : 0;

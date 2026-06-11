@@ -1,12 +1,22 @@
 #pragma once
 #include <driver/twai.h>
 
-// Default CAN pins (ESP32 dev board — GPIO4/5 are safe defaults)
+// Default CAN pins
+// ESP32-S3 (T-2Can): TX=7, RX=6. Classic ESP32: GPIO6/7 are flash pins, use 4/5.
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+#ifndef CAN_RX_PIN
+#define CAN_RX_PIN GPIO_NUM_6
+#endif
+#ifndef CAN_TX_PIN
+#define CAN_TX_PIN GPIO_NUM_7
+#endif
+#else
 #ifndef CAN_RX_PIN
 #define CAN_RX_PIN GPIO_NUM_4
 #endif
 #ifndef CAN_TX_PIN
 #define CAN_TX_PIN GPIO_NUM_5
+#endif
 #endif
 
 enum CanSpeed {

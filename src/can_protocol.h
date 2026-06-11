@@ -15,6 +15,14 @@
 #define SDO_WRITE_REQUEST_4B   0x23   // expedited download, 4 bytes
 #define SDO_WRITE_RESPONSE     0x60   // write confirmation
 
+// SDO command bits for segmented upload (CANopen)
+#define SDO_RESPONSE_UPLOAD    0x40   // scs=2: upload initiate response
+#define SDO_REQUEST_SEGMENT    0x60   // ccs=3: upload segment request
+#define SDO_TOGGLE_BIT         0x10   // toggles on each segment
+#define SDO_EXPEDITED          0x02   // data fits in initiate response
+#define SDO_SIZE_SPECIFIED     0x01   // initiate: size valid; segment: last segment
+#define SDO_ABORT              0x80   // abort transfer
+
 // SDO index definitions (OpenInverter parameter database)
 #define CAN_INDEX_PARAMS       0x2000 // named parameters (indexed by param ID)
 #define CAN_INDEX_PARAM_UID    0x2100 // parameter by UID
@@ -71,7 +79,15 @@ inline float canDecodeValue(int32_t raw) {
   return (float)raw / 32.0f;
 }
 
-// Segmented SDO download: reads a multi-byte object (like JSON string) from the device.
-// Each SDO segment returns 4 bytes. Reads sequentially until complete or maxLen reached.
-// Returns number of bytes read, 0 on failure.
-uint16_t canSdoReadSegmented(uint8_t nodeId, uint16_t index, uint8_t* buffer, uint16_t maxLen, uint32_t timeoutPerSegmentMs);
+// Diagnostic status of the last segmented transfer
+// stage: 0=complete 1=initSendFail 2=initTimeout 3=initBadCmd 4=abort
+//        5=segSendFail 6=segTimeout 7=toggleMismatch 8=bufferFull
+struct CanSegStatus { uint8_t stage; uint8_t cmd; uint32_t bytes; };
+extern CanSegStatus canSegStatus;
+
+// Segmented SDO upload: reads a multi-byte object (like JSON string) from the device
+// using the CANopen segmented transfer protocol (7 data bytes per segment).
+// Returns number of bytes read, 0 on failure. If outComplete is given it is set
+// true only when the device's last-segment flag was received (i.e. the transfer
+// finished cleanly rather than timing out or overflowing the buffer).
+uint32_t canSdoReadSegmented(uint8_t nodeId, uint16_t index, uint8_t* buffer, uint32_t maxLen, uint32_t timeoutPerSegmentMs, bool* outComplete = nullptr);

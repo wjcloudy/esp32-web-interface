@@ -58,13 +58,17 @@
 #include "src/can_driver.h"
 #include "src/can_protocol.h"
 
+#ifndef DBG_OUTPUT_PORT
 #define DBG_OUTPUT_PORT Serial2
+#endif
 #define INVERTER_PORT UART_NUM_0
 #define INVERTER_RX 1 //3 - Swapped for Wemos board onto Zombie and other OI boards
 #define INVERTER_TX 3 //1 - Swapped for Wemos board onto Zombie and other OI boards
 #define UART_TIMEOUT (100 / portTICK_PERIOD_MS)
 #define UART_MESSBUF_SIZE 100
+#ifndef LED_BUILTIN
 #define LED_BUILTIN 2 //clashes with SDIO, need to change to suit hardware and uncomment lines
+#endif
 
 #define RESERVED_SD_SPACE 2000000000
 #define SDIO_BUFFER_SIZE 16384
@@ -111,25 +115,123 @@ static bool canDownloadParamCache() {
   if (!canMode || !canDriverIsRunning()) return false;
   DBG_OUTPUT_PORT.println("CAN: downloading parameter database...");
 
-  // Allocate buffer for JSON string (max 4KB for param definitions)
-  const uint16_t bufSize = 4096;
+  // Allocate buffer for JSON string (ZombieVerter-class param databases run >32KB)
+  const uint32_t bufSize = 49152;
   uint8_t* buf = (uint8_t*)malloc(bufSize);
   if (!buf) return false;
-  memset(buf, 0, bufSize);
 
-  uint16_t bytesRead = canSdoReadSegmented(canNodeId, CAN_INDEX_JSON, buf, bufSize - 1, 50);
-  if (bytesRead > 0) {
-    buf[bytesRead] = 0;
-    canParamJson = String((char*)buf);
-    canParamCacheLoaded = true;
-    DBG_OUTPUT_PORT.printf("CAN: downloaded %d bytes of parameter data\n", bytesRead);
-    free(buf);
-    return true;
+  // A single lost segment truncates the transfer, so retry the whole download
+  // and only cache transfers that finished with the device's last-segment flag.
+  // (A retry after a truncated attempt may resume mid-transfer on the device
+  // side — the sanity check below rejects that and the next attempt is fresh.)
+  for (int attempt = 1; attempt <= 3; attempt++) {
+    memset(buf, 0, bufSize);
+    bool complete = false;
+    uint32_t bytesRead = canSdoReadSegmented(canNodeId, CAN_INDEX_JSON, buf, bufSize - 1, 100, &complete);
+
+    // Sanity check: a real param database is a non-trivial JSON object
+    uint32_t end = bytesRead;
+    while (end > 0 && (buf[end - 1] == 0 || isspace(buf[end - 1]))) end--;
+    bool looksValid = end > 64 && buf[0] == '{' && buf[end - 1] == '}';
+
+    if (bytesRead > 0 && complete && looksValid) {
+      buf[bytesRead] = 0;
+      canParamJson = String((char*)buf);
+      canParamCacheLoaded = true;
+      DBG_OUTPUT_PORT.printf("CAN: downloaded %u bytes of parameter data (attempt %d)\n", bytesRead, attempt);
+      free(buf);
+      return true;
+    }
+    DBG_OUTPUT_PORT.printf("CAN: parameter download incomplete (%u bytes, attempt %d)\n", bytesRead, attempt);
+    delay(50);
   }
 
   free(buf);
   DBG_OUTPUT_PORT.println("CAN: parameter download failed");
   return false;
+}
+
+// Build the full json response: walk the cached param database, read each
+// entry's live value via SDO and splice it in, preserving all metadata
+// (category, minimum, maximum, default, unit, isparam, ...) for the UI.
+static float canReadParamValue(int paramId);
+static String canBuildJsonWithValues() {
+  const int len = canParamJson.length();
+  String result;
+  result.reserve(len + 2048);
+
+  int i = canParamJson.indexOf('{');
+  if (i < 0) return "{\"can_cache\":true}";
+  result += '{';
+  i++;
+  bool firstEntry = true;
+  int failedReads = 0;
+
+  while (i < len) {
+    // Next top-level key
+    int keyStart = canParamJson.indexOf('"', i);
+    if (keyStart < 0) break;
+    int keyEnd = canParamJson.indexOf('"', keyStart + 1);
+    if (keyEnd < 0) break;
+    String name = canParamJson.substring(keyStart + 1, keyEnd);
+
+    // Entry object bounds (track nesting and strings to find matching brace)
+    int objStart = canParamJson.indexOf('{', keyEnd);
+    if (objStart < 0) break;
+    int depth = 1, j = objStart + 1;
+    bool inStr = false;
+    while (j < len && depth > 0) {
+      char c = canParamJson[j];
+      if (inStr) {
+        if (c == '\\') j++;
+        else if (c == '"') inStr = false;
+      }
+      else if (c == '"') inStr = true;
+      else if (c == '{') depth++;
+      else if (c == '}') depth--;
+      j++;
+    }
+    if (depth != 0) break;
+    String entry = canParamJson.substring(objStart, j);
+
+    // Read live value over CAN and replace (or insert) the "value" field
+    int idPos = entry.indexOf("\"id\":");
+    if (idPos >= 0) {
+      int paramId = entry.substring(idPos + 5).toInt();
+      if (paramId > 0) {
+        float val = canReadParamValue(paramId);
+        if (!isnan(val)) {
+          String valStr = String(val, 2);
+          int vPos = entry.indexOf("\"value\":");
+          if (vPos >= 0) {
+            int vStart = vPos + 8;
+            int vEnd = vStart;
+            while (vEnd < (int)entry.length() && entry[vEnd] != ',' && entry[vEnd] != '}') vEnd++;
+            entry = entry.substring(0, vStart) + valStr + entry.substring(vEnd);
+          } else {
+            entry = "{\"value\":" + valStr + "," + entry.substring(1);
+          }
+        } else {
+          failedReads++;
+        }
+      }
+    }
+
+    if (!firstEntry) result += ',';
+    result += '"' + name + "\":" + entry;
+    firstEntry = false;
+    i = j;
+  }
+
+  // Only claim a live connection if the reads mostly succeeded — otherwise
+  // the UI would show stale cached values as if they were current
+  if (failedReads < 5) {
+    if (!firstEntry) result += ',';
+    result += "\"can_cache\":true}";
+  } else {
+    result += '}';
+  }
+  return result;
 }
 
 // Read a single parameter value via SDO (returns NaN on failure)
@@ -139,13 +241,19 @@ static float canReadParamValue(int paramId) {
   uint16_t index = canParamIndex(paramId);
   uint8_t subIndex = canParamSubIndex(paramId);
 
+  // Drain stale frames so a leftover response can't be mismatched to this read
+  twai_message_t resp;
+  while (canDriverReceive(&resp)) {}
+
   if (!canSdoRead(canNodeId, index, subIndex)) return NAN;
 
-  twai_message_t resp;
   if (!canReceiveForNode(canNodeId, &resp, 20)) return NAN;
 
+  uint16_t rIndex;
+  uint8_t rSubIndex;
   int32_t raw;
-  if (!canSdoParseResponse(&resp, NULL, NULL, NULL, &raw)) return NAN;
+  if (!canSdoParseResponse(&resp, NULL, &rIndex, &rSubIndex, &raw)) return NAN;
+  if (rIndex != index || rSubIndex != subIndex) return NAN;
 
   return canDecodeValue(raw);
 }
@@ -668,64 +776,15 @@ static String canExecuteCommand(const String& cmdStr, int repeat) {
     canDownloadParamCache();
   }
 
-  // Handle "json" — full parameter dump via SDO
+  // Handle "json" — full parameter dump: cached metadata + live SDO values
   if (cmdStr == "json") {
-    result = "{";
-    bool first = true;
+    if (canParamCacheLoaded)
+      return canBuildJsonWithValues();
 
-    if (canParamCacheLoaded) {
-      // Iterate through cached parameter names and read their values
-      int pos = 0;
-      while (pos < canParamJson.length()) {
-        // Find next parameter name (keys in the JSON object)
-        int nameStart = canParamJson.indexOf('"', pos);
-        if (nameStart < 0) break;
-        int nameEnd = canParamJson.indexOf('"', nameStart + 1);
-        if (nameEnd < 0) break;
-        String name = canParamJson.substring(nameStart + 1, nameEnd);
-
-        // Skip non-parameter keys like version, serial
-        if (name == "version" || name == "serial" || name.length() == 0) {
-          pos = nameEnd + 1;
-          continue;
-        }
-
-        int paramId = canGetParamId(name);
-        if (paramId >= 0) {
-          float val = canReadParamValue(paramId);
-          if (!isnan(val)) {
-            if (!first) result += ",";
-            // Find unit and isparam info from cache
-            int entryStart = canParamJson.indexOf("\"" + name + "\"", 0);
-            bool isParam = canParamJson.indexOf("\"isparam\":true", entryStart) > 0;
-            String unit = "\"\"";
-            int unitPos = canParamJson.indexOf("\"unit\":\"", entryStart);
-            if (unitPos > 0) {
-              unitPos += 8;
-              int unitEnd = canParamJson.indexOf('"', unitPos);
-              if (unitEnd > unitPos) {
-                unit = "\"" + canParamJson.substring(unitPos, unitEnd) + "\"";
-              }
-            }
-            result += "\"" + name + "\":{\"value\":" + String(val, 3);
-            result += ",\"isparam\":" + String(isParam ? "true" : "false");
-            result += ",\"unit\":" + unit + "}";
-            first = false;
-          }
-        }
-        pos = nameEnd + 1;
-        if (pos - nameStart > 5000) break; // safety limit
-      }
-    } else {
-      // Cache not loaded yet — return minimal response
-      result += "\"status\":{\"value\":0,\"isparam\":false,\"unit\":\"\"}";
-      result += ",\"opmode\":{\"value\":0,\"isparam\":false,\"unit\":\"\"}";
-      first = false;
-    }
-
-    result += "}";
-    // Signal whether real parameter data was loaded
-    if (canParamCacheLoaded) result = result.substring(0, result.length() - 1) + ",\"can_cache\":true}";
+    // Cache not loaded yet — return minimal response (no can_cache flag,
+    // so the UI shows the device as disconnected)
+    result = "{\"status\":{\"value\":0,\"isparam\":false,\"unit\":\"\"}";
+    result += ",\"opmode\":{\"value\":0,\"isparam\":false,\"unit\":\"\"}}";
     return result;
   }
 
@@ -1236,19 +1295,40 @@ static void handleBaud()
     server.send(200, "text/html", "fastUart off");
 }
 
-static void saveSettings()
+// Read the saved can_nodes array out of settings.json (returns "[]" if absent)
+static String readSavedCanNodes()
+{
+  String nodes = "[]";
+  if (SPIFFS.exists("/settings.json")) {
+    File f = SPIFFS.open("/settings.json", "r");
+    if (f) {
+      String json = f.readString();
+      f.close();
+      int s = json.indexOf("\"can_nodes\":[");
+      if (s >= 0) {
+        int e = json.indexOf(']', s);
+        if (e >= 0) nodes = json.substring(s + 12, e + 1);
+      }
+    }
+  }
+  return nodes;
+}
+
+static void saveSettings(const String& canNodesJson)
 {
   File f = SPIFFS.open("/settings.json", "w");
   if (f) {
-    f.printf("{\"txrx_swapped\":%s,\"can_mode\":%s,\"can_node_id\":%d,\"can_speed\":%d,\"can_rx_pin\":%d,\"can_tx_pin\":%d,\"can_nodes\":[",
+    f.printf("{\"txrx_swapped\":%s,\"can_mode\":%s,\"can_node_id\":%d,\"can_speed\":%d,\"can_rx_pin\":%d,\"can_tx_pin\":%d,\"can_nodes\":%s}",
              txrxSwapped ? "true" : "false",
              canMode ? "true" : "false",
-             canNodeId, canSpeed, canRxPin, canTxPin);
-    // can_nodes is sent from UI as query param, just echo it
-    f.print("]}");
+             canNodeId, canSpeed, canRxPin, canTxPin,
+             canNodesJson.c_str());
     f.close();
   }
 }
+
+// Preserve the saved node list when writing other settings
+static void saveSettings() { saveSettings(readSavedCanNodes()); }
 
 static void loadSettings()
 {
@@ -1294,27 +1374,19 @@ static void handleSettings()
     if (canNodeId > 32) canNodeId = 32;
     if (canSpeed < 0 || canSpeed > 2) canSpeed = 2;
 
-    // Save can_nodes JSON array if provided
-    String canNodesJson = "[]";
-    if (server.hasArg("can_nodes")) {
-      canNodesJson = server.arg("can_nodes");
-    }
+    // Save can_nodes JSON array if provided, otherwise keep the stored list
+    String canNodesJson = server.hasArg("can_nodes") ? server.arg("can_nodes")
+                                                     : readSavedCanNodes();
+    saveSettings(canNodesJson);
 
-    File f = SPIFFS.open("/settings.json", "w");
-    if (f) {
-      f.printf("{\"txrx_swapped\":%s,\"can_mode\":%s,\"can_node_id\":%d,\"can_speed\":%d,\"can_rx_pin\":%d,\"can_tx_pin\":%d,\"can_nodes\":%s}",
-               txrxSwapped ? "true" : "false",
-               canMode ? "true" : "false",
-               canNodeId, canSpeed, canRxPin, canTxPin,
-               canNodesJson.c_str());
-      f.close();
-    }
-
-    // Restart CAN if enabling
+    // Restart CAN if enabling — filter on the active node, and drop the
+    // param cache so it reloads (node/speed/pins may have changed)
     if (canMode) {
       CanSpeed speed = (canSpeed == 0) ? CAN_125K : (canSpeed == 1) ? CAN_250K : CAN_500K;
       canDriverStop();
-      canDriverInitScan(speed, canTxPin, canRxPin);
+      canDriverInitForDevice(canNodeId, speed, canTxPin, canRxPin);
+      canParamCacheLoaded = false;
+      canParamJson = "";
     } else {
       canDriverStop();
     }
@@ -1389,6 +1461,7 @@ void setup(void){
   else
     DBG_OUTPUT_PORT.println("No RTC found, defaulting to sequential file names"); 
 
+#ifndef S3_SKIP_SD_MMC
   //initialise SD card in SDIO mode with timeout (SD_MMC.begin blocks without card)
   {
     TaskHandle_t sdTask = NULL;
@@ -1415,13 +1488,14 @@ void setup(void){
       DBG_OUTPUT_PORT.println("SD_MMC timed out or no card");
     }
   }
+#endif
 
   //SPIFFS already started above (before UART init to load settings)
 
-  // CAN bus initialization (if enabled)
+  // CAN bus initialization (if enabled) — filter on the saved active node
   if (canMode) {
     CanSpeed speed = (canSpeed == 0) ? CAN_125K : (canSpeed == 1) ? CAN_250K : CAN_500K;
-    if (canDriverInitScan(speed, canTxPin, canRxPin)) {
+    if (canDriverInitForDevice(canNodeId, speed, canTxPin, canRxPin)) {
       DBG_OUTPUT_PORT.printf("CAN bus started (node %d, %dkbps, RX=%d TX=%d)\n",
                              canNodeId, (canSpeed == 0 ? 125 : canSpeed == 1 ? 250 : 500),
                              canRxPin, canTxPin);
@@ -1554,6 +1628,31 @@ void setup(void){
     canDriverInitScan(speed, canTxPin, canRxPin);
     server.send(200, "text/json", result);
   });
+  server.on("/can-debug", [](){
+    // Run a single segmented download attempt and report where it ended up
+    const uint32_t bufSize = 49152;
+    uint8_t* buf = (uint8_t*)malloc(bufSize);
+    if (!buf) { server.send(500, "text/json", "{\"error\":\"oom\"}"); return; }
+    bool complete = false;
+    uint32_t t0 = millis();
+    uint32_t bytesRead = canSdoReadSegmented(canNodeId, CAN_INDEX_JSON, buf, bufSize - 1, 100, &complete);
+    uint32_t elapsed = millis() - t0;
+    String head = "";
+    for (uint32_t i = 0; i < 24 && i < bytesRead; i++) {
+      char c = (char)buf[i];
+      if (c == '"' || c == '\\') head += '\\';
+      head += (c >= 32 && c < 127) ? c : '.';
+    }
+    free(buf);
+    String r = "{\"nodeId\":" + String(canNodeId) +
+               ",\"bytes\":" + String(bytesRead) +
+               ",\"complete\":" + (complete ? "true" : "false") +
+               ",\"stage\":" + String(canSegStatus.stage) +
+               ",\"cmd\":" + String(canSegStatus.cmd) +
+               ",\"ms\":" + String(elapsed) +
+               ",\"head\":\"" + head + "\"}";
+    server.send(200, "text/json", r);
+  });
   server.on("/set-can-node", [](){
     if (server.hasArg("id")) {
       canNodeId = server.arg("id").toInt();
@@ -1565,6 +1664,8 @@ void setup(void){
       // Switch to device-specific filter
       CanSpeed speed = (canSpeed == 0) ? CAN_125K : (canSpeed == 1) ? CAN_250K : CAN_500K;
       canDriverInitForDevice(canNodeId, speed, canTxPin, canRxPin);
+      // Persist the selection so reboots and settings saves keep this node
+      saveSettings();
     }
     server.send(200, "text/json", "{\"nodeId\":" + String(canNodeId) + "}");
   });

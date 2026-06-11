@@ -81,31 +81,69 @@ bool canReceiveForNode(uint8_t nodeId, twai_message_t* outFrame, uint32_t timeou
   return false;
 }
 
-uint16_t canSdoReadSegmented(uint8_t nodeId, uint16_t index, uint8_t* buffer, uint16_t maxLen, uint32_t timeoutPerSegmentMs) {
-  uint16_t totalBytes = 0;
-  uint8_t subIndex = 0;
+CanSegStatus canSegStatus = {0, 0, 0};
 
-  while (totalBytes < maxLen) {
-    if (!canSdoRead(nodeId, index, subIndex)) break;
+uint32_t canSdoReadSegmented(uint8_t nodeId, uint16_t index, uint8_t* buffer, uint32_t maxLen, uint32_t timeoutPerSegmentMs, bool* outComplete) {
+  // CANopen segmented upload: initiate with an SDO read, then request segments
+  // with an alternating toggle bit. Each segment carries up to 7 data bytes;
+  // the last segment is flagged in bit 0 of the command byte.
+  if (outComplete) *outComplete = false;
+  canSegStatus = {0, 0, 0};
 
-    twai_message_t resp;
-    if (!canReceiveForNode(nodeId, &resp, timeoutPerSegmentMs)) break;
+  // Drain stale frames (e.g. late responses to earlier reads) so the initiate
+  // response can't be mismatched to a leftover expedited frame
+  twai_message_t resp;
+  while (canDriverReceive(&resp)) {}
 
-    uint16_t rIndex;
-    uint8_t rSubIndex;
-    int32_t value;
-    if (!canSdoParseResponse(&resp, NULL, &rIndex, &rSubIndex, &value)) break;
-    if (rIndex != index || rSubIndex != subIndex) break;
+  if (!canSdoRead(nodeId, index, 0)) { canSegStatus.stage = 1; return 0; }
 
-    uint8_t segData[4];
-    memcpy(segData, &value, 4);
-    for (int i = 0; i < 4 && totalBytes < maxLen; i++) {
-      buffer[totalBytes++] = segData[i];
-    }
+  if (!canReceiveForNode(nodeId, &resp, timeoutPerSegmentMs)) { canSegStatus.stage = 2; return 0; }
 
-    subIndex++;
-    delay(2);
+  uint8_t cmd = resp.data[0];
+  if (cmd == SDO_ABORT) { canSegStatus.stage = 4; canSegStatus.cmd = cmd; return 0; }
+  if ((cmd & 0xE0) != SDO_RESPONSE_UPLOAD) { canSegStatus.stage = 3; canSegStatus.cmd = cmd; return 0; }
+
+  // Expedited response: object fits in the 4 data bytes of the initiate response
+  if (cmd & SDO_EXPEDITED) {
+    uint8_t n = (cmd & SDO_SIZE_SPECIFIED) ? 4 - ((cmd >> 2) & 0x3) : 4;
+    if (n > maxLen) n = maxLen;
+    memcpy(buffer, &resp.data[4], n);
+    if (outComplete) *outComplete = true;
+    canSegStatus.bytes = n;
+    return n;
   }
 
+  // Segmented transfer: request segments until last-segment flag or buffer full.
+  // A lost segment ends the transfer — the caller checks outComplete and retries
+  // the whole download (blind re-requests can silently skip data).
+  uint32_t totalBytes = 0;
+  bool toggle = false;
+
+  while (true) {
+    if (totalBytes >= maxLen) { canSegStatus.stage = 8; break; }
+
+    uint8_t expected = toggle ? SDO_TOGGLE_BIT : 0;
+    uint8_t req[8] = {0};
+    req[0] = SDO_REQUEST_SEGMENT | expected;
+    if (!canDriverSend(CAN_SDO_REQUEST_BASE | nodeId, req, 8)) { canSegStatus.stage = 5; break; }
+
+    if (!canReceiveForNode(nodeId, &resp, timeoutPerSegmentMs)) { canSegStatus.stage = 6; break; }
+    cmd = resp.data[0];
+    if (cmd & SDO_ABORT) { canSegStatus.stage = 4; canSegStatus.cmd = cmd; break; }
+    if ((cmd & SDO_TOGGLE_BIT) != expected) { canSegStatus.stage = 7; canSegStatus.cmd = cmd; break; }
+
+    uint8_t n = 7 - ((cmd >> 1) & 0x7);  // valid data bytes in this segment
+    for (uint8_t i = 0; i < n && totalBytes < maxLen; i++)
+      buffer[totalBytes++] = resp.data[1 + i];
+
+    if (cmd & SDO_SIZE_SPECIFIED) {      // last segment received
+      if (outComplete) *outComplete = true;
+      break;
+    }
+    toggle = !toggle;
+    if ((totalBytes & 0x3FF) == 0) delay(1); // yield periodically to keep WiFi alive
+  }
+
+  canSegStatus.bytes = totalBytes;
   return totalBytes;
 }
