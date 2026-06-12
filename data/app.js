@@ -2224,8 +2224,8 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px }) => 
           ? (v != null && html`<div class="g-unit g-enum">${enumLabel(enums, v)}</div>`)
           : (unit && html`<div class="g-unit">${unit}</div>`)}
       </div>
-      <div class="g-min" style=${'left:' + Math.round(size * 0.174) + 'px;bottom:' + Math.round(size * 0.096) + 'px'}>${min}</div>
-      <div class="g-max" style=${'right:' + Math.round(size * 0.174) + 'px;bottom:' + Math.round(size * 0.096) + 'px'}>${max}</div>
+      <div class="g-min" style=${'left:' + Math.round(size * 0.174) + 'px;bottom:' + Math.round(size * 0.072) + 'px;font-size:' + Math.max(0.68, size / 230 * 0.68).toFixed(2) + 'rem'}>${min}</div>
+      <div class="g-max" style=${'right:' + Math.round(size * 0.174) + 'px;bottom:' + Math.round(size * 0.072) + 'px;font-size:' + Math.max(0.68, size / 230 * 0.68).toFixed(2) + 'rem'}>${max}</div>
     </div>`;
 };
 
@@ -2254,7 +2254,7 @@ const Gauges = () => {
             });
             setGaugeItems(items);
           }
-          if (data.size === 'sm' || data.size === 'md' || data.size === 'lg') setGaugeSize(data.size);
+          if (['xs', 'sm', 'md', 'lg'].includes(data.size)) setGaugeSize(data.size);
         }
       } catch (e) { /* no saved layout */ }
     })();
@@ -2401,6 +2401,7 @@ const Gauges = () => {
             <select value=${gaugeSize} title="Gauge size"
               onchange=${e => { const v = e.target.value; setGaugeSize(v); saveLayout(gaugeItems, v); }}
               style="font-size:.72rem;padding:4px 26px 4px 8px">
+              <option value="xs">Very small</option>
               <option value="sm">Small</option>
               <option value="md">Medium</option>
               <option value="lg">Large</option>
@@ -2419,9 +2420,9 @@ const Gauges = () => {
               <div style="font-weight:600;font-size:.9rem;margin-bottom:4px">${g.name || '—'}</div>
               ${(g.type === 'line')
                 ? html`<${GaugeLine} key=${g.id + '-' + gaugeSize} name=${g.name} min=${g.min} max=${g.max} value=${lineVals[g.id]} unit=${unit} color=${g.color || ''} enums=${enums}
-                    px=${gaugeSize === 'sm' ? 170 : gaugeSize === 'lg' ? 300 : 230} />`
+                    px=${gaugeSize === 'xs' ? 130 : gaugeSize === 'sm' ? 170 : gaugeSize === 'lg' ? 300 : 230} />`
                 : html`<${SvgGauge} id=${g.id} value=${lineVals[g.id]} unit=${unit} color=${g.color || ''} enums=${enums}
-                    px=${gaugeSize === 'sm' ? 170 : gaugeSize === 'lg' ? 300 : 230}
+                    px=${gaugeSize === 'xs' ? 130 : gaugeSize === 'sm' ? 170 : gaugeSize === 'lg' ? 300 : 230}
                     min=${g.min != null ? g.min : 0} max=${(g.max == null || g.max === 0) ? 4000 : g.max} />`}
             </div>
           `; })}
