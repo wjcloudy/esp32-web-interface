@@ -134,6 +134,7 @@ const initialState = {
   canNodes: [],
   canActiveNodeId: 1,
   canConnected: false,
+  history: {}, // recent numeric samples for dashboard sparklines
 };
 
 function reducer(state, action) {
@@ -192,8 +193,14 @@ function reducer(state, action) {
         const cat = params[name].category;
         if (cat && !(cat in cv)) cv[cat] = true;
       }
+      // Sparkline history: keep the last 60 numeric samples of key telemetry
+      const hist = { ...state.history };
+      for (const k of ['udc', 'tmphs']) {
+        const raw = p[k] ? parseFloat(p[k].value) : NaN;
+        if (!isNaN(raw)) hist[k] = [...(hist[k] || []).slice(-59), raw];
+      }
       return { ...state, params, spotValues, status, opmode, lasterr, udc, tmphs,
-        firmwareVersion: version, categoryVisible: cv, fetchAge: 0,
+        firmwareVersion: version, categoryVisible: cv, fetchAge: 0, history: hist,
         failedFetchCount: 0, commError: false, fetching: false,
         canConnected: state.canMode ? (action.payload.can_cache === true) : false };
     }
@@ -295,6 +302,49 @@ const Modal = ({ id, size, title, children, onClose }) => {
   return null;
 };
 
+// Tiny inline sparkline from an array of numbers
+const Sparkline = ({ data, width = 90, height = 24 }) => {
+  if (!data || data.length < 2) return null;
+  const min = Math.min(...data), max = Math.max(...data);
+  const span = (max - min) || 1;
+  const pts = data.map((v, i) =>
+    ((i / (data.length - 1)) * width).toFixed(1) + ',' +
+    (height - 2 - ((v - min) / span) * (height - 4)).toFixed(1)
+  ).join(' ');
+  return html`<svg class="spark" width=${width} height=${height} viewBox=${'0 0 ' + width + ' ' + height}><polyline points=${pts} /></svg>`;
+};
+
+// Labeled switch row for action panels
+const ToggleRow = ({ label, checked, onChange, disabled }) => html`
+  <label class="toggle-row ${disabled ? 'disabled' : ''}">
+    <span class="toggle-label">${label}</span>
+    <span class="switch sm">
+      <input type="checkbox" checked=${checked} disabled=${disabled} onchange=${e => onChange(e.target.checked)} />
+      <span class="slider"></span>
+    </span>
+  </label>`;
+
+// Map an opmode enum string to a display tone
+const opmodeTone = (op) => {
+  const s = String(op == null ? '' : op).toLowerCase();
+  if (s.includes('pchfail')) return 'danger';
+  if (s.includes('precharge')) return 'info';
+  if (s.includes('run') || s.includes('charge')) return 'active';
+  if (s.includes('preheat')) return 'warn';
+  if (s.includes('off')) return 'muted';
+  return 'info';
+};
+
+const OPMODE_FRIENDLY = {
+  'Off': 'Inverter idle', 'Run': 'Running', 'Precharge': 'Precharging',
+  'PchFail': 'Precharge failed', 'Charge': 'Charging', 'Preheat': 'Preheating',
+};
+
+const fmtNum = (v, dec = 1) => {
+  const n = parseFloat(v);
+  return isNaN(n) ? '—' : n.toFixed(dec);
+};
+
 // ==================== Navbar ====================
 
 const tabs = [
@@ -318,7 +368,21 @@ const Navbar = () => {
   return html`
     <aside id="navbar">
       <div id="logo">
-        <img src="logo.png" onclick=${() => dispatch({ type: 'TOGGLE_NAVBAR' })} />
+        <svg viewBox="0 0 48 48" onclick=${() => dispatch({ type: 'TOGGLE_NAVBAR' })} title="Toggle navigation">
+          <defs>
+            <linearGradient id="logo-ring" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stop-color="#d4d4d4" />
+              <stop offset="100%" stop-color="#636363" />
+            </linearGradient>
+            <clipPath id="logo-clip"><circle cx="24" cy="24" r="19.6" /></clipPath>
+          </defs>
+          <circle cx="24" cy="24" r="21.4" fill="none" stroke="url(#logo-ring)" stroke-width="2.4" />
+          <g clip-path="url(#logo-clip)" fill="none" stroke-width="2.4" stroke-linecap="round">
+            <path stroke="#4cc9f0" d="M-30 24 C -24 11, -18 11, -12 24 C -6 37, 0 37, 6 24 C 12 11, 18 11, 24 24 C 30 37, 36 37, 42 24 C 48 11, 54 11, 60 24" />
+            <path stroke="#54e6a4" opacity=".9" transform="translate(12 0)" d="M-30 24 C -24 11, -18 11, -12 24 C -6 37, 0 37, 6 24 C 12 11, 18 11, 24 24 C 30 37, 36 37, 42 24 C 48 11, 54 11, 60 24" />
+            <path stroke="#ffb454" opacity=".85" transform="translate(24 0)" d="M-30 24 C -24 11, -18 11, -12 24 C -6 37, 0 37, 6 24 C 12 11, 18 11, 24 24 C 30 37, 36 37, 42 24 C 48 11, 54 11, 60 24" />
+          </g>
+        </svg>
       </div>
       ${tabs.map(t => html`
         <div class="tablink ${active === t.id ? 'active' : ''}" onclick=${() => dispatch({ type: 'SET_ACTIVE_TAB', payload: t.id })}>
@@ -399,16 +463,41 @@ const Dashboard = () => {
       <div class="main-left">
         <h2>Dashboard</h2>
         <div id="top-row" class="dash-row">
-          <div id="top-left" class="dash-box">
-            ${state.status ? html`
-              <table><tbody>
-                <tr><td>Status</td><td>${state.status}</td></tr>
-                <tr><td>Opmode</td><td>${state.opmode}</td></tr>
-                <tr><td>Last error</td><td>${state.lasterr}</td></tr>
-                <tr><td>Battery voltage</td><td>${state.udc}</td></tr>
-                <tr><td>Inverter temp</td><td>${state.tmphs}</td></tr>
-              </tbody></table>
-            ` : html`<${Spinner} />`}
+          <div id="top-left" class="dash-box hero-card" style="flex:1.4">
+            ${state.status != null ? (() => {
+              const offline = state.commError || (state.canMode && !state.canConnected);
+              const tone = offline ? 'danger' : opmodeTone(state.opmode);
+              const friendly = offline ? 'No connection to inverter'
+                : (OPMODE_FRIENDLY[state.opmode] || String(state.opmode == null ? '—' : state.opmode));
+              const hasErr = state.lasterr && String(state.lasterr) !== 'NONE' && String(state.lasterr) !== '0';
+              return html`
+                <div class="hero-top">
+                  <span class="pill ${tone}"><span class="dot"></span>${offline ? 'Offline' : state.opmode}</span>
+                  ${hasErr && html`<span class="pill warn">⚠ ${state.lasterr}</span>`}
+                  ${state.canMode && html`<span class="pill ${state.canConnected ? 'info' : 'danger'}">CAN #${state.canActiveNodeId}</span>`}
+                </div>
+                <div class="hero-state">${friendly}</div>
+                <p class="hero-sub">Status: ${state.status}</p>
+                <div class="hero-metrics">
+                  <div class="metric">
+                    <span class="metric-label">Battery voltage</span>
+                    <span class="metric-value">${fmtNum(state.udc)}<span class="metric-unit">V</span></span>
+                    <${Sparkline} data=${state.history.udc} />
+                  </div>
+                  <div class="metric tone-active">
+                    <span class="metric-label">Inverter temp</span>
+                    <span class="metric-value">${fmtNum(state.tmphs)}<span class="metric-unit">°C</span></span>
+                    <${Sparkline} data=${state.history.tmphs} />
+                  </div>
+                  ${state.firmwareVersion && html`
+                    <div class="metric">
+                      <span class="metric-label">Firmware</span>
+                      <span class="metric-value" style="font-size:1.05rem;line-height:1.4;margin-top:6px">${state.firmwareVersion}</span>
+                    </div>
+                  `}
+                </div>
+              `;
+            })() : html`<${Spinner} />`}
           </div>
           <div id="top-right" class="dash-box">
             <h3>Inverter messages</h3>
@@ -564,9 +653,8 @@ const Parameters = () => {
         <button onclick=${() => setShowSubscribe(true)}>Subscribe to parameter set</button>
         <button onclick=${stopSubscription}>Stop subscription</button>
         <h3 class="underline">Misc</h3>
-        ${hasFavs && html`<button onclick=${() => dispatch({ type: 'TOGGLE_FAVORITES_ONLY' })}>
-          ${showFavs ? '★ Show all' : '☆ Favorites only'}
-        </button>`}
+        ${hasFavs && html`<${ToggleRow} label="★ Favorites only" checked=${showFavs}
+          onChange=${() => dispatch({ type: 'TOGGLE_FAVORITES_ONLY' })} />`}
         <a href="/syncofs.html" target="_blank"><button>Launch syncofs tuner</button></a>
         <a href="https://openinverter.org/wiki/Parameters" target="_blank"><button>Parameter reference</button></a>
       </div>
@@ -636,10 +724,29 @@ const SpotValues = () => {
   const [search, setSearch] = useState('');
   const [fastVals, setFastVals] = useState({});
   const [multiCol, setMultiCol] = useState(false);
+  const [sparks, setSparks] = useState(() => { try { return localStorage.getItem('spotSparks') === '1'; } catch (e) { return false; } });
   const wrapRef = useRef(null);
   const fetchRef = useRef(null);
+  // Per-name value history for sparklines. Lives in a ref (no re-render cost),
+  // arrays mutated in place and capped; identity guard = one pass per data arrival.
+  const histRef = useRef({ _src: null });
 
   if (!state.spotValues) return html`<div class="tabdiv main-content" style="display:flex"><p>Loading...</p></div>`;
+
+  if (sparks) {
+    const src = (state.logging && Object.keys(fastVals).length) ? fastVals : state.spotValues;
+    if (src && histRef.current._src !== src) {
+      histRef.current._src = src;
+      const H = histRef.current;
+      for (const name in src) {
+        const raw = src === fastVals ? src[name] : parseFloat(src[name].value);
+        if (typeof raw !== 'number' || isNaN(raw)) continue;
+        const arr = H[name] || (H[name] = []);
+        arr.push(raw);
+        if (arr.length > 40) arr.shift();
+      }
+    }
+  }
 
   const all = Object.values(state.spotValues);
   const term = search.toLowerCase();
@@ -732,15 +839,17 @@ const SpotValues = () => {
           oninput=${e => setSearch(e.target.value)}
           style="width:100%;margin-bottom:.25rem" />
         <p style="font-size:.75rem;color:var(--text3);margin-bottom:.25rem">${filtered.length} of ${all.length} items</p>
-        <button onclick=${() => dispatch({ type: 'TOGGLE_FAVORITES_ONLY' })} style="width:100%;font-size:.75rem">
-          ${showFavs ? '★ Show all' : '☆ Favorites only'}
-        </button>
+        <h3 class="underline" style="margin-top:1rem">View</h3>
+        <${ToggleRow} label="★ Favorites only" checked=${showFavs} disabled=${!hasFavs}
+          onChange=${() => dispatch({ type: 'TOGGLE_FAVORITES_ONLY' })} />
+        <${ToggleRow} label="Sparklines" checked=${sparks}
+          onChange=${on => { setSparks(on); try { localStorage.setItem('spotSparks', on ? '1' : '0'); } catch (e) {} }} />
       </div>
       <div class="main-left">
         <h2>Spot Values</h2>
         <div id="spotValuesWrap" ref=${wrapRef} class="fullheight ${multiCol ? 'multi-col' : ''}" style="overflow-y:auto">
         <table id="spotValues" style="width:auto;table-layout:auto">
-          <thead><tr><th style="width:32px"></th><th>Name</th><th style="width:100px;min-width:100px">Value</th><th style="width:60px;min-width:60px">Unit</th></tr></thead>
+          <thead><tr><th style="width:32px"></th><th>Name</th><th style="width:100px;min-width:100px">Value</th>${sparks && html`<th style="width:76px">Trend</th>`}<th style="width:60px;min-width:60px">Unit</th></tr></thead>
           <tbody>
             ${filtered.map(v => html`
               <tr key=${v.name}>
@@ -749,7 +858,7 @@ const SpotValues = () => {
                     style="background:none;border:none;cursor:pointer;font-size:1rem;padding:0;color:${isFav(v.name)?'var(--amber)':'var(--text3)'}">
                     ${isFav(v.name) ? '★' : '☆'}
                   </button>
-                </td><td>${v.name}</td><td>${getDisplay(v)}</td><td>${v.unit && v.unit.indexOf('=') === -1 ? v.unit : ''}</td></tr>
+                </td><td class="sv-name">${v.name}</td><td class="sv-val">${getDisplay(v)}</td>${sparks && html`<td class="sv-spark">${!v.enums && html`<${Sparkline} data=${histRef.current[v.name]} width=${64} height=${16} />`}</td>`}<td class="sv-unit">${v.unit && v.unit.indexOf('=') === -1 ? v.unit : ''}</td></tr>
             `)}
           </tbody>
         </table>
@@ -907,7 +1016,28 @@ const Update = () => {
 
 // ==================== Plot ====================
 
-const colours = ['rgb(255,99,132)','rgb(54,162,235)','rgb(255,159,64)','rgb(153,102,255)','rgb(255,205,86)','rgb(75,192,192)'];
+const colours = ['#4cc9f0','#54e6a4','#ffb454','#ff6b6b','#b78cff','#5b9dff'];
+
+// Theme Chart.js to the design tokens (resolved once at load)
+if (typeof Chart !== 'undefined') {
+  const cv = (n, f) => { try { const v = getComputedStyle(document.documentElement).getPropertyValue(n).trim(); return v || f; } catch (e) { return f; } };
+  Chart.defaults.font.family = cv('--font', 'system-ui, sans-serif');
+  Chart.defaults.font.size = 11;
+  Chart.defaults.color = cv('--text2', '#9aa3b2');
+  Chart.defaults.borderColor = 'rgba(127,146,167,.16)';
+  Chart.defaults.elements.line.borderWidth = 2;
+  Chart.defaults.elements.line.tension = 0.25;
+  Chart.defaults.elements.point.radius = 0;
+  Chart.defaults.elements.point.hitRadius = 8;
+  const tt = Chart.defaults.plugins.tooltip;
+  tt.backgroundColor = cv('--surface3', '#1c2430');
+  tt.titleColor = cv('--text', '#e8ecf1');
+  tt.bodyColor = cv('--text2', '#9aa3b2');
+  tt.borderColor = cv('--border2', 'rgba(255,255,255,.11)');
+  tt.borderWidth = 1;
+  tt.cornerRadius = 8;
+  tt.padding = 10;
+}
 
 // Simple chart renderer — just a canvas, no controls
 const PlotChart = ({ plot, pushValue, maxValues }) => {
@@ -1421,12 +1551,35 @@ function setTheme(theme) {
   if (t !== 'system') document.documentElement.setAttribute('data-theme', t);
 })();
 
+// Accent colour: overrides --accent/--accent2/--accent-glow across both themes
+const ACCENT_PRESETS = ['#4cc9f0', '#54e6a4', '#b78cff', '#ffb454', '#5b9dff', '#ff6b8b'];
+function applyAccent(hex) {
+  const root = document.documentElement;
+  if (!hex || !/^#[0-9a-fA-F]{6}$/.test(hex)) {
+    ['--accent', '--accent2', '--accent-glow'].forEach(p => root.style.removeProperty(p));
+    return;
+  }
+  const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
+  root.style.setProperty('--accent', hex);
+  root.style.setProperty('--accent2', 'rgb(' + Math.round(r * .82) + ',' + Math.round(g * .82) + ',' + Math.round(b * .82) + ')');
+  root.style.setProperty('--accent-glow', 'rgba(' + r + ',' + g + ',' + b + ',.14)');
+}
+function getAccent() { try { return localStorage.getItem('accentColor') || ''; } catch (e) { return ''; } }
+// Apply saved accent on load
+applyAccent(getAccent());
+
 const Settings = () => {
   const { state, dispatch } = useContext(Store);
   const [txrxSwapped, setTxrxSwapped] = useState(true);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [theme, setThemeState] = useState(getTheme);
+  const [accent, setAccentState] = useState(getAccent);
+  const pickAccent = (hex) => {
+    setAccentState(hex || '');
+    applyAccent(hex);
+    try { hex ? localStorage.setItem('accentColor', hex) : localStorage.removeItem('accentColor'); } catch (e) {}
+  };
   const [apSSID, setApSSID] = useState('');
   const [apPW, setApPW] = useState('');
   const [staSSID, setStaSSID] = useState('');
@@ -1523,6 +1676,14 @@ const Settings = () => {
             <option value="light">Light</option>
             <option value="dark">Dark</option>
           </select>
+          <p style="font-size:.8rem;margin:1rem 0 .35rem">Accent colour</p>
+          <div class="accent-swatches">
+            <button class="swatch reset ${!accent ? 'sel' : ''}" title="Default" onclick=${() => pickAccent('')}>↺</button>
+            ${ACCENT_PRESETS.map(c => html`
+              <button class="swatch ${accent === c ? 'sel' : ''}" style=${{ background: c }} title=${c} onclick=${() => pickAccent(c)}></button>
+            `)}
+            <input type="color" value=${accent || '#4cc9f0'} oninput=${e => pickAccent(e.target.value)} title="Custom colour" />
+          </div>
         </div>
 
         <div class="dash-box" style="margin-bottom:1rem">
@@ -1679,7 +1840,7 @@ const GaugeLine = ({ name, min, max, value, unit }) => {
       const yMin = min != null ? min : 0;
       const yMax = max != null && max !== 0 ? max : 100;
       chartRef.current = new Chart(canvasRef.current, {
-        type: 'line', data: { datasets: [{ label: name, data: [], borderColor: colours[1], backgroundColor: colours[1] + '22', fill: true, pointRadius: 0, tension: 0.3 }] },
+        type: 'line', data: { datasets: [{ label: name, data: [], borderColor: colours[0], backgroundColor: colours[0] + '22', fill: true, pointRadius: 0, tension: 0.3 }] },
         options: {
           animation: false, parsing: false,
           plugins: { legend: { display: false } },
@@ -1723,30 +1884,49 @@ const GaugeLine = ({ name, min, max, value, unit }) => {
   `;
 };
 
-// Resolve a CSS variable to its computed color, with fallback
-function getCSSColor(varname, fallback) {
-  try {
-    const val = getComputedStyle(document.documentElement).getPropertyValue(varname).trim();
-    return val || fallback;
-  } catch (e) { return fallback; }
-}
-
-const gaugeId = (id) => 'gauge-' + id;
+// Modern SVG arc gauge — 270° sweep, gradient stroke, mono numerals.
+// Pure render: value changes animate via CSS transition on the dash array.
+const SvgGauge = ({ id, value, min = 0, max = 100, unit }) => {
+  const size = 230, c = size / 2, r = 92;
+  const SWEEP = 270; // degrees, gap centered at the bottom
+  const v = (value == null || isNaN(value)) ? null : value;
+  const span = (max - min) || 1;
+  const frac = v == null ? 0 : Math.min(1, Math.max(0, (v - min) / span));
+  const circ = 2 * Math.PI * r;
+  const arc = circ * SWEEP / 360;
+  const grad = 'ggrad' + id;
+  return html`
+    <div class="svg-gauge">
+      <svg width=${size} height=${size} viewBox=${'0 0 ' + size + ' ' + size}>
+        <defs>
+          <linearGradient id=${grad} x1="0" y1="1" x2="1" y2="0">
+            <stop offset="0%" stop-color="#4cc9f0" />
+            <stop offset="100%" stop-color="#54e6a4" />
+          </linearGradient>
+        </defs>
+        <g transform=${'rotate(135 ' + c + ' ' + c + ')'}>
+          <circle class="g-track" cx=${c} cy=${c} r=${r} stroke-dasharray=${arc + ' ' + circ} />
+          <circle class="g-value ${frac >= 0.92 ? 'over' : ''}" cx=${c} cy=${c} r=${r}
+            stroke=${'url(#' + grad + ')'} opacity=${frac > 0.004 ? 1 : 0}
+            stroke-dasharray=${(arc * frac) + ' ' + circ} />
+        </g>
+      </svg>
+      <div class="g-center">
+        <div class="g-val">${v == null ? '—' : v.toFixed(1)}</div>
+        ${unit && html`<div class="g-unit">${unit}</div>`}
+      </div>
+      <div class="g-min">${min}</div>
+      <div class="g-max">${max}</div>
+    </div>`;
+};
 
 const Gauges = () => {
   const { state, dispatch } = useContext(Store);
   const [gaugeItems, setGaugeItems] = useState([]);
   const [lineVals, setLineVals] = useState({});
   const [editing, setEditing] = useState(false);
-  const gaugeRefs = useRef({});
-  const createdRef = useRef({});
   const fetchRef = useRef(null);
   const nextId = useRef(1);
-
-  const colors = useRef({
-    text: '#1a1d23', text2: '#5f6672', accent: '#2563eb', red: '#dc2626',
-    surface: '#ffffff', bg: '#f0f2f5',
-  });
 
   // Load saved layout and fetch initial spot values for the picker
   useEffect(() => {
@@ -1771,13 +1951,6 @@ const Gauges = () => {
     api.getJSON('json').then(json => {
       dispatch({ type: 'SET_PARAMS', payload: json });
     }).catch(() => {});
-    // Resolve actual theme colors
-    colors.current.text = getCSSColor('--text', '#1a1d23');
-    colors.current.text2 = getCSSColor('--text2', '#5f6672');
-    colors.current.accent = getCSSColor('--accent', '#2563eb');
-    colors.current.red = getCSSColor('--red', '#dc2626');
-    colors.current.surface = getCSSColor('--surface', '#ffffff');
-    colors.current.bg = getCSSColor('--bg', '#f0f2f5');
   }, []);
 
   const saveLayout = async (items) => {
@@ -1796,8 +1969,6 @@ const Gauges = () => {
 
   const removeGauge = (id) => {
     setGaugeItems(gaugeItems.filter(g => g.id !== id));
-    if (gaugeRefs.current[id]) { gaugeRefs.current[id] = null; }
-    delete createdRef.current[id];
   };
 
   const moveGauge = (fromIdx, toIdx) => {
@@ -1815,112 +1986,7 @@ const Gauges = () => {
 
   const updateGaugeConfig = (id, field, value) => {
     setGaugeItems(gaugeItems.map(g => g.id !== id ? g : { ...g, [field]: value }));
-    // Clear refs on type or name change so gauge is recreated with new settings
-    if (field === 'type' || field === 'name') {
-      if (gaugeRefs.current[id]) { gaugeRefs.current[id] = null; }
-      delete createdRef.current[id];
-    }
   };
-
-  // Helper to get spot value for a name (from params or spotValues)
-  const getValue = useCallback((name) => {
-    if (!state.spotValues) return null;
-    const sv = state.spotValues[name];
-    if (sv) {
-      const v = parseFloat(sv.value);
-      return { value: isNaN(v) ? null : v, unit: sv.unit || '' };
-    }
-    if (state.params && state.params[name]) {
-      const pv = parseFloat(state.params[name].value);
-      return { value: isNaN(pv) ? null : pv, unit: state.params[name].unit || '' };
-    }
-    return null;
-  }, [state.spotValues, state.params]);
-
-  // Create gauge instances after DOM is ready
-  useEffect(() => {
-    if (gaugeItems.length === 0) return;
-
-    // Delay to ensure canvas elements are in the DOM
-    const timer = setTimeout(() => {
-      gaugeItems.forEach(g => {
-        const cid = gaugeId(g.id);
-        const canvas = document.getElementById(cid);
-        if (!canvas) return;
-        if (createdRef.current[g.id]) return;
-
-        const valInfo = getValue(g.name);
-        const val = (valInfo && valInfo.value != null) ? valInfo.value : 0;
-        const min = (g.min != null && g.min !== 0) ? g.min : 0;
-        const max = (g.max != null && g.max !== 100) ? g.max : Math.max(100, Math.ceil(val * 1.2));
-
-        const c = colors.current;
-        try {
-          const gauge = new RadialGauge({
-            renderTo: canvas,
-            title: '',
-            width: 250, height: 250,
-            minValue: min,
-            maxValue: max,
-            majorTicks: calcTicks(min, max),
-            highlights: [],
-            value: val,
-            valueInt: 1, valueDec: 1,
-            units: (valInfo && valInfo.unit && valInfo.unit.indexOf('=') === -1) ? valInfo.unit : '',
-            animation: true,
-            animationDuration: 400,
-            colorPlate: 'transparent',
-            colorMajorTicks: c.text2,
-            colorMinorTicks: c.text2,
-            colorTitle: c.text,
-            colorUnits: c.text2,
-            colorNumbers: c.text2,
-            colorNeedle: c.accent,
-            colorNeedleEnd: c.accent,
-            colorValueText: c.accent,
-            colorValueBoxBackground: 'transparent',
-            colorValueBoxRect: 'transparent',
-            colorValueBoxRectEnd: 'transparent',
-            colorValueBoxShadow: 'transparent',
-            valueBox: true,
-            valueBoxStroke: 0,
-            valueText: '',
-            needle: true,
-            needleShadow: false,
-            needleType: 'arrow',
-            needleStart: 15,
-            needleEnd: 75,
-            needleWidth: 3,
-            borderOuterWidth: 0,
-            borderMiddleWidth: 0,
-            borderInnerWidth: 0,
-            borderShadowWidth: 0,
-            colorBorderOuter: 'transparent',
-            colorBorderMiddle: 'transparent',
-            colorBorderInner: 'transparent',
-            colorBorderShadow: 'transparent',
-            colorBarStroke: c.text3 || c.text2,
-            colorBar: c.surface3 || c.surface2,
-            colorBarProgress: c.accent,
-            colorBarShadow: 'transparent',
-            barWidth: 8,
-            barStrokeWidth: 1,
-            barProgress: true,
-            barShadow: false,
-            fontNumbersSize: 14,
-            fontNumbersWeight: 'normal',
-            fontValueSize: 26,
-          });
-          gauge.draw();
-          gaugeRefs.current[g.id] = gauge;
-          createdRef.current[g.id] = true;
-        } catch (e) { console.log('Gauge create error', g.name, e); }
-      });
-    }, 50);
-    return () => clearTimeout(timer);
-  }, [gaugeItems]);
-
-  // Gauge values now come from high-perf get command (see fetchLoop below)
 
   // High-perf spot value fetching (pauses main json refresh while on gauges page)
   // Uses a single 'get' command for all gauge names — one call, all values returned
@@ -1943,20 +2009,12 @@ const Gauges = () => {
         const text = await api.getText('get ' + names.join(','));
         if (!active) return;
         const vals = text.match(/[\-\d\.]+/g) || [];
+        const next = {};
         gaugeItems.forEach((g, i) => {
           const val = parseFloat(vals[i]);
-          if (isNaN(val)) return;
-          if (g.type === 'line') {
-            setLineVals(prev => ({ ...prev, [g.id]: val }));
-          } else {
-            const gauge = gaugeRefs.current[g.id];
-            if (gauge) {
-              gauge.value = val;
-              // Force value box text to update immediately (not just on animation tick)
-              if (gauge.options) gauge.options.valueText = val.toFixed(1);
-            }
-          }
+          if (!isNaN(val)) next[g.id] = val;
         });
+        setLineVals(prev => ({ ...prev, ...next }));
       } catch (e) { /* ignore */ }
       // Schedule next fetch — respects actual response time to avoid pileup
       if (active) {
@@ -1973,38 +2031,6 @@ const Gauges = () => {
       dispatch({ type: 'SET_LOGGING', payload: false });
       if (fetchRef.current) { clearTimeout(fetchRef.current); fetchRef.current = null; }
     };
-  }, [gaugeItems]);
-
-  // Update gauge min/max when config changes
-  useEffect(() => {
-    gaugeItems.forEach(g => {
-      const gauge = gaugeRefs.current[g.id];
-      if (!gauge) return;
-      if (g.min != null && gauge.options.minValue !== g.min) {
-        gauge.options.minValue = g.min;
-        gauge.options.majorTicks = calcTicks(g.min, gauge.options.maxValue);
-      }
-      if (g.max != null && gauge.options.maxValue !== g.max) {
-        gauge.options.maxValue = g.max;
-        gauge.options.majorTicks = calcTicks(gauge.options.minValue, g.max);
-      }
-    });
-  }, [gaugeItems]);
-
-  // Smooth animation tick (updates needle position and value box at ~60fps)
-  useEffect(() => {
-    let rafId;
-    const tick = () => {
-      gaugeItems.forEach(g => {
-        const gauge = gaugeRefs.current[g.id];
-        if (gauge) {
-          try { gauge.update(); } catch (e) { /* ignore */ }
-        }
-      });
-      rafId = requestAnimationFrame(tick);
-    };
-    rafId = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(rafId);
   }, [gaugeItems]);
 
   const spotNames = state.spotValues ? Object.keys(state.spotValues) : [];
@@ -2058,34 +2084,23 @@ const Gauges = () => {
         </div>
         ${gaugeItems.length === 0 && !editing && html`<p style="color:var(--text3);font-size:.85rem;text-align:center;padding:2rem 0">Click ✎ Edit Layout to add a gauge.</p>`}
         <div id="gauge-container" style="display:flex;flex-wrap:wrap;gap:1.5rem;justify-content:center;align-items:flex-start">
-          ${gaugeItems.map(g => html`
+          ${gaugeItems.map(g => {
+            const unit = (state.spotValues && state.spotValues[g.name] && state.spotValues[g.name].unit && state.spotValues[g.name].unit.indexOf('=') === -1) ? state.spotValues[g.name].unit : '';
+            return html`
             <div class="gauge-wrapper" style="text-align:center" key="${g.id}">
               <div style="font-weight:600;font-size:.9rem;margin-bottom:4px">${g.name || '—'}</div>
               ${(g.type === 'line')
-                ? html`<${GaugeLine} name=${g.name} min=${g.min} max=${g.max} value=${lineVals[g.id]} unit=${(state.spotValues && state.spotValues[g.name] && state.spotValues[g.name].unit && state.spotValues[g.name].unit.indexOf('=') === -1) ? state.spotValues[g.name].unit : ''} />`
-                : html`
-                  <canvas id="${gaugeId(g.id)}" width="250" height="250"></canvas>
-                `}
+                ? html`<${GaugeLine} name=${g.name} min=${g.min} max=${g.max} value=${lineVals[g.id]} unit=${unit} />`
+                : html`<${SvgGauge} id=${g.id} value=${lineVals[g.id]} unit=${unit}
+                    min=${g.min != null ? g.min : 0} max=${(g.max == null || g.max === 0) ? 100 : g.max} />`}
             </div>
-          `)}
+          `; })}
         </div>
       </div>
     </div>
 
   `;
 };
-
-function calcTicks(min, max) {
-  const N = 6;
-  const ticks = [min];
-  const dist = (max - min) / N;
-  let tick = min;
-  for (let i = 0; i < N; i++) {
-    tick += dist;
-    ticks.push(Math.round(tick));
-  }
-  return ticks;
-}
 
 // ==================== App ====================
 
