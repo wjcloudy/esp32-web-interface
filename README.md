@@ -1,128 +1,146 @@
-esp32-web-interface
-=====================
-Web interface for Huebner inverter
+# esp32-web-interface
 
-<img width="1325" height="813" alt="image" src="https://github.com/user-attachments/assets/c89a4b9f-ab54-4fa1-a785-3fb7d5112a4c" />
-<img width="1320" height="813" alt="image" src="https://github.com/user-attachments/assets/d164b16f-ed82-48d3-8701-dd83529628c9" />
+**A modern web interface for [OpenInverter](https://openinverter.org) systems — over UART or CAN bus.**
 
+[![Build combined images](https://github.com/wjcloudy/esp32-web-interface/actions/workflows/build.yml/badge.svg?branch=uart-backend)](https://github.com/wjcloudy/esp32-web-interface/actions/workflows/build.yml)
+[![Latest release](https://img.shields.io/github/v/release/wjcloudy/esp32-web-interface)](https://github.com/wjcloudy/esp32-web-interface/releases/latest)
 
+<img width="1325" height="813" alt="Dashboard" src="https://github.com/user-attachments/assets/c89a4b9f-ab54-4fa1-a785-3fb7d5112a4c" />
+<img width="1320" height="813" alt="Gauges" src="https://github.com/user-attachments/assets/d164b16f-ed82-48d3-8701-dd83529628c9" />
 
-# Table of Contents
-<details>
- <summary>Click to open TOC</summary>
-<!-- MarkdownTOC autolink="true" levels="1,2,3,4,5,6" bracket="round" style="unordered" indent="    " autoanchor="false" markdown_preview="github" -->
+Works with the OpenInverter family of firmware:
+[stm32-sine / FOC](https://github.com/jsphuebner/stm32-sine) ·
+[ZombieVerter VCU](https://github.com/damienmaguire/Stm32-vcu) ·
+[stm32-charger](https://github.com/jsphuebner/stm32-charger) ·
+[stm32-island](https://github.com/jsphuebner/stm32-island) ·
+[BMS](https://github.com/jsphuebner/bms-software) · and more.
 
-- [About](#about)
-- [Usage](#usage)
-    - [WiFi network](#wifi-network)
-    - [Reaching the board](#reaching-the-board)
-- [Hardware](#hardware)
-- [Firmware](#firmware)
-- [Flashing / Upgrading](#flashing--upgrading)
-    - [Wirelessly](#wirelessly)
-    - [Wired](#wired)
-- [Documentation](#documentation)
-- [Development](#development)
-    - [Arduino](#arduino)
-    - [PlatformIO](#platformio)
+---
 
-<!-- /MarkdownTOC -->
-</details>
+## Highlights
 
-# About
-> **v4.1** — This fork features a complete frontend rewrite using Preact + HTM, replacing jQuery with a modern single-page application. New pages include real-time Gauges (radial & line charts), multi-chart Plotting, UART pin swap Settings, and a searchable interface throughout. See the [commit history](https://github.com/wjcloudy/esp32-web-interface/commits/uart-backend) for details.
+**Modern single-page UI** (Preact + HTM, no build step)
+- Dark-first glass design with full light mode and a customisable accent colour
+- Dashboard hero card: live state pill, error chips, battery voltage & temperature with sparklines
+- Installable to your phone's home screen (PWA manifest, iOS standalone)
 
-> **📦 Pre-built images** — every push builds combined flash-at-`0x0` images for the classic ESP32 and the LILYGO T-2Can (ESP32-S3) via GitHub Actions. Grab the **latest build** from the most recent run on the [build workflow page](https://github.com/wjcloudy/esp32-web-interface/actions/workflows/build.yml?query=branch%3Auart-backend) (artifacts at the bottom of each run, zipped), or download raw `.bin` files from the [latest release](https://github.com/wjcloudy/esp32-web-interface/releases/latest).
+**Two inverter transports**
+- **UART** — the classic serial connection, with fast-mode streaming and pin-swap setting
+- **CAN bus** — full SDO support: device scanning, multi-node management with a boot-default node, parameter database download, live values, error log, and **firmware updates over CAN**
 
-This repository hosts the source code for the Web Interface for the Huebner inverter, and derived projects:
-* [OpenInverter Sine (and FOC) firmware](https://github.com/jsphuebner/stm32-sine)
-* [Vehicle Control Unit for Electric Vehicle Conversion Projects](https://github.com/damienmaguire/Stm32-vcu)
-* [OpenInverter buck or boost mode charger firmware](https://github.com/jsphuebner/stm32-charger)
-* [OpenInverter non-grid connected inverter](https://github.com/jsphuebner/stm32-island)
-* [BMS project firmware](https://github.com/jsphuebner/bms-software)
-* ...
+**Telemetry**
+- **Gauges** — radial and line gauges in four sizes, per-gauge colours (hue-matched gradients), enum fields show their mode text, drag-to-reorder layout
+- **Plot** — multi-chart plotting with left/right axes and burst sampling (UART)
+- **Spot Values** — searchable table with favourites, ~10 Hz fast mode, and optional per-row sparklines
+- **Data Logger** — log any fields to a downloadable file
 
-It is written with the Arduino development environment and libraries.
+**Configuration**
+- **Parameters** — searchable, categorised, favourites, inline editing, flash save/restore, file download/upload, and openinverter.org parameter-database submit/subscribe
+- **CAN Mapping** — view, add and remove the device's TX/RX CAN mappings (decimal or `0x` hex IDs)
+- **Settings export/import** — favourites, gauge & plot layouts and UI preferences as a single JSON file
 
-# Usage
-To use the web interface, two things are needed:
-* You need to have a computer on the same WiFi network as the board,
-* You need to browse to the web interface page.
+**Updates**
+- OpenInverter board firmware updates over **UART or CAN** with live progress (CAN requires the [CAN bootloader](https://github.com/jsphuebner/stm32-CANBootloader) on the device)
+- Web interface OTA updates for the ESP32 firmware and individual files
 
-## WiFi network
-There are 2 possibilities:
-* Either you connect to an Access Point generated by the board. The default name for this access point is 'ESP-xxxxx' but can be customized. In that case, the board will have a fixed IP address of `192.168.4.1` (and will be reachable on http://192.168.4.1/)
-* Or you can configure the board to join your own WiFi network; in that case you may want to configure your network to give the board a fixed address (optional).
+---
 
-## Reaching the board
-The board announces itself to the world using mDNS protocol (aka Bonjour, or Rendezvous, or Zeroconf), so you may be able to reach the board using a local name of `inverter.local`.
-So first try to reach it on http://inverter.local/
+## Getting started
 
-# Hardware
-The web interface was originally designed to run on ESP32-WROOM-32E boards. The LILYGO T-2Can (ESP32-S3, built-in CAN transceiver) is also supported via the `release-t2can` build target.
+### 1. Get an image
+Pre-built **flash-at-`0x0` combined images** for both supported boards:
 
-An SD card running in SDIO mode can be connected (CLK to pin 14, CMD to pin 15, D0 to pin 2, D1 to pin 4, D2 to pin 12, D3 to pin 13).
+| Source | What you get |
+|---|---|
+| [Latest release](https://github.com/wjcloudy/esp32-web-interface/releases/latest) | Version-stamped raw `.bin` files (e.g. `esp32-web-interface_v4.1-0x000.bin`) |
+| [CI builds](https://github.com/wjcloudy/esp32-web-interface/actions/workflows/build.yml?query=branch%3Auart-backend) | Every push, as run artifacts (zipped) |
+| This repo | Current-build copies: `esp32-web-interface-0x000.bin`, `esp32-web-interface-t2can-0x000.bin` |
 
-An RTC can be connected. A PCF8523 is supported as standard, but any clock supported by RTClib can be used with a sketch change (SCLK to pin 22, SDA to pin 21).
+### 2. Flash it
+Flash the image at offset `0x0` with [ESP Web Tools](https://espressif.github.io/esptool-js/) or `esptool.py`:
 
-The inverter is connected on pin 16 (RX, to the inverter's TX line) and pin 17 (TX, to the inverter's RX line).
+```sh
+esptool.py --chip esp32   write_flash 0x0 esp32-web-interface-0x000.bin        # classic ESP32
+esptool.py --chip esp32s3 write_flash 0x0 esp32-web-interface-t2can-0x000.bin  # LILYGO T-2Can
+```
 
-# Firmware
-To compile it, follow the [instructions below](#development).
+### 3. Connect
+- Join the board's WiFi access point (default name `ESP-xxxxx`) and browse to http://192.168.4.1/, **or**
+- configure it to join your network (Settings → WiFi) and browse to http://inverter.local/ (mDNS).
 
-# Flashing / Upgrading
-## Web Flasher (recommended for first install)
-Pre-built combined binaries are available in [releases](https://github.com/wjcloudy/esp32-web-interface/releases) (version-stamped, e.g. `esp32-web-interface_v4.1-0x000.bin`) or as the current-build copies in this repo (`esp32-web-interface-0x000.bin`, `esp32-web-interface-t2can-0x000.bin`). Flash at offset `0x0` using [ESP Web Tools](https://espressif.github.io/esptool-js/) or any ESP32 flasher. The binary uses `dio` flash mode for universal compatibility.
+### 4. Pick a transport
+In **Settings → Interface**: choose **UART** (default) or **CAN Bus** → Save → Scan for devices. The first node found becomes the boot default; mark any other node as default from the device list.
 
-To build your own combined binary, see [PlatformIO usage — Building a combined binary](doc/PLATFORMIO_usage.md#building-a-combined-binary-for-web-flasher).
+---
 
-## Wirelessly
-OTA updates are supported for firmware and individual web files. Use the **Update** tab in the web interface, or PlatformIO targets `uploadfsota` / `upload`.
+## Hardware
 
-## Wired
-If your board is new and unprogrammed, or if you want to fully re-program it, you'll need to have a wired connection between your computer and the board.
-You'll either need an ESP32 board with an on-board USB-to-serial converter, or a 3.3V-capable USB/serial adapter with the following connections:
+| Board | Notes |
+|---|---|
+| ESP32-WROOM-32E (and most dev boards) | UART to the inverter on pin 16 (RX ← inverter TX) and pin 17 (TX → inverter RX) |
+| LILYGO T-2Can (ESP32-S3) | Built-in CAN transceiver — default CAN pins RX 6 / TX 7 (`release-t2can` build target) |
 
-Pin#  | ESP32 Board Function | USB / Serial adapter
------ | ---------------------- | --------------------
-1     | +3.3v input            | (Some adapters provide a +3.3v output, you can use it)
-2     | GND                    | GND
-3     | RXD input              | TXD output
-4     | TXD output             | RXD input
+Optional peripherals (classic ESP32):
+- **SD card** in SDIO mode for data logging — CLK pin 14, CMD pin 15, D0 pin 2, D1 pin 4, D2 pin 12, D3 pin 13
+- **RTC** (PCF8523 as standard, anything RTClib supports with a sketch change) — SCL pin 22, SDA pin 21
 
-Then use any of the [development tools below](#development), or the `esptool.py` tool, to upload either a binary firmware file, or a binary filesystem file.
+CAN speed (125k/250k/500k) and pins are configurable in Settings on any board.
 
-Various openinverter boards (SDU, LDU, Leaf) use a different wiring scheme for initial programming. It is important to flash the ESP32 chip BEFORE flashing the STM32 chip because otherwise you will get a bus collision on the UART pins. If you've already flashed the STM32 either erase the flash or hold it in reset somehow while flashing the ESP32.
+---
 
-Pin#  | ESP32 Board Function | USB / Serial adapter
------ | ---------------------- | --------------------
-1     | TXD output             | RXD input
-2     | RXD input              | TXD output
-3     | +5v input              | (Some adapters provide a +5v output, you can use it)
-4     | GND                    | GND
-5     | GND                    | GND
-6     | GPIO0                  | Connect this to pin 5 (GND) to put the ESP32 into programming mode. Then power up
+## Flashing & upgrading
+
+### Wirelessly (OTA)
+Use the **Update** tab in the web interface, or the PlatformIO `upload` / `uploadfs` targets with `upload_protocol = espota` in `platformio-local-override.ini`.
+
+### Wired
+For a new or fully-erased board, connect a 3.3V USB/serial adapter:
+
+| Pin# | ESP32 board function | USB/serial adapter |
+|---|---|---|
+| 1 | +3.3V input | 3.3V output (if available) |
+| 2 | GND | GND |
+| 3 | RXD input | TXD output |
+| 4 | TXD output | RXD input |
+
+Various openinverter boards (SDU, LDU, Leaf) use a different wiring scheme for initial programming. **Flash the ESP32 before the STM32** — otherwise the UART pins collide. If the STM32 is already flashed, erase it or hold it in reset while flashing the ESP32.
+
+| Pin# | ESP32 board function | USB/serial adapter |
+|---|---|---|
+| 1 | TXD output | RXD input |
+| 2 | RXD input | TXD output |
+| 3 | +5V input | 5V output (if available) |
+| 4 | GND | GND |
+| 5 | GND | GND |
+| 6 | GPIO0 | Connect to GND (pin 5) for programming mode, then power up |
 
 Flash subsequent updates via OTA.
 
-# Documentation
-* [Openinverter Web Interface Protocol](PROTOCOL.md)
+### Updating the inverter itself
+The **Update** tab flashes OpenInverter board firmware (`stm32_*.bin`) through the ESP32:
+- **UART mode** — works with the standard OpenInverter bootloader
+- **CAN mode** — the transfer runs gap-free in the background with live progress; the device must run the [CAN bootloader](https://github.com/jsphuebner/stm32-CANBootloader). A power-cycle prompt allows recovery of a board whose application no longer boots.
 
-# Development
-You can choose between the following tools:
+---
 
-## Arduino
-[Arduino IDE](https://www.arduino.cc/en/software) is an easy-to-use desktop IDE, which provides a quick and integrated way to develop and update your board.
-* [Initial setup](doc/ARDUINO_IDE_setup.md)
-* [Day to day usage](doc/ARDUINO_IDE_usage.md)
+## Development
 
-## PlatformIO CLI
-[PlatformIO](https://platformio.org/) is a set of tools, among which [PlatformIO Core (CLI)](https://docs.platformio.org/en/latest/core/index.html) is a command line interface that can be used to build many kinds of projects — in particular Arduino-based projects like this one.
-(Note: even if PlatformIO provides an IDE, these instructions only target the CLI.)
-* [Initial setup](doc/PLATFORMIO_setup.md)
-* [Day to day usage](doc/PLATFORMIO_usage.md)
+Built with the Arduino framework. Versioning comes from git tags (`git describe`) and is shown in the UI and `/version`.
 
-## PlatformIO IDE (VS Code)
-The flashing steps using the Visual Studio Code interface.
+- **PlatformIO (recommended)** — [setup](doc/PLATFORMIO_setup.md) · [day-to-day usage](doc/PLATFORMIO_usage.md) · [flashing walkthrough (VS Code)](doc/PLATFORMIO_flashing_esp32.md) · [building a combined binary](doc/PLATFORMIO_usage.md#building-a-combined-binary-for-web-flasher)
+- **Arduino IDE** — [setup](doc/ARDUINO_IDE_setup.md) · [usage](doc/ARDUINO_IDE_usage.md)
+- **CI** — every push builds both targets and publishes combined images ([workflow](.github/workflows/build.yml)); pushing a `v*` tag creates a release with version-stamped binaries
 
-* [Flashing the ESP32](https://github.com/Tom-evnut/esp32-web-interface/blob/uart-backend/doc/PLATFORMIO_flashing_esp32.md)
+Build targets: `release` / `debug` (classic ESP32), `release-t2can` / `debug-t2can` (LILYGO T-2Can, ESP32-S3).
+
+Web UI sources live in [`data/`](data/) — plain Preact + HTM with no build step; gzip the changed files and upload via `uploadfs` or the Update tab.
+
+---
+
+## Documentation
+
+- [Web interface ↔ inverter protocol](PROTOCOL.md)
+
+## Credits
+
+This is a fork of [jsphuebner/esp32-web-interface](https://github.com/jsphuebner/esp32-web-interface) (itself the ESP32 port of the original esp8266 interface) with a rewritten frontend and a CAN bus backend. Thanks to Johannes Huebner and the [OpenInverter community](https://openinverter.org/forum/).
