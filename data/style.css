@@ -225,6 +225,10 @@ input:checked + .slider::before { transform: translateX(14px); }
 .toggle-row.disabled { opacity: .45; pointer-events: none; }
 .toggle-row .toggle-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* navbar CAN node selector: full select on desktop, compact #N on slim rail */
+.can-node-select { position: relative; width: 100%; }
+.can-node-select .can-node-short { display: none; }
+
 /* accent colour swatches */
 .accent-swatches { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .accent-swatches .swatch {
@@ -499,6 +503,14 @@ td { font-variant-numeric: tabular-nums; }
   #version { text-align: center; font-size: .6rem; padding: 4px 6px; line-height: 1.4; }
   #data-age { text-align: center; font-size: .6rem; padding: 2px 4px; margin: 2px 4px 0; }
   .fast-badge { font-size: .55rem; padding: 2px 4px; letter-spacing: 0; }
+  /* slim rail: show just the node number; the native dropdown still opens with full labels */
+  .can-node-select select { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
+  .can-node-select .can-node-short {
+    display: flex; align-items: center; justify-content: center;
+    padding: 4px 2px; font-size: .7rem; font-weight: 700;
+    color: var(--accent); background: var(--accent-glow); border-radius: var(--radius-xs);
+    pointer-events: none; font-variant-numeric: tabular-nums;
+  }
   .main-content { flex-direction: column !important; gap: .5rem; }
   .main-right { width: 100%; flex-direction: row; flex-wrap: wrap; gap: 4px; padding: .5rem 0; position: static; box-shadow: none; min-width: auto; }
   .main-right button, .main-right .butt { width: auto; font-size: .75rem; padding: 5px 10px; }

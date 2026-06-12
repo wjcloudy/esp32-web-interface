@@ -260,11 +260,19 @@ function reducer(state, action) {
       return { ...state, canNodes: action.payload };
     case 'ADD_CAN_NODE': {
       const exists = state.canNodes.find(n => n.nodeId === action.payload.nodeId);
-      if (exists) return { ...state, canNodes: state.canNodes.map(n => n.nodeId === action.payload.nodeId ? { ...n, ...action.payload } : n) };
-      return { ...state, canNodes: [...state.canNodes, action.payload] };
+      if (exists) return { ...state, canNodes: state.canNodes.map(n => n.nodeId === action.payload.nodeId ? { ...n, ...action.payload, default: n.default } : n) };
+      // The first node added becomes the boot default
+      const isDefault = !state.canNodes.some(n => n.default);
+      return { ...state, canNodes: [...state.canNodes, { ...action.payload, default: isDefault }] };
     }
-    case 'REMOVE_CAN_NODE':
-      return { ...state, canNodes: state.canNodes.filter(n => n.nodeId !== action.payload) };
+    case 'REMOVE_CAN_NODE': {
+      let nodes = state.canNodes.filter(n => n.nodeId !== action.payload);
+      // Keep exactly one default: promote the first remaining node if needed
+      if (nodes.length && !nodes.some(n => n.default)) nodes = nodes.map((n, i) => i === 0 ? { ...n, default: true } : n);
+      return { ...state, canNodes: nodes };
+    }
+    case 'SET_DEFAULT_NODE':
+      return { ...state, canNodes: state.canNodes.map(n => ({ ...n, default: n.nodeId === action.payload })) };
     case 'SET_CAN_CONNECTED':
       return { ...state, canConnected: action.payload };
     case 'SET_PARAM_VALUE':
@@ -416,16 +424,19 @@ const Navbar = () => {
       ${state.canMode && html`
         <div class="control" style="flex-direction:column;align-items:flex-start;gap:2px">
           <span style="font-size:.65rem;text-transform:uppercase;letter-spacing:.05em">CAN Device</span>
-          <select value=${state.canActiveNodeId} onchange=${e => {
-            const id = parseInt(e.target.value);
-            dispatch({ type: 'SET_CAN_NODE', payload: id });
-            fetch('/set-can-node?id=' + id);
-          }}
-            style="width:100%;font-size:.7rem;padding:4px 6px">
-            ${state.canNodes.length > 0
-              ? state.canNodes.map(d => html`<option value=${d.nodeId}>Node #${d.nodeId}${d.name ? ' ' + d.name : ''}${d.serial ? ' (s/n ' + d.serial + ')' : ''}</option>`)
-              : html`<option value=${state.canActiveNodeId}>Node #${state.canActiveNodeId}</option>`}
-          </select>
+          <div class="can-node-select">
+            <select value=${state.canActiveNodeId} onchange=${e => {
+              const id = parseInt(e.target.value);
+              dispatch({ type: 'SET_CAN_NODE', payload: id });
+              fetch('/set-can-node?id=' + id);
+            }}
+              style="width:100%;font-size:.7rem;padding:4px 6px">
+              ${state.canNodes.length > 0
+                ? state.canNodes.map(d => html`<option value=${d.nodeId}>Node #${d.nodeId}${d.name ? ' ' + d.name : ''}${d.serial ? ' (s/n ' + d.serial + ')' : ''}</option>`)
+                : html`<option value=${state.canActiveNodeId}>Node #${state.canActiveNodeId}</option>`}
+            </select>
+            <span class="can-node-short">#${state.canActiveNodeId}</span>
+          </div>
         </div>
       `}
       ${state.canMode && html`<div style="text-align:center;padding:4px 0 0"><span style="background:${state.canConnected ? 'var(--green)' : 'var(--red)'};color:#fff;padding:2px 8px;border-radius:10px;font-size:.65rem;font-weight:600;letter-spacing:.03em">CAN #${state.canActiveNodeId}</span></div>`}
@@ -1633,17 +1644,25 @@ const Settings = () => {
     } catch (e) { setTxrxSwapped(!val); setSaving(false); }
   };
 
+  // The default-flagged node is what the device should boot on / return to
+  const defaultNodeId = () => {
+    const def = state.canNodes.find(n => n.default);
+    return def ? def.nodeId : canNodeId;
+  };
+
   const saveCanSettings = async () => {
     setSaving(true);
     try {
+      const bootNode = defaultNodeId();
       const params = new URLSearchParams();
       params.set('can_mode', canMode ? '1' : '0');
-      params.set('can_node_id', canNodeId);
+      params.set('can_node_id', bootNode);
       params.set('can_speed', canSpeed);
       params.set('can_rx_pin', canRxPin);
       params.set('can_tx_pin', canTxPin);
       await fetch('/settings?' + params.toString(), { method: 'POST' });
-      dispatch({ type: 'SET_CAN_CONFIG', payload: { canMode, canNodeId } });
+      dispatch({ type: 'SET_CAN_CONFIG', payload: { canMode, canNodeId: bootNode } });
+      if (canMode) dispatch({ type: 'SET_CAN_NODE', payload: bootNode });
       setTimeout(() => setSaving(false), 2000);
     } catch (e) { setSaving(false); }
   };
@@ -1697,15 +1716,17 @@ const Settings = () => {
             <button onclick=${async () => {
               setSaving(true);
               try {
+                const bootNode = defaultNodeId();
                 const params = new URLSearchParams();
                 params.set('can_mode', canMode ? '1' : '0');
-                params.set('can_node_id', canNodeId);
+                params.set('can_node_id', bootNode);
                 params.set('can_speed', canSpeed);
                 params.set('can_rx_pin', canRxPin);
                 params.set('can_tx_pin', canTxPin);
                 params.set('can_nodes', JSON.stringify(state.canNodes));
                 await fetch('/settings?' + params.toString(), { method: 'POST' });
-                dispatch({ type: 'SET_CAN_CONFIG', payload: { canMode, canNodeId } });
+                dispatch({ type: 'SET_CAN_CONFIG', payload: { canMode, canNodeId: bootNode } });
+                if (canMode) dispatch({ type: 'SET_CAN_NODE', payload: bootNode });
                 setTimeout(() => setSaving(false), 2000);
               } catch (e) { setSaving(false); }
             }} style="font-size:.75rem;padding:4px 12px;margin-left:auto" disabled=${saving}>${saving ? 'Saving...' : 'Save'}</button>
@@ -1775,7 +1796,11 @@ const Settings = () => {
                   }} style="display:flex;align-items:center;gap:8px;padding:3px 6px;cursor:pointer;background:${n.nodeId === state.canActiveNodeId ? 'var(--accent-glow)' : 'var(--surface2)'};border-radius:var(--radius-xs);font-size:.75rem">
                     <span style="font-weight:600;min-width:60px">Node #${n.nodeId}${n.nodeId === state.canActiveNodeId ? ' ●' : ''}</span>
                     ${n.serial ? html`<span style="color:var(--text3);font-size:.7rem">s/n ${n.serial}</span>` : null}
-                    <button onclick=${() => dispatch({ type: 'REMOVE_CAN_NODE', payload: n.nodeId })} style="font-size:.65rem;padding:2px 6px;color:var(--red)">×</button>
+                    ${n.default
+                      ? html`<span class="pill info" style="font-size:.55rem;padding:1px 8px;margin-left:auto">default</span>`
+                      : html`<button onclick=${e => { e.stopPropagation(); dispatch({ type: 'SET_DEFAULT_NODE', payload: n.nodeId }); }}
+                          style="font-size:.6rem;padding:1px 6px;margin-left:auto" title="Boot with this node selected">set default</button>`}
+                    <button onclick=${e => { e.stopPropagation(); dispatch({ type: 'REMOVE_CAN_NODE', payload: n.nodeId }); }} style="font-size:.65rem;padding:2px 6px;color:var(--red)">×</button>
                   </div>
                 `)}
               </div>

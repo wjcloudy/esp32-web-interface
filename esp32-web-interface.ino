@@ -1494,6 +1494,21 @@ static void loadSettings()
 
       int ni = json.indexOf("\"can_node_id\":");
       if (ni >= 0) canNodeId = json.substring(ni + 14).toInt();
+      // Prefer the node flagged as default in the saved node list (set by the UI)
+      int ns = json.indexOf("\"can_nodes\":[");
+      if (ns >= 0) {
+        int ne = json.indexOf(']', ns);
+        if (ne > ns) {
+          String nodes = json.substring(ns, ne);
+          int dp = nodes.indexOf("\"default\":true");
+          if (dp >= 0) {
+            int os = nodes.lastIndexOf('{', dp);
+            int oe = nodes.indexOf('}', os);
+            int ip = nodes.indexOf("\"nodeId\":", os);
+            if (os >= 0 && ip > os && (oe < 0 || ip < oe)) canNodeId = nodes.substring(ip + 9).toInt();
+          }
+        }
+      }
       int sp = json.indexOf("\"can_speed\":");
       if (sp >= 0) canSpeed = json.substring(sp + 12).toInt();
       int rp = json.indexOf("\"can_rx_pin\":");
