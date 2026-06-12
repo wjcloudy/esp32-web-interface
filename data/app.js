@@ -386,9 +386,9 @@ const Navbar = () => {
           </defs>
           <circle cx="24" cy="24" r="21.4" fill="none" stroke="url(#logo-ring)" stroke-width="2.4" />
           <g clip-path="url(#logo-clip)" fill="none" stroke-width="2.4" stroke-linecap="round">
-            <path stroke="#4cc9f0" d="M-30 24 C -24 11, -18 11, -12 24 C -6 37, 0 37, 6 24 C 12 11, 18 11, 24 24 C 30 37, 36 37, 42 24 C 48 11, 54 11, 60 24" />
-            <path stroke="#54e6a4" opacity=".9" transform="translate(12 0)" d="M-30 24 C -24 11, -18 11, -12 24 C -6 37, 0 37, 6 24 C 12 11, 18 11, 24 24 C 30 37, 36 37, 42 24 C 48 11, 54 11, 60 24" />
-            <path stroke="#ffb454" opacity=".85" transform="translate(24 0)" d="M-30 24 C -24 11, -18 11, -12 24 C -6 37, 0 37, 6 24 C 12 11, 18 11, 24 24 C 30 37, 36 37, 42 24 C 48 11, 54 11, 60 24" />
+            <path stroke="#5b9dff" opacity=".95" d="M-30 24 C -24 11, -18 11, -12 24 C -6 37, 0 37, 6 24 C 12 11, 18 11, 24 24 C 30 37, 36 37, 42 24 C 48 11, 54 11, 60 24" />
+            <path stroke="#ffcf54" opacity=".95" transform="translate(12 0)" d="M-30 24 C -24 11, -18 11, -12 24 C -6 37, 0 37, 6 24 C 12 11, 18 11, 24 24 C 30 37, 36 37, 42 24 C 48 11, 54 11, 60 24" />
+            <path stroke="#ff6b6b" opacity=".95" transform="translate(24 0)" d="M-30 24 C -24 11, -18 11, -12 24 C -6 37, 0 37, 6 24 C 12 11, 18 11, 24 24 C 30 37, 36 37, 42 24 C 48 11, 54 11, 60 24" />
           </g>
         </svg>
       </div>
@@ -1014,11 +1014,16 @@ const Update = () => {
       <div class="main-left">
         <h2>Update</h2>
         <p>On this page you can apply software updates to your OpenInverter system.</p>
-        <h3>OpenInverter Board Firmware</h3>
-        <p>Use the <b>Install firmware from file</b> button to flash stm32_sine.bin or stm32_foc.bin.</p>
-        <p>Use <b>Load OTA releases</b> to fetch and install firmware directly from GitHub.</p>
-        <h3>Web Interface</h3>
-        <p>Upload individual web interface files using the <b>Upload file</b> button.</p>
+        <div class="dash-box compact" style="margin-bottom:1rem">
+          <h3>OpenInverter Board Firmware</h3>
+          <p>Use <b>Install firmware from file</b> to flash stm32_sine.bin or stm32_foc.bin from your computer.</p>
+          <p>Use <b>Load OTA releases</b> to fetch and install firmware directly from GitHub.</p>
+          <p style="font-size:.8rem;color:var(--text3);margin:0">${state.canMode ? 'Updates are sent over the CAN bus — the device needs the CAN-capable bootloader.' : 'Updates are sent over the serial connection to the inverter.'}</p>
+        </div>
+        <div class="dash-box compact">
+          <h3>Web Interface</h3>
+          <p style="margin:0">Upload individual web interface files using the <b>Upload file</b> button.</p>
+        </div>
       </div>
     </div>
   `;
@@ -1114,16 +1119,16 @@ const FieldPicker = ({ value, spotNames, onChange }) => {
 
   return html`
     <div style="position:relative;flex:1">
-      <div onclick=${() => setOpen(!open)} style="padding:3px 6px;border:1px solid var(--border2);border-radius:var(--radius-xs);font-size:.7rem;cursor:pointer;background:var(--surface);min-width:80px">
+      <div onclick=${() => setOpen(!open)} style="padding:6px 10px;border:1px solid var(--border2);border-radius:var(--radius-xs);font-size:.82rem;cursor:pointer;background:var(--surface);min-width:120px;color:${value ? 'var(--text)' : 'var(--text3)'}">
         ${value || 'Select...'}
       </div>
       ${open && html`
-        <div style="position:absolute;top:100%;left:0;z-index:10;background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius-xs);max-height:200px;overflow-y:auto;min-width:150px;box-shadow:var(--shadow)">
+        <div style="position:absolute;top:100%;left:0;z-index:10;background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius-xs);max-height:240px;overflow-y:auto;min-width:210px;box-shadow:var(--shadow)">
           <input type="text" placeholder="Search..." value=${search} oninput=${e => setSearch(e.target.value)}
-            style="width:100%;padding:4px 6px;font-size:.7rem;border:none;border-bottom:1px solid var(--border2)" autofocus />
+            style="width:100%;padding:7px 10px;font-size:.82rem;border:none;border-bottom:1px solid var(--border2);border-radius:0" autofocus />
           ${filtered.map(n => html`
             <div class="hover-row" onclick=${() => { onChange(n); setOpen(false); setSearch(''); }}
-              style="padding:3px 8px;font-size:.7rem;cursor:pointer">${n}</div>
+              style="padding:6px 10px;font-size:.82rem;cursor:pointer">${n}</div>
           `)}
         </div>
       `}
@@ -1274,7 +1279,7 @@ const Plot = () => {
             ${p.items.map((item, i) => html`
               <div key=${i} style="display:flex;gap:3px;align-items:center;margin-bottom:2px">
                 <${FieldPicker} value=${item.name} spotNames=${spotNames} onChange=${name => updateItem(p.id, i, 'name', name)} />
-                <select value=${item.axis || 'left'} onchange=${e => updateItem(p.id, i, 'axis', e.target.value)} style="width:3.2em;font-size:.65rem;padding:1px 2px;border-radius:var(--radius-xs)">
+                <select value=${item.axis || 'left'} onchange=${e => updateItem(p.id, i, 'axis', e.target.value)} title="Y axis" style="width:4.4em;font-size:.78rem;padding:5px 4px;border-radius:var(--radius-xs)">
                   <option value="left">L</option>
                   <option value="right">R</option>
                 </select>
@@ -1391,8 +1396,13 @@ const Logger = () => {
         ${!state.logging && html`<button onclick=${() => setLogItems([...logItems, { name: '' }])}>Add field to log</button>`}
       </div>
       <div class="main-left">
-        <h2>Data Logger ${state.logging ? '(recording...)' : ''}</h2>
-        <textarea id="data-logger-text-area" rows="50" ref=${textRef} value=${logText} readonly></textarea>
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:.75rem">
+          <h2 style="margin:0">Data Logger</h2>
+          ${state.logging && html`<span class="pill active"><span class="dot"></span>Recording</span>`}
+        </div>
+        <div class="dash-box compact">
+          <textarea id="data-logger-text-area" rows="50" ref=${textRef} value=${logText} readonly></textarea>
+        </div>
       </div>
     </div>
   `;
@@ -1428,7 +1438,10 @@ const CanMapping = () => {
   const saveMappings = async () => {
     for (const m of mappings) {
       if (!m.name) continue;
-      const cmd = 'can ' + m.txrx + ' ' + m.name + ' ' + Number(m.canid||0) + ' ' + Number(m.pos||0) + ' ' + Number(m.bits||8) + ' ' + Number(m.gain||1);
+      // CAN id accepts decimal (592) or hex (0x250)
+      const cid = Number(String(m.canid == null ? '' : m.canid).trim() || 0);
+      if (isNaN(cid) || cid < 0 || cid > 0x1FFFFFFF) { alert(m.name + ': invalid CAN ID "' + m.canid + '" — use decimal (592) or hex (0x250)'); return; }
+      const cmd = 'can ' + m.txrx + ' ' + m.name + ' ' + cid + ' ' + Number(m.pos||0) + ' ' + Number(m.bits||8) + ' ' + Number(m.gain||1);
       const r = await api.getText(cmd);
       if (r.indexOf('error') === 0) { alert(m.name + ': ' + r); return; }
     }
@@ -1456,33 +1469,44 @@ const CanMapping = () => {
       <div class="main-left">
         <h2>CAN Mapping</h2>
         <p>Configure CAN mapping settings for your OpenInverter board.</p>
-        ${state.canMode && html`
-          <h3 class="underline">Mappings on device ${loading ? '(loading...)' : ''}</h3>
-          ${existing.length === 0 && !loading && html`<p style="color:var(--text3)">No mappings configured on the device.</p>`}
-          ${existing.length > 0 && html`
-            <table style="width:auto;table-layout:auto">
-              <thead><tr><th style="min-width:110px">Parameter</th><th>TX/RX</th><th>CAN ID</th><th>Offset</th><th>Length</th><th>Gain</th><th>Bias</th><th></th></tr></thead>
+        ${state.canMode && (() => {
+          const removeMap = async (m) => {
+            await api.getText('can rm ' + m.index + ' ' + m.subindex);
+            await api.getText('save');
+            loadMappings();
+          };
+          const mapTable = (list) => html`
+            <table style="width:auto;table-layout:auto;margin-bottom:1rem">
+              <thead><tr><th style="min-width:110px">Parameter</th><th>CAN ID</th><th>Offset</th><th>Length</th><th>Gain</th><th>Bias</th><th></th></tr></thead>
               <tbody>
-                ${existing.map((m, i) => html`
-                  <tr key=${'e'+i}>
-                    <td>${idToName[m.paramid] || ('#' + m.paramid)}</td>
-                    <td>${m.isrx ? 'RX' : 'TX'}</td>
-                    <td>0x${Number(m.id).toString(16).toUpperCase()}</td>
+                ${list.map(m => html`
+                  <tr key=${'e' + m.index + '-' + m.subindex}>
+                    <td style="font-weight:500">${idToName[m.paramid] || ('#' + m.paramid)}</td>
+                    <td style="font-family:var(--num)">0x${Number(m.id).toString(16).toUpperCase()}</td>
                     <td>${m.position}</td>
                     <td>${m.length}</td>
                     <td>${m.gain}</td>
                     <td>${m.offset}</td>
-                    <td><button onclick=${async () => {
-                      await api.getText('can rm ' + m.index + ' ' + m.subindex);
-                      await api.getText('save');
-                      loadMappings();
-                    }} style="padding:2px 6px;font-size:.7rem;color:var(--red)">✕</button></td>
+                    <td><button onclick=${() => removeMap(m)} style="padding:2px 6px;font-size:.7rem;color:var(--red)">✕</button></td>
                   </tr>
                 `)}
               </tbody>
-            </table>
-          `}
-        `}
+            </table>`;
+          const txMaps = existing.filter(m => !m.isrx);
+          const rxMaps = existing.filter(m => m.isrx);
+          return html`
+            <h3 class="underline">Mappings on device ${loading ? '(loading...)' : ''}</h3>
+            ${existing.length === 0 && !loading && html`<p style="color:var(--text3)">No mappings configured on the device.</p>`}
+            ${txMaps.length > 0 && html`
+              <h3 style="margin-top:.75rem">Transmit (TX)</h3>
+              ${mapTable(txMaps)}
+            `}
+            ${rxMaps.length > 0 && html`
+              <h3 style="margin-top:.75rem">Receive (RX)</h3>
+              ${mapTable(rxMaps)}
+            `}
+          `;
+        })()}
         <h3 class="underline">New mappings</h3>
         <table style="width:auto;table-layout:auto">
           <thead><tr><th style="min-width:110px">Spot Value</th><th>TX/RX</th><th style="min-width:60px">CAN ID</th><th style="min-width:50px">Offset</th><th style="min-width:50px">Length</th><th style="min-width:50px">Gain</th><th></th></tr></thead>
@@ -1496,7 +1520,7 @@ const CanMapping = () => {
                 <td><select value=${m.txrx} onchange=${e => { const nm = [...mappings]; nm[i].txrx = e.target.value; setMappings(nm); }}>
                   <option value="tx">TX</option><option value="rx">RX</option>
                 </select></td>
-                <td><input type="number" value=${m.canid} oninput=${e => { const nm = [...mappings]; nm[i].canid = e.target.value; setMappings(nm); }} style="width:5em" /></td>
+                <td><input type="text" value=${m.canid} placeholder="0x250" oninput=${e => { const nm = [...mappings]; nm[i].canid = e.target.value; setMappings(nm); }} style="width:6em;font-family:var(--num)" /></td>
                 <td><input type="number" value=${m.pos} oninput=${e => { const nm = [...mappings]; nm[i].pos = e.target.value; setMappings(nm); }} style="width:4em" /></td>
                 <td><input type="number" value=${m.bits} oninput=${e => { const nm = [...mappings]; nm[i].bits = e.target.value; setMappings(nm); }} style="width:4em" /></td>
                 <td><input type="number" value=${m.gain} oninput=${e => { const nm = [...mappings]; nm[i].gain = e.target.value; setMappings(nm); }} style="width:4em" /></td>
@@ -1601,6 +1625,8 @@ const Settings = () => {
   const [canSpeed, setCanSpeed] = useState(2);
   const [canRxPin, setCanRxPin] = useState(4);
   const [canTxPin, setCanTxPin] = useState(5);
+  const [savedCanMode, setSavedCanMode] = useState(false); // mode as persisted on the device
+  const [scanState, setScanState] = useState(''); // '' | 'scanning' | result message
 
   useEffect(() => {
     (async () => {
@@ -1610,6 +1636,7 @@ const Settings = () => {
           const data = await r.json();
           setTxrxSwapped(data.txrx_swapped !== false);
           setCanMode(data.can_mode === true);
+          setSavedCanMode(data.can_mode === true);
           if (data.can_node_id) setCanNodeId(data.can_node_id);
           if (data.can_speed !== undefined) setCanSpeed(data.can_speed);
           if (data.can_rx_pin) setCanRxPin(data.can_rx_pin);
@@ -1689,7 +1716,7 @@ const Settings = () => {
           <h3>Theme</h3>
           <p style="font-size:.8rem;margin:0 0 .35rem">Choose appearance — System follows your device setting.</p>
           <select value=${theme} onchange=${e => { const v = e.target.value; setThemeState(v); setTheme(v); }}
-            class="styled">
+            class="styled" style="align-self:flex-start;width:auto;min-width:160px">
             <option value="system">System</option>
             <option value="light">Light</option>
             <option value="dark">Dark</option>
@@ -1726,10 +1753,16 @@ const Settings = () => {
                 await fetch('/settings?' + params.toString(), { method: 'POST' });
                 dispatch({ type: 'SET_CAN_CONFIG', payload: { canMode, canNodeId: bootNode } });
                 if (canMode) dispatch({ type: 'SET_CAN_NODE', payload: bootNode });
+                setSavedCanMode(canMode);
                 setTimeout(() => setSaving(false), 2000);
               } catch (e) { setSaving(false); }
-            }} style="font-size:.75rem;padding:4px 12px;margin-left:auto" disabled=${saving}>${saving ? 'Saving...' : 'Save'}</button>
+            }} style="font-size:.75rem;padding:4px 12px;margin-left:auto;${canMode !== savedCanMode ? 'border-color:var(--amber);color:var(--amber)' : ''}" disabled=${saving}>${saving ? 'Saving...' : 'Save'}</button>
           </div>
+          ${canMode !== savedCanMode && html`
+            <p style="color:var(--amber);font-size:.78rem;margin:.25rem 0 0">
+              Unsaved change — press <b>Save</b> to switch the interface to ${canMode ? 'CAN Bus' : 'UART'}${canMode ? ' before scanning for devices' : ''}.
+            </p>
+          `}
 
           ${!canMode && html`
             <h3 style="margin-top:.75rem">UART Configuration</h3>
@@ -1763,10 +1796,14 @@ const Settings = () => {
             <p style="color:var(--text2);font-size:.8rem;margin:0 0 .75rem">Speed and pins apply to all devices on the bus. Default: GPIO4 (RX), GPIO5 (TX).</p>
 
             <h3 style="margin-top:.75rem">CAN Devices</h3>
+            <p style="color:var(--text2);font-size:.78rem;margin:0 0 .5rem">
+              Setup: <b>1.</b> switch to CAN Bus → <b>2.</b> Save → <b>3.</b> Scan for devices.
+              Found nodes are stored with the next Save; the <b>default</b> node is selected at boot.
+            </p>
+            ${!savedCanMode && html`<p style="color:var(--amber);font-size:.78rem;margin:0 0 .5rem">CAN mode isn't saved yet — scanning needs the saved interface to be CAN Bus.</p>`}
             <div style="display:flex;gap:6px;margin-bottom:.5rem">
               <button onclick=${async () => {
-                const btn = document.activeElement;
-                if (btn) { btn.textContent = 'Scanning...'; btn.disabled = true; }
+                setScanState('scanning');
                 try {
                   const r = await fetch('/can-scan');
                   const devices = await r.json();
@@ -1775,12 +1812,16 @@ const Settings = () => {
                     dispatch({ type: 'SET_CAN_NODE', payload: devices[0].nodeId });
                     fetch('/set-can-node?id=' + devices[0].nodeId);
                   }
-                  if (btn) btn.textContent = devices.length ? `Found ${devices.length} device(s)` : 'No devices found';
+                  setScanState(devices.length ? 'Found ' + devices.length + ' device(s)' : 'No devices found');
                 } catch (e) {
-                  if (btn) btn.textContent = 'Scan failed';
+                  setScanState('Scan failed');
                 }
-                setTimeout(() => { if (btn) { btn.textContent = '🔍 Scan for devices'; btn.disabled = false; } }, 2000);
-              }} style="font-size:.75rem;padding:4px 12px">🔍 Scan for devices</button>
+                setTimeout(() => setScanState(''), 2500);
+              }} disabled=${scanState === 'scanning'} style="font-size:.75rem;padding:4px 12px">
+                ${scanState === 'scanning' ? 'Scanning…' : scanState || html`
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                  Scan for devices`}
+              </button>
               <button onclick=${() => {
                 const id = parseInt(prompt('Enter node ID (1-32):', '1'));
                 if (id >= 1 && id <= 32) dispatch({ type: 'ADD_CAN_NODE', payload: { nodeId: id, name: '' } });
@@ -1844,9 +1885,21 @@ const Support = () => html`
     </div>
     <div class="main-left">
       <h2>Support</h2>
-      <p>Get support from the community on the <a href="https://openinverter.org">OpenInverter Forum</a>.</p>
-      <p>Paid support is also available. See details <a href="https://openinverter.org/docs/index.html%3Fen_consulting,35.html">here</a>.</p>
-      <p style="font-size:.8rem;color:var(--text2)">Remote support opens in a new tab. Your device must be connected to both the inverter and the internet.</p>
+      <div class="dash-box compact" style="margin-bottom:1rem">
+        <h3>Community</h3>
+        <p style="margin:0">Get support from the community on the <a href="https://openinverter.org">OpenInverter Forum</a> —
+        the best place for configuration questions, parameter advice and troubleshooting.</p>
+      </div>
+      <div class="dash-box compact" style="margin-bottom:1rem">
+        <h3>Paid Support</h3>
+        <p style="margin:0">Professional consulting is also available — see the
+        <a href="https://openinverter.org/docs/index.html%3Fen_consulting,35.html">details here</a>.</p>
+      </div>
+      <div class="dash-box compact">
+        <h3>Remote Support</h3>
+        <p style="margin:0">A remote session opens in a new tab and lets a helper access your inverter through this device.
+        Your device must be connected to both the inverter and the internet.</p>
+      </div>
     </div>
   </div>
 `;
@@ -1854,7 +1907,7 @@ const Support = () => html`
 // ==================== Gauges ====================
 
 // Mini line chart for gauge line mode — value and unit passed as props
-const GaugeLine = ({ name, min, max, value, unit }) => {
+const GaugeLine = ({ name, min, max, value, unit, color }) => {
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
   const MAX_POINTS = 20;
@@ -1862,9 +1915,10 @@ const GaugeLine = ({ name, min, max, value, unit }) => {
   useEffect(() => {
     if (canvasRef.current && !chartRef.current && typeof Chart !== 'undefined') {
       const yMin = min != null ? min : 0;
-      const yMax = max != null && max !== 0 ? max : 100;
+      const yMax = max != null && max !== 0 ? max : 4000;
+      const col = color || colours[0];
       chartRef.current = new Chart(canvasRef.current, {
-        type: 'line', data: { datasets: [{ label: name, data: [], borderColor: colours[0], backgroundColor: colours[0] + '22', fill: true, pointRadius: 0, tension: 0.3 }] },
+        type: 'line', data: { datasets: [{ label: name, data: [], borderColor: col, backgroundColor: col + '22', fill: true, pointRadius: 0, tension: 0.3 }] },
         options: {
           animation: false, parsing: false,
           plugins: { legend: { display: false } },
@@ -1881,9 +1935,14 @@ const GaugeLine = ({ name, min, max, value, unit }) => {
     if (!chartRef.current) return;
     const chart = chartRef.current;
     chart.options.scales.y.min = min != null ? min : 0;
-    chart.options.scales.y.max = (max != null && max !== 0) ? max : 100;
+    chart.options.scales.y.max = (max != null && max !== 0) ? max : 4000;
+    const col = color || colours[0];
+    if (chart.data.datasets[0]) {
+      chart.data.datasets[0].borderColor = col;
+      chart.data.datasets[0].backgroundColor = col + '22';
+    }
     chart.update('none');
-  }, [min, max]);
+  }, [min, max, color]);
 
   useEffect(() => {
     if (value == null || isNaN(value) || !chartRef.current) return;
@@ -1908,9 +1967,18 @@ const GaugeLine = ({ name, min, max, value, unit }) => {
   `;
 };
 
+// Mix a hex colour toward white (f > 0) or black (f < 0)
+const shadeColor = (hex, f) => {
+  const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
+  const t = f > 0 ? 255 : 0, a = Math.abs(f);
+  const m = (v) => Math.round(v + (t - v) * a);
+  return 'rgb(' + m(r) + ',' + m(g) + ',' + m(b) + ')';
+};
+
 // Modern SVG arc gauge — 270° sweep, gradient stroke, mono numerals.
 // Pure render: value changes animate via CSS transition on the dash array.
-const SvgGauge = ({ id, value, min = 0, max = 100, unit }) => {
+// A custom colour keeps the gradient look, centered on the chosen colour.
+const SvgGauge = ({ id, value, min = 0, max = 100, unit, color }) => {
   const size = 230, c = size / 2, r = 92;
   const SWEEP = 270; // degrees, gap centered at the bottom
   const v = (value == null || isNaN(value)) ? null : value;
@@ -1919,19 +1987,27 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit }) => {
   const circ = 2 * Math.PI * r;
   const arc = circ * SWEEP / 360;
   const grad = 'ggrad' + id;
+  const custom = color && /^#[0-9a-fA-F]{6}$/.test(color);
+  const stroke = 'url(#' + grad + ')';
   return html`
     <div class="svg-gauge">
       <svg width=${size} height=${size} viewBox=${'0 0 ' + size + ' ' + size}>
         <defs>
           <linearGradient id=${grad} x1="0" y1="1" x2="1" y2="0">
-            <stop offset="0%" stop-color="#4cc9f0" />
-            <stop offset="100%" stop-color="#54e6a4" />
+            ${custom ? html`
+              <stop offset="0%" stop-color=${shadeColor(color, .35)} />
+              <stop offset="55%" stop-color=${color} />
+              <stop offset="100%" stop-color=${shadeColor(color, -.28)} />
+            ` : html`
+              <stop offset="0%" stop-color="#4cc9f0" />
+              <stop offset="100%" stop-color="#54e6a4" />
+            `}
           </linearGradient>
         </defs>
         <g transform=${'rotate(135 ' + c + ' ' + c + ')'}>
           <circle class="g-track" cx=${c} cy=${c} r=${r} stroke-dasharray=${arc + ' ' + circ} />
           <circle class="g-value ${frac >= 0.92 ? 'over' : ''}" cx=${c} cy=${c} r=${r}
-            stroke=${'url(#' + grad + ')'} opacity=${frac > 0.004 ? 1 : 0}
+            stroke=${stroke} opacity=${frac > 0.004 ? 1 : 0}
             stroke-dasharray=${(arc * frac) + ' ' + circ} />
         </g>
       </svg>
@@ -1988,7 +2064,7 @@ const Gauges = () => {
   };
 
   const addGauge = () => {
-    setGaugeItems([...gaugeItems, { id: nextId.current++, name: '', min: 0, max: 100, type: 'radial' }]);
+    setGaugeItems([...gaugeItems, { id: nextId.current++, name: '', min: 0, max: 4000, type: 'radial' }]);
   };
 
   const removeGauge = (id) => {
@@ -2084,17 +2160,23 @@ const Gauges = () => {
                 <${FieldPicker} value=${g.name} spotNames=${spotNames} onChange=${name => updateGaugeConfig(g.id, 'name', name)} />
                 <span onclick=${() => removeGauge(g.id)} style="cursor:pointer;color:var(--red);font-weight:700;padding:0 4px" title="Remove">×</span>
               </div>
-              <div style="display:flex;gap:4px;align-items:center;margin-bottom:3px">
-                <select value=${g.type || 'radial'} onchange=${e => updateGaugeConfig(g.id, 'type', e.target.value)} style="font-size:.65rem;padding:1px 3px;width:5em">
+              <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px">
+                <select value=${g.type || 'radial'} onchange=${e => updateGaugeConfig(g.id, 'type', e.target.value)} style="font-size:.78rem;padding:4px 6px;width:6em">
                   <option value="radial">Radial</option>
                   <option value="line">Line</option>
                 </select>
-                <label style="white-space:nowrap;font-size:.7rem">Min</label>
+                <input type="color" value=${g.color || '#4cc9f0'} oninput=${e => updateGaugeConfig(g.id, 'color', e.target.value)}
+                  title="Gauge colour"
+                  style="width:30px;height:26px;padding:0;border:1px solid var(--border2);border-radius:6px;background:none;cursor:pointer" />
+                ${g.color && html`<button onclick=${() => updateGaugeConfig(g.id, 'color', '')} style="font-size:.65rem;padding:2px 8px" title="Reset to theme gradient">↺</button>`}
+              </div>
+              <div style="display:flex;gap:6px;align-items:center">
+                <label style="white-space:nowrap;font-size:.72rem">Min</label>
                 <input type="number" value=${g.min} oninput=${e => updateGaugeConfig(g.id, 'min', parseFloat(e.target.value) || 0)}
-                  style="width:100%;padding:2px 4px;font-size:.7rem" step="any" />
-                <label style="white-space:nowrap;font-size:.7rem">Max</label>
+                  style="width:4.2em;flex:1;padding:4px 5px;font-size:.78rem" step="any" />
+                <label style="white-space:nowrap;font-size:.72rem">Max</label>
                 <input type="number" value=${g.max} oninput=${e => updateGaugeConfig(g.id, 'max', parseFloat(e.target.value) || 0)}
-                  style="width:100%;padding:2px 4px;font-size:.7rem" step="any" />
+                  style="width:4.2em;flex:1;padding:4px 5px;font-size:.78rem" step="any" />
               </div>
             </div>
           `)}
@@ -2114,9 +2196,9 @@ const Gauges = () => {
             <div class="gauge-wrapper" style="text-align:center" key="${g.id}">
               <div style="font-weight:600;font-size:.9rem;margin-bottom:4px">${g.name || '—'}</div>
               ${(g.type === 'line')
-                ? html`<${GaugeLine} name=${g.name} min=${g.min} max=${g.max} value=${lineVals[g.id]} unit=${unit} />`
-                : html`<${SvgGauge} id=${g.id} value=${lineVals[g.id]} unit=${unit}
-                    min=${g.min != null ? g.min : 0} max=${(g.max == null || g.max === 0) ? 100 : g.max} />`}
+                ? html`<${GaugeLine} name=${g.name} min=${g.min} max=${g.max} value=${lineVals[g.id]} unit=${unit} color=${g.color || ''} />`
+                : html`<${SvgGauge} id=${g.id} value=${lineVals[g.id]} unit=${unit} color=${g.color || ''}
+                    min=${g.min != null ? g.min : 0} max=${(g.max == null || g.max === 0) ? 4000 : g.max} />`}
             </div>
           `; })}
         </div>
