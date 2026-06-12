@@ -73,6 +73,28 @@ const api = {
     return json;
   },
 
+  // CAN mode: the firmware flashes in one continuous background task on the
+  // ESP (the bootloader tolerates no gaps between frames); poll for progress.
+  async runCanUpdate(file, onProgress) {
+    const start = await fetch('/fwupdate?step=-1&file=' + encodeURIComponent(file));
+    const sj = await start.json().catch(() => ({}));
+    if (!start.ok) throw new Error(sj.message || 'Could not start update');
+    while (true) {
+      await new Promise(res => setTimeout(res, 400));
+      let st;
+      try {
+        const r = await fetch('/fwupdate-status');
+        if (!r.ok) continue;
+        st = await r.json();
+      } catch (e) { continue; }
+      if (st.state === 1) onProgress(0, 'Waiting for bootloader — power-cycle the device if this hangs');
+      else if (st.state === 2) onProgress(Math.round(100 * st.page / (st.pages || 1)), 'Flashing page ' + st.page + ' / ' + st.pages);
+      else if (st.state === 3) { onProgress(100, 'Update complete'); return; }
+      else if (st.state === 4) throw new Error(st.message || 'Update failed');
+      else return; // idle — task ended unexpectedly
+    }
+  },
+
   async loadFavorites() {
     try {
       const r = await fetch('/favorites.json');
@@ -935,6 +957,21 @@ const Update = () => {
     await api.uploadFile(fd);
     if (fileRef.current) fileRef.current.value = ''; // allow re-selecting the same file
     setUpdateMsg('Installing firmware...');
+
+    if (state.canMode) {
+      // One continuous background transfer on the ESP, polled for progress
+      try {
+        await api.runCanUpdate('/' + file.name, (pct, msg) => { setProgress(pct); setUpdateMsg(msg); });
+        setUpdateMsg('Update Done!');
+        api.deleteFile('/' + file.name);
+        setTimeout(() => setUpdating(false), 3000);
+      } catch (e) {
+        setUpdateMsg('Error: ' + e.message);
+      }
+      dispatch({ type: 'SET_LOGGING', payload: false });
+      return;
+    }
+
     const doStep = async (step) => {
       try {
         const result = await api.runUpdateStep(step, '/' + file.name);
@@ -981,6 +1018,20 @@ const Update = () => {
       setUpdating(true); setProgress(0); setUpdateMsg('Installing...');
       // Pause json polling — its UART/CAN traffic would corrupt the bootloader transfer
       dispatch({ type: 'SET_LOGGING', payload: true });
+
+      if (state.canMode) {
+        try {
+          await api.runCanUpdate('/stm32.bin', (pct, msg) => { setProgress(pct); setUpdateMsg(msg); });
+          setUpdateMsg('Done!');
+          api.deleteFile('/stm32.bin');
+          setTimeout(() => setUpdating(false), 3000);
+        } catch (e) {
+          setUpdateMsg('Error: ' + e.message);
+        }
+        dispatch({ type: 'SET_LOGGING', payload: false });
+        return;
+      }
+
       const doStep = async (step) => {
         try {
           const result = await api.runUpdateStep(step, '/stm32.bin');
