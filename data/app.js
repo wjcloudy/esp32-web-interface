@@ -918,8 +918,9 @@ const SpotValues = () => {
   // Use fast value if available, otherwise store value (with enum resolution)
   const getDisplay = (v) => {
     // Entries without a param id (e.g. serial) can't be read by the fast
-    // 'get' loop — always show their static value
-    if (showFavs && fastVals[v.name] !== undefined && v.id !== undefined) {
+    // 'get' loop — always show their static value. Virtual values are
+    // id-less but served live by the firmware.
+    if (showFavs && fastVals[v.name] !== undefined && (v.id !== undefined || v.virtual)) {
       const val = fastVals[v.name];
       if (v.enums) {
         if (v.enums[val] !== undefined) return v.enums[val];
@@ -1568,7 +1569,11 @@ const CanMapping = () => {
   const [mappings, setMappings] = useState([]);   // new rows being edited
   const [existing, setExisting] = useState([]);   // mappings read from the device
   const [loading, setLoading] = useState(false);
-  const spotNames = state.spotValues ? Object.keys(state.spotValues) : [];
+  const [virtuals, setVirtuals] = useState([]);   // ESP-side virtual spot values
+  const [virtMsg, setVirtMsg] = useState('');
+  // Inverter mappings can only reference the device's own values — exclude
+  // ESP-side virtuals (identified by the firmware's virtual flag, not name)
+  const spotNames = state.spotValues ? Object.keys(state.spotValues).filter(n => !state.spotValues[n].virtual) : [];
 
   // paramid -> name lookup from the loaded parameter database
   const idToName = {};
@@ -1587,6 +1592,48 @@ const CanMapping = () => {
   };
 
   useEffect(() => { loadMappings(); }, [state.canMode]);
+
+  // Virtual spot values: ESP-side CAN RX mappings stored in /virtualvals.json
+  useEffect(() => {
+    if (!state.canMode) return;
+    fetch('/virtualvals.json').then(r => r.json()).then(d => {
+      if (d.items && Array.isArray(d.items)) {
+        setVirtuals(d.items.map(it => ({
+          ...it,
+          name: String(it.name || '').replace(/^v_/, ''),
+          // show CAN ids the way people write them
+          id: it.id != null ? '0x' + Number(it.id).toString(16).toUpperCase() : '',
+        })));
+      }
+    }).catch(() => {});
+  }, [state.canMode]);
+
+  const saveVirtuals = async () => {
+    const items = [];
+    for (const v of virtuals) {
+      const suffix = String(v.name || '').trim().replace(/^v_+/, '').replace(/[^a-zA-Z0-9_]/g, '');
+      if (!suffix) continue;
+      const id = Number(String(v.id == null ? '' : v.id).trim() || 0);
+      if (isNaN(id) || id <= 0 || id > 0x1FFFFFFF) { alert('v_' + suffix + ': invalid CAN ID — use decimal (592) or hex (0x250)'); return; }
+      items.push({
+        name: 'v_' + suffix,
+        unit: String(v.unit || '').slice(0, 10),
+        id: id,
+        pos: Math.min(63, Math.max(0, Number(v.pos) || 0)),
+        len: Math.min(32, Math.max(1, Number(v.len) || 8)),
+        gain: Number(v.gain) || 1,
+        offset: Number(v.offset) || 0,
+        signed: !!v.signed,
+      });
+    }
+    if (items.length > 16) { alert('Maximum 16 virtual values'); return; }
+    const fd = new FormData();
+    fd.append('updatefile', new Blob([JSON.stringify({ items })], { type: 'application/json' }), 'virtualvals.json');
+    await fetch('/edit', { method: 'POST', body: fd });
+    const r = await fetch('/virtual-reload').then(x => x.json()).catch(() => ({}));
+    setVirtMsg((r.count != null ? r.count : items.length) + ' virtual value(s) active');
+    setTimeout(() => setVirtMsg(''), 3000);
+  };
 
   const saveMappings = async () => {
     for (const m of mappings) {
@@ -1682,6 +1729,42 @@ const CanMapping = () => {
             `)}
           </tbody>
         </table>
+        ${state.canMode && html`
+          <h3 class="underline">Virtual spot values</h3>
+          <p style="color:var(--text2);font-size:.78rem;margin:0 0 .5rem">
+            Capture values directly from CAN frames on this interface — no inverter mapping needed.
+            They appear as <b>v_</b>-prefixed spot values usable in gauges, plots and the logger,
+            and are included in the Settings export. Max 16.
+          </p>
+          ${virtuals.length > 0 && html`
+            <table style="width:auto;table-layout:auto;margin-bottom:.5rem">
+              <thead><tr><th>Name</th><th>CAN ID</th><th>Start bit</th><th>Bits</th><th>Gain</th><th>Offset</th><th>Unit</th><th>Signed</th><th></th></tr></thead>
+              <tbody>
+                ${virtuals.map((v, i) => html`
+                  <tr key=${'v' + i}>
+                    <td><div style="display:flex;align-items:center">
+                      <span style="color:var(--text3);font-family:var(--num)">v_</span>
+                      <input type="text" value=${v.name} oninput=${e => { const nv = [...virtuals]; nv[i].name = e.target.value; setVirtuals(nv); }} style="width:7em;font-family:var(--num)" />
+                    </div></td>
+                    <td><input type="text" value=${v.id} placeholder="0x250" oninput=${e => { const nv = [...virtuals]; nv[i].id = e.target.value; setVirtuals(nv); }} style="width:6em;font-family:var(--num)" /></td>
+                    <td><input type="number" min="0" max="63" value=${v.pos} oninput=${e => { const nv = [...virtuals]; nv[i].pos = e.target.value; setVirtuals(nv); }} style="width:4em" /></td>
+                    <td><input type="number" min="1" max="32" value=${v.len} oninput=${e => { const nv = [...virtuals]; nv[i].len = e.target.value; setVirtuals(nv); }} style="width:4em" /></td>
+                    <td><input type="number" step="any" value=${v.gain} oninput=${e => { const nv = [...virtuals]; nv[i].gain = e.target.value; setVirtuals(nv); }} style="width:4.5em" /></td>
+                    <td><input type="number" step="any" value=${v.offset} oninput=${e => { const nv = [...virtuals]; nv[i].offset = e.target.value; setVirtuals(nv); }} style="width:4.5em" /></td>
+                    <td><input type="text" value=${v.unit || ''} oninput=${e => { const nv = [...virtuals]; nv[i].unit = e.target.value; setVirtuals(nv); }} style="width:3.5em" /></td>
+                    <td style="text-align:center"><input type="checkbox" checked=${!!v.signed} onchange=${e => { const nv = [...virtuals]; nv[i].signed = e.target.checked; setVirtuals(nv); }} /></td>
+                    <td><button onclick=${() => setVirtuals(virtuals.filter((_, j) => j !== i))} style="padding:2px 6px;font-size:.7rem;color:var(--red)">✕</button></td>
+                  </tr>
+                `)}
+              </tbody>
+            </table>
+          `}
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:1rem">
+            <button onclick=${() => virtuals.length < 16 && setVirtuals([...virtuals, { name: '', id: '', pos: 0, len: 16, gain: 1, offset: 0, unit: '', signed: false }])} style="width:auto"><${Icon} n="plus" />Add virtual value</button>
+            <button onclick=${saveVirtuals} style="width:auto"><${Icon} n="save" />Save virtual values</button>
+            ${virtMsg && html`<span style="font-size:.78rem;color:var(--green)">${virtMsg}</span>`}
+          </div>
+        `}
       </div>
     </div>
   `;
@@ -1779,7 +1862,7 @@ const Settings = () => {
   // plots, UI prefs) as one JSON bundle
   const exportUiSettings = async () => {
     const grab = (url) => fetch(url).then(r => r.json()).catch(() => null);
-    const [favorites, gauges, plots] = await Promise.all([grab('/favorites.json'), grab('/gauges.json'), grab('/plots.json')]);
+    const [favorites, gauges, plots, virtualvals] = await Promise.all([grab('/favorites.json'), grab('/gauges.json'), grab('/plots.json'), grab('/virtualvals.json')]);
     const prefs = {};
     try {
       ['theme', 'accentColor', 'spotSparks'].forEach(k => {
@@ -1787,7 +1870,7 @@ const Settings = () => {
         if (v != null) prefs[k] = v;
       });
     } catch (e) {}
-    const bundle = { type: 'openinverter-ui-settings', version: 1, exported: new Date().toISOString(), favorites, gauges, plots, prefs };
+    const bundle = { type: 'openinverter-ui-settings', version: 1, exported: new Date().toISOString(), favorites, gauges, plots, virtualvals, prefs };
     const a = document.createElement('a');
     a.href = 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(bundle, null, 2));
     a.download = 'ui-settings.json';
@@ -1809,6 +1892,7 @@ const Settings = () => {
       if (bundle.favorites) await up('favorites.json', bundle.favorites);
       if (bundle.gauges) await up('gauges.json', bundle.gauges);
       if (bundle.plots) await up('plots.json', bundle.plots);
+      if (bundle.virtualvals) { await up('virtualvals.json', bundle.virtualvals); fetch('/virtual-reload').catch(() => {}); }
       try { for (const k in (bundle.prefs || {})) localStorage.setItem(k, bundle.prefs[k]); } catch (err) {}
       alert('Settings imported — reloading');
       location.reload();

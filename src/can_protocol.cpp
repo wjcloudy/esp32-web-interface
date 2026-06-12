@@ -75,6 +75,7 @@ bool canReceiveForNode(uint8_t nodeId, twai_message_t* outFrame, uint32_t timeou
         if (outFrame) *outFrame = frame;
         return true;
       }
+      continue; // unrelated bus traffic — keep draining without sleeping
     }
     delay(1);
   }

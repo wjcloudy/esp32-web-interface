@@ -95,6 +95,110 @@ char uartMessBuff[UART_MESSBUF_SIZE];
 String canParamJson = "";
 bool canParamCacheLoaded = false;
 
+// Virtual spot values: ESP-side CAN RX mappings (configured in the UI,
+// stored in /virtualvals.json). Captured frames update these via the CAN
+// driver's RX hook; values surface through the json/get command paths.
+#define VIRT_MAX 16
+struct VirtualVal {
+  char name[24];
+  char unit[12];
+  uint32_t id;
+  uint8_t pos;     // start bit (0-63, little-endian across the frame)
+  uint8_t len;     // bit length (1-32)
+  bool sgn;        // sign-extend the extracted value
+  float gain;
+  float offset;
+  volatile float value;
+  volatile bool valid;
+};
+static VirtualVal virtVals[VIRT_MAX];
+static int virtCount = 0;
+
+static void canVirtualRxHook(const twai_message_t* f) {
+  for (int i = 0; i < virtCount; i++) {
+    VirtualVal& v = virtVals[i];
+    if (f->identifier != v.id) continue;
+    uint64_t data = 0;
+    memcpy(&data, f->data, f->data_length_code > 8 ? 8 : f->data_length_code);
+    uint64_t mask = (v.len >= 64) ? ~0ULL : ((1ULL << v.len) - 1ULL);
+    uint64_t raw = (data >> v.pos) & mask;
+    int64_t sv = (int64_t)raw;
+    if (v.sgn && v.len < 64 && (raw & (1ULL << (v.len - 1)))) sv = (int64_t)raw - (int64_t)(1ULL << v.len);
+    v.value = (float)sv * v.gain + v.offset;
+    v.valid = true;
+  }
+}
+
+// Pull a value field out of a flat JSON object substring
+static String jsonField(const String& obj, const char* key) {
+  String k = String("\"") + key + "\":";
+  int p = obj.indexOf(k);
+  if (p < 0) return "";
+  p += k.length();
+  while (p < (int)obj.length() && obj[p] == ' ') p++;
+  if (p < (int)obj.length() && obj[p] == '"') {
+    int e = obj.indexOf('"', p + 1);
+    return e > p ? obj.substring(p + 1, e) : "";
+  }
+  int e = p;
+  while (e < (int)obj.length() && obj[e] != ',' && obj[e] != '}') e++;
+  return obj.substring(p, e);
+}
+
+static void canVirtualLoad() {
+  virtCount = 0;
+  if (!SPIFFS.exists("/virtualvals.json")) return;
+  File f = SPIFFS.open("/virtualvals.json", "r");
+  if (!f) return;
+  String j = f.readString();
+  f.close();
+
+  int pos = j.indexOf("\"items\"");
+  if (pos < 0) return;
+  while (virtCount < VIRT_MAX) {
+    int os = j.indexOf('{', pos + 1);
+    if (os < 0) break;
+    int oe = j.indexOf('}', os);
+    if (oe < 0) break;
+    String obj = j.substring(os, oe + 1);
+    pos = oe;
+
+    String name = jsonField(obj, "name");
+    if (!name.startsWith("v_") || name.length() < 3) continue; // enforced prefix
+    VirtualVal& v = virtVals[virtCount];
+    strncpy(v.name, name.c_str(), sizeof(v.name) - 1);
+    v.name[sizeof(v.name) - 1] = 0;
+    String unit = jsonField(obj, "unit");
+    strncpy(v.unit, unit.c_str(), sizeof(v.unit) - 1);
+    v.unit[sizeof(v.unit) - 1] = 0;
+    v.id = strtoul(jsonField(obj, "id").c_str(), NULL, 0);
+    v.pos = constrain(jsonField(obj, "pos").toInt(), 0, 63);
+    v.len = constrain(jsonField(obj, "len").toInt(), 1, 32);
+    v.sgn = jsonField(obj, "signed") == "true";
+    String g = jsonField(obj, "gain");
+    v.gain = g.length() ? g.toFloat() : 1.0f;
+    v.offset = jsonField(obj, "offset").toFloat();
+    v.value = 0;
+    v.valid = false;
+    virtCount++;
+  }
+  DBG_OUTPUT_PORT.printf("Virtual values: %d loaded\n", virtCount);
+}
+
+// Look up a virtual value by name. Returns true when the name belongs to
+// the virtual table (membership decides routing — not the name prefix,
+// since a device could legitimately expose a value named v_something);
+// *out is the captured value or NAN when no frame has been seen yet.
+static bool canVirtualFind(const String& name, float* out) {
+  for (int i = 0; i < virtCount; i++) {
+    if (name == virtVals[i].name) {
+      *out = virtVals[i].valid ? virtVals[i].value : NAN;
+      return true;
+    }
+  }
+  return false;
+}
+
 // CAN firmware update background task state
 enum CanFwState { CANFW_IDLE = 0, CANFW_WAITBOOT = 1, CANFW_FLASHING = 2, CANFW_DONE = 3, CANFW_ERROR = 4 };
 static volatile uint8_t canFwState = CANFW_IDLE;
@@ -237,6 +341,15 @@ static String canBuildJsonWithValues() {
     result += '"' + name + "\":" + entry;
     firstEntry = false;
     i = j;
+  }
+
+  // Virtual spot values (ESP-side CAN RX mappings)
+  for (int vi = 0; vi < virtCount; vi++) {
+    if (!firstEntry) result += ',';
+    result += "\"" + String(virtVals[vi].name) + "\":{\"unit\":\"" + String(virtVals[vi].unit) +
+              "\",\"isparam\":false,\"virtual\":true,\"value\":" +
+              (virtVals[vi].valid ? String(virtVals[vi].value, 2) : "0") + "}";
+    firstEntry = false;
   }
 
   // Only claim a live connection if the reads mostly succeeded — otherwise
@@ -895,8 +1008,11 @@ static String canExecuteCommand(const String& cmdStr, int repeat) {
       }
       name.trim();
       if (name.length() > 0) {
-        int paramId = canGetParamId(name);
-        float val = (paramId >= 0) ? canReadParamValue(paramId) : NAN;
+        float val;
+        if (!canVirtualFind(name, &val)) {
+          int paramId = canGetParamId(name);
+          val = (paramId >= 0) ? canReadParamValue(paramId) : NAN;
+        }
         result += (isnan(val) ? "0.00" : String(val, 2));
         if (commaIdx >= 0) result += "\t";
         count++;
@@ -1678,6 +1794,8 @@ void setup(void){
   // Initialize SPIFFS early so we can load settings before UART init
   SPIFFS.begin();
   loadSettings();
+  canVirtualLoad();
+  canDriverSetRxHook(canVirtualRxHook);
   initUART(); 
   
 
@@ -1886,6 +2004,13 @@ void setup(void){
   server.on("/plots.json", [](){
     if (!handleFileRead("/plots.json")) server.send(200, "application/json", "{\"plots\":[]}");
   });
+  server.on("/virtualvals.json", [](){
+    if (!handleFileRead("/virtualvals.json")) server.send(200, "application/json", "{\"items\":[]}");
+  });
+  server.on("/virtual-reload", [](){
+    canVirtualLoad();
+    server.send(200, "application/json", "{\"count\":" + String(virtCount) + "}");
+  });
   server.on("/can-debug", [](){
     // ?reset=1: reset the device and capture all frames seen on the bus for 8s
     // (diagnoses whether a CAN bootloader announces itself after reset)
@@ -2041,6 +2166,14 @@ void loop(void){
   // note: ArduinoOTA.handle() calls MDNS.update();
   server.handleClient();
   ArduinoOTA.handle();
+
+  // Pump CAN RX while idle so virtual spot values keep updating between
+  // HTTP requests (frames pass through the RX hook). Never during a
+  // firmware update — its task owns the bus.
+  if (canMode && virtCount > 0 && canFwState != CANFW_WAITBOOT && canFwState != CANFW_FLASHING) {
+    twai_message_t pumpFrame;
+    for (int i = 0; i < 16 && canDriverReceive(&pumpFrame); i++) {}
+  }
 
   if((WiFi.softAPgetStationNum() > 0) || (WiFi.status() == WL_CONNECTED))
   { //have connections so stop logging

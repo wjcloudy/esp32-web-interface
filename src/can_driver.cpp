@@ -64,14 +64,10 @@ bool canDriverInitScan(CanSpeed speed, int txPin, int rxPin) {
 }
 
 bool canDriverInitForDevice(uint8_t nodeId, CanSpeed speed, int txPin, int rxPin) {
-  // Narrow filter: only accept responses for this node + bootloader
-  uint16_t id = SDO_RESPONSE_BASE_ID + nodeId;
-  twai_filter_config_t filter = {
-    .acceptance_code = (uint32_t)(id << 5)
-                     | (uint32_t)(BOOTLOADER_RESPONSE_ID << 21),
-    .acceptance_mask  = 0x001F001F,
-    .single_filter = false
-  };
+  // Accept everything: SDO consumers filter by id themselves, and virtual
+  // spot values need to observe arbitrary bus traffic
+  (void)nodeId;
+  twai_filter_config_t filter = TWAI_FILTER_CONFIG_ACCEPT_ALL();
   return configureTwai(speed, txPin, rxPin, &filter);
 }
 
@@ -102,9 +98,17 @@ bool canDriverSend(uint32_t canId, const uint8_t* data, uint8_t len) {
   return twai_transmit(&msg, pdMS_TO_TICKS(10)) == ESP_OK;
 }
 
+static void (*rxHook)(const twai_message_t*) = nullptr;
+
+void canDriverSetRxHook(void (*hook)(const twai_message_t*)) {
+  rxHook = hook;
+}
+
 bool canDriverReceive(twai_message_t* outFrame) {
   if (!driverInstalled) return false;
-  return twai_receive(outFrame, 0) == ESP_OK;
+  if (twai_receive(outFrame, 0) != ESP_OK) return false;
+  if (rxHook) rxHook(outFrame);
+  return true;
 }
 
 bool canDriverIsRunning() {

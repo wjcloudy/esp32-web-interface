@@ -43,5 +43,9 @@ bool canDriverSend(uint32_t canId, const uint8_t* data, uint8_t len);
 // Receive a CAN message (non-blocking, returns false if no message)
 bool canDriverReceive(twai_message_t* outFrame);
 
+// Hook invoked for every received frame before it reaches the caller —
+// used for ESP-side virtual spot values
+void canDriverSetRxHook(void (*hook)(const twai_message_t*));
+
 // Check if driver is installed and running
 bool canDriverIsRunning();
