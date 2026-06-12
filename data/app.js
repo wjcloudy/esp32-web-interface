@@ -263,6 +263,14 @@ function reducer(state, action) {
       return { ...state, activeTab: action.payload };
     case 'SET_FILE_LIST':
       return { ...state, fileList: action.payload };
+    case 'SET_ALL_CATEGORIES': {
+      const cva = {};
+      for (const name in (state.params || {})) {
+        const c = state.params[name].category || 'General';
+        cva[c] = action.payload;
+      }
+      return { ...state, categoryVisible: cva };
+    }
     case 'TOGGLE_CATEGORY':
       const cv2 = { ...state.categoryVisible };
       cv2[action.payload] = !cv2[action.payload];
@@ -312,23 +320,24 @@ const Spinner = () => html`<div class="css-spinner"></div>`;
 
 const Modal = ({ id, size, title, children, onClose }) => {
   const elRef = useRef(null);
-  useEffect(() => {
+  if (!elRef.current) {
     const el = document.createElement('div');
     el.id = id + '-modal-root';
     document.body.appendChild(el);
     elRef.current = el;
-    const vnode = html`
-      <div id="${id}-modal-overlay" class="modal-overlay" style="display:flex">
-        <div class="${size === 'large' ? 'large-modal-container' : size === 'can-mapping' ? 'can-mapping-modal-container' : 'small-modal-container'}">
-          ${title && html`<div id="large-modal-header-div"><h2>${title}</h2><span class="modal-close" onclick=${onClose}>×</span></div>`}
-          <div class="modal-content">${children}</div>
-        </div>
+  }
+  // Tear the root down only on unmount — recreating it per render flickers
+  useEffect(() => () => {
+    if (elRef.current) { preact.render(null, elRef.current); document.body.removeChild(elRef.current); elRef.current = null; }
+  }, []);
+  preact.render(html`
+    <div id="${id}-modal-overlay" class="modal-overlay" style="display:flex">
+      <div class="${size === 'large' ? 'large-modal-container' : size === 'can-mapping' ? 'can-mapping-modal-container' : 'small-modal-container'}">
+        ${title && html`<div id="large-modal-header-div"><h2>${title}</h2><span class="modal-close" onclick=${onClose}>×</span></div>`}
+        <div class="modal-content">${children}</div>
       </div>
-    `;
-    preact.render(vnode, el);
-    return () => { preact.render(null, el); document.body.removeChild(el); elRef.current = null; };
-  }, [id, size, title, children, onClose]);
-
+    </div>
+  `, elRef.current);
   return null;
 };
 
@@ -365,6 +374,8 @@ const ICONS = {
   book: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>',
   x: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
   rss: '<path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1"/>',
+  expand: '<polyline points="7 6 12 11 17 6"/><polyline points="7 13 12 18 17 13"/>',
+  collapse: '<polyline points="17 11 12 6 7 11"/><polyline points="17 18 12 13 7 18"/>',
   life: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><line x1="4.93" y1="4.93" x2="9.17" y2="9.17"/><line x1="14.83" y1="14.83" x2="19.07" y2="19.07"/><line x1="14.83" y1="9.17" x2="19.07" y2="4.93"/><line x1="4.93" y1="19.07" x2="9.17" y2="14.83"/>',
 };
 const Icon = ({ n, size = 13 }) => html`<span class="btn-ic" dangerouslySetInnerHTML=${{
@@ -630,16 +641,19 @@ const Parameters = () => {
   const [editValue, setEditValue] = useState('');
   const [subToken, setSubToken] = useState('');
   const [showSubscribe, setShowSubscribe] = useState(false);
+  const [search, setSearch] = useState('');
 
   if (!state.params) return html`<div class="tabdiv main-content" style="display:flex"><p>Loading...</p></div>`;
 
   const hasFavs = state.paramFavorites.length > 0;
   const showFavs = state.showFavoritesOnly && hasFavs;
 
+  const term = search.trim().toLowerCase();
   const cats = {};
   for (const name in state.params) {
     const p = state.params[name];
     if (showFavs && !state.paramFavorites.includes(name)) continue;
+    if (term && !name.toLowerCase().includes(term)) continue;
     const cat = p.category || 'General';
     if (!cats[cat]) cats[cat] = [];
     cats[cat].push({ name, ...p });
@@ -705,6 +719,13 @@ const Parameters = () => {
   return html`
     <div id="parameters" class="tabdiv main-content" style="display:flex">
       <div class="main-right">
+        <h3 class="underline">Filter</h3>
+        <input type="text" placeholder="Search parameters..." value=${search}
+          oninput=${e => setSearch(e.target.value)} style="width:100%;margin-bottom:.25rem" />
+        <div style="display:flex;gap:6px;width:100%">
+          <button onclick=${() => dispatch({ type: 'SET_ALL_CATEGORIES', payload: true })} style="flex:1 1 0;width:auto;min-width:0;justify-content:center"><${Icon} n="expand" />Expand</button>
+          <button onclick=${() => dispatch({ type: 'SET_ALL_CATEGORIES', payload: false })} style="flex:1 1 0;width:auto;min-width:0;justify-content:center"><${Icon} n="collapse" />Collapse</button>
+        </div>
         <h3 class="underline">Save & Load</h3>
         <button onclick=${() => api.getText('save').then(r => alert(r || 'Parameters saved'))}><${Icon} n="save" />Save parameters to flash</button>
         <button onclick=${() => api.getText('load')}><${Icon} n="undo" />Restore parameters from flash</button>
@@ -714,7 +735,7 @@ const Parameters = () => {
           <label class="butt" for="paramfile"><${Icon} n="upload" />Load parameters from file</label>
         </form>
         <h3 class="underline">Parameter Database</h3>
-        <button onclick=${submitToDatabase}><${Icon} n="cloud" />Submit parameters to database</button>
+        <button onclick=${submitToDatabase}><${Icon} n="cloud" />Submit parameters</button>
         <button onclick=${() => setShowSubscribe(true)}><${Icon} n="rss" />Subscribe to parameter set</button>
         <button onclick=${stopSubscription}><${Icon} n="x" />Stop subscription</button>
         <h3 class="underline">Misc</h3>
@@ -734,7 +755,7 @@ const Parameters = () => {
                   ${state.categoryVisible[cat] ? '-' : '+'} ${cat}
                 </button>
               </td></tr>
-              ${state.categoryVisible[cat] !== false && cats[cat].map(p => html`
+              ${(term.length > 0 || state.categoryVisible[cat] !== false) && cats[cat].map(p => html`
                 <tr key=${p.name}>
                   <td style="cursor:pointer;width:24px;text-align:center;font-size:1.1rem;color:${state.paramFavorites.includes(p.name)?'var(--amber)':'var(--text3)'}"
                     onclick=${() => dispatch({ type: 'TOGGLE_PARAM_FAV', payload: p.name })}>
@@ -1721,6 +1742,46 @@ const Settings = () => {
     applyAccent(hex);
     try { hex ? localStorage.setItem('accentColor', hex) : localStorage.removeItem('accentColor'); } catch (e) {}
   };
+
+  // Export/import the web interface configuration (favourites, gauges,
+  // plots, UI prefs) as one JSON bundle
+  const exportUiSettings = async () => {
+    const grab = (url) => fetch(url).then(r => r.json()).catch(() => null);
+    const [favorites, gauges, plots] = await Promise.all([grab('/favorites.json'), grab('/gauges.json'), grab('/plots.json')]);
+    const prefs = {};
+    try {
+      ['theme', 'accentColor', 'spotSparks'].forEach(k => {
+        const v = localStorage.getItem(k);
+        if (v != null) prefs[k] = v;
+      });
+    } catch (e) {}
+    const bundle = { type: 'openinverter-ui-settings', version: 1, exported: new Date().toISOString(), favorites, gauges, plots, prefs };
+    const a = document.createElement('a');
+    a.href = 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(bundle, null, 2));
+    a.download = 'ui-settings.json';
+    a.click();
+  };
+
+  const importUiSettings = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const bundle = JSON.parse(await file.text());
+      if (bundle.type !== 'openinverter-ui-settings') { alert('Not a UI settings export file'); return; }
+      const up = async (name, data) => {
+        const fd = new FormData();
+        fd.append('updatefile', new Blob([JSON.stringify(data)], { type: 'application/json' }), name);
+        await fetch('/edit', { method: 'POST', body: fd });
+      };
+      if (bundle.favorites) await up('favorites.json', bundle.favorites);
+      if (bundle.gauges) await up('gauges.json', bundle.gauges);
+      if (bundle.plots) await up('plots.json', bundle.plots);
+      try { for (const k in (bundle.prefs || {})) localStorage.setItem(k, bundle.prefs[k]); } catch (err) {}
+      alert('Settings imported — reloading');
+      location.reload();
+    } catch (err) { alert('Import failed: ' + err.message); }
+  };
   const [apSSID, setApSSID] = useState('');
   const [apPW, setApPW] = useState('');
   const [staSSID, setStaSSID] = useState('');
@@ -1835,6 +1896,16 @@ const Settings = () => {
               <button class="swatch ${accent === c ? 'sel' : ''}" style=${{ background: c }} title=${c} onclick=${() => pickAccent(c)}></button>
             `)}
             <input type="color" value=${accent || '#4cc9f0'} oninput=${e => pickAccent(e.target.value)} title="Custom colour" />
+          </div>
+        </div>
+
+        <div class="dash-box compact" style="margin-bottom:1rem">
+          <h3>Web Interface Settings</h3>
+          <p style="font-size:.8rem;margin:0 0 .5rem">Back up or restore favourites, gauge and plot layouts, and UI preferences as a single file.</p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button onclick=${exportUiSettings} style="width:auto"><${Icon} n="download" />Export settings</button>
+            <input id="ui-settings-import" type="file" accept=".json" hidden onchange=${importUiSettings} />
+            <label class="butt" for="ui-settings-import" style="width:auto"><${Icon} n="upload" />Import settings</label>
           </div>
         </div>
 
