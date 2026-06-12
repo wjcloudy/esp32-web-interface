@@ -438,7 +438,11 @@ const Navbar = () => {
           </div>
         </div>
       `}
-      ${state.canMode && html`<div style="text-align:center;padding:4px 0 0"><span style="background:${state.canConnected ? 'var(--green)' : 'var(--red)'};color:#fff;padding:2px 8px;border-radius:10px;font-size:.65rem;font-weight:600;letter-spacing:.03em">CAN #${state.canActiveNodeId}</span></div>`}
+      ${(() => {
+        const ok = state.canMode ? state.canConnected : (!state.commError && state.status != null);
+        const label = state.canMode ? 'CAN #' + state.canActiveNodeId : 'UART';
+        return html`<div style="text-align:center;padding:4px 0 0"><span style="background:${ok ? 'var(--green)' : 'var(--red)'};color:#fff;padding:2px 8px;border-radius:10px;font-size:.65rem;font-weight:600;letter-spacing:.03em">${label}</span></div>`;
+      })()}
     </aside>
   `;
 };
@@ -484,7 +488,9 @@ const Dashboard = () => {
                 <div class="hero-top">
                   <span class="pill ${tone}"><span class="dot"></span>${offline ? 'Offline' : state.opmode}</span>
                   ${hasErr && html`<span class="pill warn">⚠ ${state.lasterr}</span>`}
-                  ${state.canMode && html`<span class="pill ${state.canConnected ? 'info' : 'danger'}">CAN #${state.canActiveNodeId}</span>`}
+                  ${state.canMode
+                    ? html`<span class="pill ${state.canConnected ? 'info' : 'danger'}">CAN #${state.canActiveNodeId}</span>`
+                    : html`<span class="pill ${offline ? 'danger' : 'info'}">UART</span>`}
                 </div>
                 <div class="hero-state">${friendly}</div>
                 <p class="hero-sub">Status: ${state.status}</p>
@@ -1584,6 +1590,13 @@ function setTheme(theme) {
   const t = getTheme();
   if (t !== 'system') document.documentElement.setAttribute('data-theme', t);
 })();
+
+// PWA: register the (no-op) service worker where the origin allows it —
+// HTTPS, localhost, or an origin whitelisted via chrome://flags. Enables
+// the browser install prompt; inert on plain http.
+if ('serviceWorker' in navigator && window.isSecureContext) {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
 
 // Accent colour: overrides --accent/--accent2/--accent-glow across both themes
 const ACCENT_PRESETS = ['#4cc9f0', '#54e6a4', '#b78cff', '#ffb454', '#5b9dff', '#ff6b8b'];

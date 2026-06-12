@@ -410,6 +410,8 @@ String getContentType(String filename){
   else if(filename.endsWith(".gif")) return "image/gif";
   else if(filename.endsWith(".jpg")) return "image/jpeg";
   else if(filename.endsWith(".ico")) return "image/x-icon";
+  else if(filename.endsWith(".svg")) return "image/svg+xml";
+  else if(filename.endsWith(".json")) return "application/json";
   else if(filename.endsWith(".xml")) return "text/xml";
   else if(filename.endsWith(".pdf")) return "application/x-pdf";
   else if(filename.endsWith(".zip")) return "application/x-zip";
@@ -1798,6 +1800,17 @@ void setup(void){
     // Return to scanning mode
     canDriverInitScan(speed, canTxPin, canRxPin);
     server.send(200, "text/json", result);
+  });
+  // UI layout files: return empty defaults instead of 404 when not yet saved
+  // (avoids console noise on fresh filesystems)
+  server.on("/favorites.json", [](){
+    if (!handleFileRead("/favorites.json")) server.send(200, "application/json", "{\"p\":[],\"s\":[]}");
+  });
+  server.on("/gauges.json", [](){
+    if (!handleFileRead("/gauges.json")) server.send(200, "application/json", "{\"items\":[]}");
+  });
+  server.on("/plots.json", [](){
+    if (!handleFileRead("/plots.json")) server.send(200, "application/json", "{\"plots\":[]}");
   });
   server.on("/can-debug", [](){
     // ?reset=1: reset the device and capture all frames seen on the bus for 8s

@@ -468,10 +468,30 @@ td { font-variant-numeric: tabular-nums; }
 
 /* ===== ERROR ===== */
 .communication-error-bar {
-  position: fixed; top: 0; left: 50%; transform: translateX(-50%); z-index: 200;
-  padding: 10px 28px; background: var(--red); color: #fff;
-  font-weight: 600; font-size: .85rem;
-  border-radius: 0 0 var(--radius) var(--radius); box-shadow: var(--shadow);
+  position: fixed; top: 14px; left: 50%; transform: translateX(-50%); z-index: 200;
+  padding: 9px 20px;
+  background: var(--glass); backdrop-filter: blur(20px) saturate(140%); -webkit-backdrop-filter: blur(20px) saturate(140%);
+  border: 1px solid var(--tone-danger); color: var(--tone-danger);
+  font-weight: 600; font-size: .82rem;
+  border-radius: 999px;
+  box-shadow: var(--shadow), 0 0 20px var(--tone-danger-bg);
+  /* dedicated keyframes: a generic transform animation would override
+     the translateX(-50%) centering */
+  animation: toast-rise .25s ease both;
+  white-space: nowrap;
+  max-width: calc(100vw - 24px);
+}
+@keyframes toast-rise {
+  from { opacity: 0; transform: translate(-50%, -10px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
+@media (max-width: 600px) {
+  .communication-error-bar { white-space: normal; text-align: center; border-radius: var(--radius); width: max-content; }
+}
+.communication-error-bar p { margin: 0; color: inherit; display: flex; align-items: center; gap: 9px; }
+.communication-error-bar p::before {
+  content: ''; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0;
+  background: currentColor; animation: pulse-dot 1.6s ease infinite;
 }
 
 /* ===== GAUGES ===== */
