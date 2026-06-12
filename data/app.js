@@ -1959,9 +1959,9 @@ const GaugeLine = ({ name, min, max, value, unit, color }) => {
   return html`
     <div style="width:250px">
       <canvas ref=${canvasRef} width="250" height="200" style="width:250px;height:200px"></canvas>
-      <div style="font-size:1.4rem;font-weight:700;color:var(--accent);line-height:1.2;margin-top:2px">
+      <div class="g-val" style="font-size:1.6rem;margin-top:4px">
         ${value != null ? value.toFixed(1) : '—'}
-        ${unit && html`<span style="font-size:.7rem;font-weight:500;color:var(--text2)"> ${unit}</span>`}
+        ${unit && html`<span class="g-unit" style="display:inline;margin-left:4px">${unit}</span>`}
       </div>
     </div>
   `;
