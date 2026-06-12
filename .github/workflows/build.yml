@@ -30,33 +30,42 @@ jobs:
         # build behaviour/layout
         run: pip install "platformio==6.1.19"
 
+      # Artifacts are copied out immediately after each build: a later pio
+      # invocation can decide the environment is outdated and clean the
+      # build dir, deleting the previous step's binaries.
       - name: Build firmware (both targets)
-        run: pio run -e release -e release-t2can
+        run: |
+          pio run -e release -e release-t2can
+          mkdir -p out/release out/release-t2can
+          cp .pio/build/release/bootloader.bin .pio/build/release/partitions.bin .pio/build/release/firmware.bin out/release/
+          cp .pio/build/release-t2can/bootloader.bin .pio/build/release-t2can/partitions.bin .pio/build/release-t2can/firmware.bin out/release-t2can/
 
       - name: Build filesystems
         run: |
           pio run -e release -t buildfs
           pio run -e release-t2can -t buildfs
+          cp .pio/build/release/spiffs.bin out/release/
+          cp .pio/build/release-t2can/spiffs.bin out/release-t2can/
 
       - name: List build outputs
-        run: find .pio/build -maxdepth 2 -name '*.bin' | sort
+        run: find out -name '*.bin' | sort
 
       - name: Merge combined images
         run: |
           ESPTOOL=~/.platformio/packages/tool-esptoolpy/esptool.py
           BOOT_APP0=~/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin
           python "$ESPTOOL" --chip esp32 merge_bin -o esp32-web-interface_4.00-0x000.bin \
-            0x1000   .pio/build/release/bootloader.bin \
-            0x8000   .pio/build/release/partitions.bin \
+            0x1000   out/release/bootloader.bin \
+            0x8000   out/release/partitions.bin \
             0xe000   "$BOOT_APP0" \
-            0x10000  .pio/build/release/firmware.bin \
-            0x290000 .pio/build/release/spiffs.bin
+            0x10000  out/release/firmware.bin \
+            0x290000 out/release/spiffs.bin
           python "$ESPTOOL" --chip esp32s3 merge_bin -o esp32-web-interface-t2can_4.00-0x000.bin \
-            0x0      .pio/build/release-t2can/bootloader.bin \
-            0x8000   .pio/build/release-t2can/partitions.bin \
+            0x0      out/release-t2can/bootloader.bin \
+            0x8000   out/release-t2can/partitions.bin \
             0xe000   "$BOOT_APP0" \
-            0x10000  .pio/build/release-t2can/firmware.bin \
-            0xc90000 .pio/build/release-t2can/spiffs.bin
+            0x10000  out/release-t2can/firmware.bin \
+            0xc90000 out/release-t2can/spiffs.bin
           ls -la esp32-web-interface*.bin
 
       - name: Upload images as artifacts
