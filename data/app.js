@@ -408,6 +408,16 @@ const OPMODE_FRIENDLY = {
   'PchFail': 'Precharge failed', 'Charge': 'Charging', 'Preheat': 'Preheating',
 };
 
+// Resolve an enum value to its display label (handles bitmask enums)
+const enumLabel = (enums, val) => {
+  if (!enums || val == null) return null;
+  const k = Math.round(val);
+  if (enums[k] !== undefined) return enums[k];
+  const a = [];
+  for (const key in enums) if (k & parseInt(key)) a.push(enums[key]);
+  return a.length ? a.join('|') : String(k);
+};
+
 const fmtNum = (v, dec = 1) => {
   const n = parseFloat(v);
   return isNaN(n) ? '—' : n.toFixed(dec);
@@ -1235,16 +1245,27 @@ const PlotChart = ({ plot, pushValue, maxValues }) => {
 // Searchable field picker
 const FieldPicker = ({ value, spotNames, onChange }) => {
   const [open, setOpen] = useState(false);
+  const [up, setUp] = useState(false);
   const [search, setSearch] = useState('');
+  const triggerRef = useRef(null);
   const filtered = search ? spotNames.filter(n => n.toLowerCase().includes(search.toLowerCase())) : spotNames;
+
+  const toggle = () => {
+    // Flip the list upward when there's no room below the trigger
+    if (!open && triggerRef.current) {
+      const r = triggerRef.current.getBoundingClientRect();
+      setUp(window.innerHeight - r.bottom < 290);
+    }
+    setOpen(!open);
+  };
 
   return html`
     <div style="position:relative;flex:1">
-      <div onclick=${() => setOpen(!open)} style="padding:6px 10px;border:1px solid var(--border2);border-radius:var(--radius-xs);font-size:.82rem;cursor:pointer;background:var(--surface);min-width:120px;color:${value ? 'var(--text)' : 'var(--text3)'}">
+      <div ref=${triggerRef} onclick=${toggle} style="padding:6px 10px;border:1px solid var(--border2);border-radius:var(--radius-xs);font-size:.82rem;cursor:pointer;background:var(--surface);min-width:120px;color:${value ? 'var(--text)' : 'var(--text3)'}">
         ${value || 'Select...'}
       </div>
       ${open && html`
-        <div style="position:absolute;top:100%;left:0;z-index:10;background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius-xs);max-height:240px;overflow-y:auto;min-width:210px;box-shadow:var(--shadow)">
+        <div style="position:absolute;${up ? 'bottom:100%;' : 'top:100%;'}left:0;z-index:10;background:var(--surface);border:1px solid var(--border2);border-radius:var(--radius-xs);max-height:240px;overflow-y:auto;min-width:210px;box-shadow:var(--shadow)">
           <input type="text" placeholder="Search..." value=${search} oninput=${e => setSearch(e.target.value)}
             style="width:100%;padding:7px 10px;font-size:.82rem;border:none;border-bottom:1px solid var(--border2);border-radius:0" autofocus />
           ${filtered.map(n => html`
@@ -2085,10 +2106,11 @@ const Support = () => html`
 // ==================== Gauges ====================
 
 // Mini line chart for gauge line mode — value and unit passed as props
-const GaugeLine = ({ name, min, max, value, unit, color }) => {
+const GaugeLine = ({ name, min, max, value, unit, color, enums, px = 230 }) => {
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
   const MAX_POINTS = 20;
+  const w = px, h = Math.round(px * 0.76); // chart fills the square; value sits right below
 
   useEffect(() => {
     if (canvasRef.current && !chartRef.current && typeof Chart !== 'undefined') {
@@ -2101,8 +2123,9 @@ const GaugeLine = ({ name, min, max, value, unit, color }) => {
           animation: false, parsing: false,
           plugins: { legend: { display: false } },
           scales: {
-            x: { type: 'linear', display: true, ticks: { maxTicksLimit: 4, font: { size: 9 } }, grid: { display: false } },
-            y: { type: 'linear', display: true, min: yMin, max: yMax, ticks: { font: { size: 9 } } }
+            x: { type: 'linear', display: false },
+            y: { type: 'linear', display: true, min: yMin, max: yMax,
+                 ticks: { font: { size: 9 }, stepSize: ((yMax - yMin) / 2) || 1, maxTicksLimit: 3 } }
           }
         }
       });
@@ -2112,8 +2135,11 @@ const GaugeLine = ({ name, min, max, value, unit, color }) => {
   useEffect(() => {
     if (!chartRef.current) return;
     const chart = chartRef.current;
-    chart.options.scales.y.min = min != null ? min : 0;
-    chart.options.scales.y.max = (max != null && max !== 0) ? max : 4000;
+    const yMin = min != null ? min : 0;
+    const yMax = (max != null && max !== 0) ? max : 4000;
+    chart.options.scales.y.min = yMin;
+    chart.options.scales.y.max = yMax;
+    chart.options.scales.y.ticks.stepSize = ((yMax - yMin) / 2) || 1;
     const col = color || colours[0];
     if (chart.data.datasets[0]) {
       chart.data.datasets[0].borderColor = col;
@@ -2135,11 +2161,13 @@ const GaugeLine = ({ name, min, max, value, unit, color }) => {
   }, [value]);
 
   return html`
-    <div style="width:250px">
-      <canvas ref=${canvasRef} width="250" height="200" style="width:250px;height:200px"></canvas>
-      <div class="g-val" style="font-size:1.6rem;margin-top:4px">
-        ${value != null ? value.toFixed(1) : '—'}
-        ${unit && html`<span class="g-unit" style="display:inline;margin-left:4px">${unit}</span>`}
+    <div style=${'width:' + w + 'px;height:' + px + 'px;display:flex;flex-direction:column'}>
+      <canvas ref=${canvasRef} width=${w} height=${h} style=${'width:' + w + 'px;height:' + h + 'px'}></canvas>
+      <div class="g-val" style=${'font-size:' + (px / 230 * 1.6).toFixed(2) + 'rem;margin-top:2px'}>
+        ${value != null ? (enums ? String(Math.round(value)) : value.toFixed(1)) : '—'}
+        ${enums
+          ? (value != null && html`<span class="g-unit g-enum" style="display:inline;margin-left:6px">${enumLabel(enums, value)}</span>`)
+          : (unit && html`<span class="g-unit" style="display:inline;margin-left:4px">${unit}</span>`)}
       </div>
     </div>
   `;
@@ -2156,8 +2184,9 @@ const shadeColor = (hex, f) => {
 // Modern SVG arc gauge — 270° sweep, gradient stroke, mono numerals.
 // Pure render: value changes animate via CSS transition on the dash array.
 // A custom colour keeps the gradient look, centered on the chosen colour.
-const SvgGauge = ({ id, value, min = 0, max = 100, unit, color }) => {
-  const size = 230, c = size / 2, r = 92;
+const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px }) => {
+  const size = px || 230, c = size / 2, r = Math.round(size * 0.4);
+  const sw = Math.max(8, Math.round(size * 0.057));
   const SWEEP = 270; // degrees, gap centered at the bottom
   const v = (value == null || isNaN(value)) ? null : value;
   const span = (max - min) || 1;
@@ -2168,7 +2197,7 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color }) => {
   const custom = color && /^#[0-9a-fA-F]{6}$/.test(color);
   const stroke = 'url(#' + grad + ')';
   return html`
-    <div class="svg-gauge">
+    <div class="svg-gauge" style=${'width:' + size + 'px;height:' + size + 'px'}>
       <svg width=${size} height=${size} viewBox=${'0 0 ' + size + ' ' + size}>
         <defs>
           <linearGradient id=${grad} x1="0" y1="1" x2="1" y2="0">
@@ -2183,18 +2212,20 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color }) => {
           </linearGradient>
         </defs>
         <g transform=${'rotate(135 ' + c + ' ' + c + ')'}>
-          <circle class="g-track" cx=${c} cy=${c} r=${r} stroke-dasharray=${arc + ' ' + circ} />
+          <circle class="g-track" cx=${c} cy=${c} r=${r} stroke-dasharray=${arc + ' ' + circ} style=${'stroke-width:' + sw + 'px'} />
           <circle class="g-value ${frac >= 0.92 ? 'over' : ''}" cx=${c} cy=${c} r=${r}
             stroke=${stroke} opacity=${frac > 0.004 ? 1 : 0}
-            stroke-dasharray=${(arc * frac) + ' ' + circ} />
+            stroke-dasharray=${(arc * frac) + ' ' + circ} style=${'stroke-width:' + sw + 'px'} />
         </g>
       </svg>
       <div class="g-center">
-        <div class="g-val">${v == null ? '—' : v.toFixed(1)}</div>
-        ${unit && html`<div class="g-unit">${unit}</div>`}
+        <div class="g-val" style=${'font-size:' + (size / 230 * 2.1).toFixed(2) + 'rem'}>${v == null ? '—' : (enums ? String(Math.round(v)) : v.toFixed(1))}</div>
+        ${enums
+          ? (v != null && html`<div class="g-unit g-enum">${enumLabel(enums, v)}</div>`)
+          : (unit && html`<div class="g-unit">${unit}</div>`)}
       </div>
-      <div class="g-min">${min}</div>
-      <div class="g-max">${max}</div>
+      <div class="g-min" style=${'left:' + Math.round(size * 0.174) + 'px;bottom:' + Math.round(size * 0.096) + 'px'}>${min}</div>
+      <div class="g-max" style=${'right:' + Math.round(size * 0.174) + 'px;bottom:' + Math.round(size * 0.096) + 'px'}>${max}</div>
     </div>`;
 };
 
@@ -2203,6 +2234,7 @@ const Gauges = () => {
   const [gaugeItems, setGaugeItems] = useState([]);
   const [lineVals, setLineVals] = useState({});
   const [editing, setEditing] = useState(false);
+  const [gaugeSize, setGaugeSize] = useState('md'); // sm | md | lg
   const fetchRef = useRef(null);
   const nextId = useRef(1);
 
@@ -2222,6 +2254,7 @@ const Gauges = () => {
             });
             setGaugeItems(items);
           }
+          if (data.size === 'sm' || data.size === 'md' || data.size === 'lg') setGaugeSize(data.size);
         }
       } catch (e) { /* no saved layout */ }
     })();
@@ -2231,9 +2264,9 @@ const Gauges = () => {
     }).catch(() => {});
   }, []);
 
-  const saveLayout = async (items) => {
+  const saveLayout = async (items, size) => {
     try {
-      const json = JSON.stringify({ items });
+      const json = JSON.stringify({ items, size: size || gaugeSize });
       const blob = new Blob([json], { type: 'application/json' });
       const fd = new FormData();
       fd.append('updatefile', blob, 'gauges.json');
@@ -2364,18 +2397,31 @@ const Gauges = () => {
       <div class="main-left">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem">
           <h2 style="margin:0">Gauges</h2>
-          ${!editing && html`<button onclick=${() => setEditing(true)} style="font-size:.75rem;padding:4px 12px"><${Icon} n="edit" />Edit Layout</button>`}
+          <div style="display:flex;gap:6px;align-items:center">
+            <select value=${gaugeSize} title="Gauge size"
+              onchange=${e => { const v = e.target.value; setGaugeSize(v); saveLayout(gaugeItems, v); }}
+              style="font-size:.72rem;padding:4px 26px 4px 8px">
+              <option value="sm">Small</option>
+              <option value="md">Medium</option>
+              <option value="lg">Large</option>
+            </select>
+            ${!editing && html`<button onclick=${() => setEditing(true)} style="font-size:.75rem;padding:4px 12px"><${Icon} n="edit" />Edit Layout</button>`}
+          </div>
         </div>
         ${gaugeItems.length === 0 && !editing && html`<p style="color:var(--text3);font-size:.85rem;text-align:center;padding:2rem 0">Click Edit Layout to add a gauge.</p>`}
         <div id="gauge-container" style="display:flex;flex-wrap:wrap;gap:1.5rem;justify-content:center;align-items:flex-start">
           ${gaugeItems.map(g => {
-            const unit = (state.spotValues && state.spotValues[g.name] && state.spotValues[g.name].unit && state.spotValues[g.name].unit.indexOf('=') === -1) ? state.spotValues[g.name].unit : '';
+            const sv = state.spotValues && state.spotValues[g.name];
+            const unit = (sv && sv.unit && sv.unit.indexOf('=') === -1) ? sv.unit : '';
+            const enums = (sv && sv.enums) || null;
             return html`
             <div class="gauge-wrapper" style="text-align:center" key="${g.id}">
               <div style="font-weight:600;font-size:.9rem;margin-bottom:4px">${g.name || '—'}</div>
               ${(g.type === 'line')
-                ? html`<${GaugeLine} name=${g.name} min=${g.min} max=${g.max} value=${lineVals[g.id]} unit=${unit} color=${g.color || ''} />`
-                : html`<${SvgGauge} id=${g.id} value=${lineVals[g.id]} unit=${unit} color=${g.color || ''}
+                ? html`<${GaugeLine} key=${g.id + '-' + gaugeSize} name=${g.name} min=${g.min} max=${g.max} value=${lineVals[g.id]} unit=${unit} color=${g.color || ''} enums=${enums}
+                    px=${gaugeSize === 'sm' ? 170 : gaugeSize === 'lg' ? 300 : 230} />`
+                : html`<${SvgGauge} id=${g.id} value=${lineVals[g.id]} unit=${unit} color=${g.color || ''} enums=${enums}
+                    px=${gaugeSize === 'sm' ? 170 : gaugeSize === 'lg' ? 300 : 230}
                     min=${g.min != null ? g.min : 0} max=${(g.max == null || g.max === 0) ? 4000 : g.max} />`}
             </div>
           `; })}

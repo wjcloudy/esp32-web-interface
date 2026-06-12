@@ -520,6 +520,7 @@ td { font-variant-numeric: tabular-nums; }
 }
 .g-val { font-family: var(--num); font-variant-numeric: tabular-nums; font-size: 2.1rem; font-weight: 650; line-height: 1.1; }
 .g-unit { font-size: .8rem; color: var(--text2); margin-top: 2px; }
+.g-enum { color: var(--accent); font-weight: 600; max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .g-min, .g-max {
   position: absolute; bottom: 22px;
   font-size: .68rem; color: var(--text3);
