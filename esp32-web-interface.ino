@@ -935,6 +935,7 @@ static String canExecuteCommand(const String& cmdStr, int repeat) {
       if (!canSdoReadEntry(CAN_INDEX_ERRORS, i, &errNum)) break;
       result += "[" + String(errTime) + "]: " + canLookupEnum(unitStr, (uint32_t)errNum) + "\r\n";
     }
+    if (result.length() == 0) return "No errors logged.";
     return result;
   }
   if (cmdStr == "fastuart") {
