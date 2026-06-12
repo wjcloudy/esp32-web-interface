@@ -2173,12 +2173,21 @@ const GaugeLine = ({ name, min, max, value, unit, color, enums, px = 230 }) => {
   `;
 };
 
-// Mix a hex colour toward white (f > 0) or black (f < 0)
-const shadeColor = (hex, f) => {
-  const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
-  const t = f > 0 ? 255 : 0, a = Math.abs(f);
-  const m = (v) => Math.round(v + (t - v) * a);
-  return 'rgb(' + m(r) + ',' + m(g) + ',' + m(b) + ')';
+// Rotate a hex colour's hue by deg, keeping saturation/lightness —
+// custom gauge gradients sweep hue like the default cyan->green one
+const hueShift = (hex, deg) => {
+  const r = parseInt(hex.slice(1, 3), 16) / 255, g = parseInt(hex.slice(3, 5), 16) / 255, b = parseInt(hex.slice(5, 7), 16) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+  let h = 0, sat = 0;
+  const l = (max + min) / 2;
+  if (d) {
+    sat = l > .5 ? d / (2 - max - min) : d / (max + min);
+    if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h *= 60;
+  }
+  return 'hsl(' + Math.round((h + deg + 360) % 360) + ',' + Math.round(sat * 100) + '%,' + Math.round(l * 100) + '%)';
 };
 
 // Modern SVG arc gauge — 270° sweep, gradient stroke, mono numerals.
@@ -2202,9 +2211,9 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px }) => 
         <defs>
           <linearGradient id=${grad} x1="0" y1="1" x2="1" y2="0">
             ${custom ? html`
-              <stop offset="0%" stop-color=${shadeColor(color, .35)} />
-              <stop offset="55%" stop-color=${color} />
-              <stop offset="100%" stop-color=${shadeColor(color, -.28)} />
+              <stop offset="0%" stop-color=${hueShift(color, 21)} />
+              <stop offset="50%" stop-color=${color} />
+              <stop offset="100%" stop-color=${hueShift(color, -21)} />
             ` : html`
               <stop offset="0%" stop-color="#4cc9f0" />
               <stop offset="100%" stop-color="#54e6a4" />
