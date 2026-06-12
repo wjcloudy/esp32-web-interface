@@ -322,6 +322,33 @@ const Sparkline = ({ data, width = 90, height = 24 }) => {
   return html`<svg class="spark" width=${width} height=${height} viewBox=${'0 0 ' + width + ' ' + height}><polyline points=${pts} /></svg>`;
 };
 
+// Small stroke icons for buttons — same visual language as the nav icons
+const ICONS = {
+  play: '<polygon points="6 3 20 12 6 21 6 3"/>',
+  stop: '<rect x="5" y="5" width="14" height="14" rx="2"/>',
+  rotate: '<polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>',
+  power: '<path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/>',
+  plus: '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
+  check: '<polyline points="20 6 9 17 4 12"/>',
+  edit: '<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>',
+  trash: '<polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
+  refresh: '<polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>',
+  undo: '<polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>',
+  download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
+  upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>',
+  save: '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/>',
+  send: '<line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>',
+  external: '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>',
+  cloud: '<polyline points="8 17 12 21 16 17"/><line x1="12" y1="12" x2="12" y2="21"/><path d="M20.88 18.09A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.29"/>',
+  book: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>',
+  x: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
+  rss: '<path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1"/>',
+  life: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><line x1="4.93" y1="4.93" x2="9.17" y2="9.17"/><line x1="14.83" y1="14.83" x2="19.07" y2="19.07"/><line x1="14.83" y1="9.17" x2="19.07" y2="4.93"/><line x1="4.93" y1="19.07" x2="9.17" y2="14.83"/>',
+};
+const Icon = ({ n, size = 13 }) => html`<span class="btn-ic" dangerouslySetInnerHTML=${{
+  __html: '<svg width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + (ICONS[n] || '') + '</svg>'
+}}></span>`;
+
 // Labeled switch row for action panels
 const ToggleRow = ({ label, checked, onChange, disabled }) => html`
   <label class="toggle-row ${disabled ? 'disabled' : ''}">
@@ -417,7 +444,7 @@ const Navbar = () => {
       </div>
       ${state.refreshRate === -1 && !state.logging && html`
         <div style="text-align:center;padding:4px 0 0">
-          <button onclick=${() => { dispatch({ type: 'SET_FETCHING' }); api.getJSON('json').then(json => dispatch({ type: 'SET_PARAMS', payload: json })).catch(() => {}); }} style="font-size:.7rem;padding:4px 12px">Refresh now</button>
+          <button onclick=${() => { dispatch({ type: 'SET_FETCHING' }); api.getJSON('json').then(json => dispatch({ type: 'SET_PARAMS', payload: json })).catch(() => {}); }} style="font-size:.7rem;padding:4px 12px"><${Icon} n="refresh" />Refresh now</button>
         </div>
       `}
       ${state.canMode && html`
@@ -468,11 +495,11 @@ const Dashboard = () => {
     <div id="dashboard" class="tabdiv main-content" style="display:flex">
       <div class="main-right">
         <h3 class="underline">Actions</h3>
-        <button onclick=${() => api.getText('start 2').then(r => dispatch({ type: 'SET_MESSAGES', payload: r }))}>Start inverter in manual mode</button>
-        <button onclick=${() => api.getText('stop').then(r => dispatch({ type: 'SET_MESSAGES', payload: r }))}>Stop inverter</button>
+        <button onclick=${() => api.getText('start 2').then(r => dispatch({ type: 'SET_MESSAGES', payload: r }))}><${Icon} n="play" />Start inverter in manual mode</button>
+        <button onclick=${() => api.getText('stop').then(r => dispatch({ type: 'SET_MESSAGES', payload: r }))}><${Icon} n="stop" />Stop inverter</button>
         <h3 class="underline">Reset</h3>
-        <button onclick=${() => setConfirmAction('inverter')}>Reboot Inverter</button>
-        <button onclick=${() => setConfirmAction('esp32')}>Reboot ESP32</button>
+        <button onclick=${() => setConfirmAction('inverter')}><${Icon} n="rotate" />Reboot Inverter</button>
+        <button onclick=${() => setConfirmAction('esp32')}><${Icon} n="power" />Reboot ESP32</button>
       </div>
       <div class="main-left">
         <h2>Dashboard</h2>
@@ -526,7 +553,7 @@ const Dashboard = () => {
             <div id="commandoutput">${cmdOutput}</div>
             <div style="display:flex;gap:6px;margin-top:8px">
               <input type="text" id="commandinput" value=${cmd} oninput=${e => setCmd(e.target.value)} onkeyup=${e => e.keyCode === 13 && send()} style="flex:1" />
-              <button onclick=${send} style="padding:8px 18px;font-weight:600">Send</button>
+              <button onclick=${send} style="padding:8px 18px;font-weight:600"><${Icon} n="send" />Send</button>
             </div>
           </div>
         </div>
@@ -545,7 +572,7 @@ const Dashboard = () => {
                 const r = await fetch('/can-send?canId=' + encodeURIComponent(canId) + '&data=' + encodeURIComponent(canData));
                 const json = await r.json();
                 setCmdOutput(o => o + 'CAN: ' + JSON.stringify(json) + '\n');
-              }} style="font-size:.75rem;padding:6px 14px;white-space:nowrap">Send</button>
+              }} style="font-size:.75rem;padding:6px 14px;white-space:nowrap"><${Icon} n="send" />Send</button>
             </div>
           </div>
         </div>
@@ -657,22 +684,22 @@ const Parameters = () => {
     <div id="parameters" class="tabdiv main-content" style="display:flex">
       <div class="main-right">
         <h3 class="underline">Save & Load</h3>
-        <button onclick=${() => api.getText('save').then(r => alert(r || 'Parameters saved'))}>Save parameters to flash</button>
-        <button onclick=${() => api.getText('load')}>Restore parameters from flash</button>
-        <a download="params.json" href=${'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(state.params, null, 2))}><button>Download parameters file</button></a>
+        <button onclick=${() => api.getText('save').then(r => alert(r || 'Parameters saved'))}><${Icon} n="save" />Save parameters to flash</button>
+        <button onclick=${() => api.getText('load')}><${Icon} n="undo" />Restore parameters from flash</button>
+        <a download="params.json" href=${'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(state.params, null, 2))}><button><${Icon} n="download" />Download parameters file</button></a>
         <form id="paramform" enctype="multipart/form-data" action="edit" method="POST" onsubmit=${async e => { e.preventDefault(); await api.uploadFile(new FormData(e.target)); }}>
           <input id="paramfile" name="paramfile" type="file" hidden onchange=${e => e.target.form.requestSubmit()} />
-          <label class="butt" for="paramfile">Load parameters from file</label>
+          <label class="butt" for="paramfile"><${Icon} n="upload" />Load parameters from file</label>
         </form>
         <h3 class="underline">Parameter Database</h3>
-        <button onclick=${submitToDatabase}>Submit parameters to database</button>
-        <button onclick=${() => setShowSubscribe(true)}>Subscribe to parameter set</button>
-        <button onclick=${stopSubscription}>Stop subscription</button>
+        <button onclick=${submitToDatabase}><${Icon} n="cloud" />Submit parameters to database</button>
+        <button onclick=${() => setShowSubscribe(true)}><${Icon} n="rss" />Subscribe to parameter set</button>
+        <button onclick=${stopSubscription}><${Icon} n="x" />Stop subscription</button>
         <h3 class="underline">Misc</h3>
         ${hasFavs && html`<${ToggleRow} label="★ Favorites only" checked=${showFavs}
           onChange=${() => dispatch({ type: 'TOGGLE_FAVORITES_ONLY' })} />`}
-        <a href="/syncofs.html" target="_blank"><button>Launch syncofs tuner</button></a>
-        <a href="https://openinverter.org/wiki/Parameters" target="_blank"><button>Parameter reference</button></a>
+        <a href="/syncofs.html" target="_blank"><button><${Icon} n="external" />Launch syncofs tuner</button></a>
+        <a href="https://openinverter.org/wiki/Parameters" target="_blank"><button><${Icon} n="book" />Parameter reference</button></a>
       </div>
       <div class="main-left">
         <h2>Parameters</h2>
@@ -865,7 +892,7 @@ const SpotValues = () => {
         <h2>Spot Values</h2>
         <div id="spotValuesWrap" ref=${wrapRef} class="fullheight ${multiCol ? 'multi-col' : ''}" style="overflow-y:auto">
         <table id="spotValues" style="width:auto;table-layout:auto">
-          <thead><tr><th style="width:32px"></th><th>Name</th><th style="width:100px;min-width:100px">Value</th>${sparks && html`<th style="width:76px">Trend</th>`}<th style="width:60px;min-width:60px">Unit</th></tr></thead>
+          <thead><tr><th class="h-fav" style="width:32px"></th><th>Name</th><th class="h-val" style="width:100px;min-width:100px">Value</th>${sparks && html`<th class="h-spark" style="width:76px">Trend</th>`}<th class="h-unit" style="width:44px;min-width:44px">Unit</th></tr></thead>
           <tbody>
             ${filtered.map(v => html`
               <tr key=${v.name}>
@@ -992,22 +1019,22 @@ const Update = () => {
         <h3 class="underline">Firmware</h3>
         <form id="upload-firmware-form" enctype="multipart/form-data">
           <input id="update-firmware-file" name="update-firmware-file" type="file" accept=".bin" ref=${fileRef} hidden onchange=${installFirmware} />
-          <label class="butt" for="update-firmware-file">Install firmware from file</label>
+          <label class="butt" for="update-firmware-file"><${Icon} n="upload" />Install firmware from file</label>
         </form>
         <div>
-          <button onclick=${loadReleases}>Load OTA releases</button>
+          <button onclick=${loadReleases}><${Icon} n="cloud" />Load OTA releases</button>
           ${releases.length > 0 && html`
             <select id="ota-release">
               ${releases.map(r => html`<option value=${r.url}>${r.name}</option>`)}
             </select>
-            <button onclick=${() => { const s = document.getElementById('ota-release'); if (s) installOTA(s.value); }}>OTA Install</button>
+            <button onclick=${() => { const s = document.getElementById('ota-release'); if (s) installOTA(s.value); }}><${Icon} n="download" />OTA Install</button>
           `}
           <p>${otaMsg}</p>
         </div>
         <h3 class="underline">Web Interface</h3>
         <form id="uploadform" enctype="multipart/form-data">
           <input id="updatefile" name="updatefile" type="file" ref=${webFileRef} hidden onchange=${uploadWebFile} />
-          <label class="butt" for="updatefile">Upload file</label>
+          <label class="butt" for="updatefile"><${Icon} n="upload" />Upload file</label>
         </form>
         ${updating && html`
           <div id="progress" class="graph">
@@ -1268,8 +1295,8 @@ const Plot = () => {
           </div>
         </div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
-          <button onclick=${addPlot}>+ Add plot</button>
-          <button onclick=${() => { savePlots(); setEditing(false); }}>Save & Done</button>
+          <button onclick=${addPlot}><${Icon} n="plus" />Add plot</button>
+          <button onclick=${() => { savePlots(); setEditing(false); }}><${Icon} n="check" />Save & Done</button>
         </div>
 
         ${plots.length > 0 && html`<h3>Active (${plots.length})</h3>`}
@@ -1280,7 +1307,7 @@ const Plot = () => {
               <span onclick=${() => removePlot(p.id)} style="cursor:pointer;color:var(--red);font-weight:700;font-size:1rem">×</span>
             </div>
             <div style="margin-bottom:4px">
-              <button onclick=${() => addItem(p.id)} style="font-size:.7rem;padding:2px 8px">+ Field</button>
+              <button onclick=${() => addItem(p.id)} style="font-size:.7rem;padding:2px 8px"><${Icon} n="plus" size=${11} />Field</button>
             </div>
             ${p.items.map((item, i) => html`
               <div key=${i} style="display:flex;gap:3px;align-items:center;margin-bottom:2px">
@@ -1303,13 +1330,13 @@ const Plot = () => {
             <button onclick=${togglePlotting} style=${{ background: plotting ? 'var(--red)' : 'var(--green)', color: '#fff', borderColor: 'transparent', fontWeight: 600, fontSize: '.8rem', padding: '4px 14px' }}>
               ${plotting ? '⏹ Stop' : '▶ Start'}
             </button>
-            ${!editing && html`<button onclick=${() => { if (plotting) setPlotting(false); setEditing(true); }} style="font-size:.75rem;padding:4px 12px">✎ Edit Layout</button>`}
+            ${!editing && html`<button onclick=${() => { if (plotting) setPlotting(false); setEditing(true); }} style="font-size:.75rem;padding:4px 12px"><${Icon} n="edit" />Edit Layout</button>`}
           </div>
         </div>
         ${plots.map(p => html`
           <${PlotChart} key=${p.id} plot=${p} pushValue=${plotting ? getValue : null} maxValues=${maxValues} />
         `)}
-        ${plots.length === 0 && !editing && html`<p style="color:var(--text3);text-align:center;padding:2rem 0">Click ✎ Edit Layout to add a plot.</p>`}
+        ${plots.length === 0 && !editing && html`<p style="color:var(--text3);text-align:center;padding:2rem 0">Click Edit Layout to add a plot.</p>`}
       </div>
     </div>
   `;
@@ -1382,15 +1409,15 @@ const Logger = () => {
     <div id="logger" class="tabdiv main-content" style="display:flex">
       <div class="main-right">
         <h3 class="underline">Actions</h3>
-        ${!state.logging ? html`<button onclick=${startLog}>Start logging</button>`
-          : html`<button onclick=${stopLog}>Stop logging</button>`}
+        ${!state.logging ? html`<button onclick=${startLog}><${Icon} n="play" />Start logging</button>`
+          : html`<button onclick=${stopLog}><${Icon} n="stop" />Stop logging</button>`}
         <button onclick=${() => {
           const blob = new Blob([logText], { type: 'text/plain' });
           const a = document.createElement('a');
           a.href = URL.createObjectURL(blob);
           a.download = 'log_' + new Date().toISOString().slice(0,19).replace(/:/g,'-') + '.txt';
           a.click();
-        }}>Save as...</button>
+        }}><${Icon} n="download" />Save as...</button>
         <h3 class="underline">Configure Logger</h3>
         <label>Samples per line: <input type="number" value=${samples} oninput=${e => setSamples(e.target.value)} style="width:5em" /></label>
         ${logItems.map((item, i) => html`
@@ -1399,7 +1426,7 @@ const Logger = () => {
             ${!state.logging && html`<span onclick=${() => setLogItems(logItems.filter((_, j) => j !== i))} style="cursor:pointer;color:var(--red);font-weight:700;font-size:.9rem;padding:0 4px;line-height:1">×</span>`}
           </div>
         `)}
-        ${!state.logging && html`<button onclick=${() => setLogItems([...logItems, { name: '' }])}>Add field to log</button>`}
+        ${!state.logging && html`<button onclick=${() => setLogItems([...logItems, { name: '' }])}><${Icon} n="plus" />Add field to log</button>`}
       </div>
       <div class="main-left">
         <div style="display:flex;align-items:center;gap:12px;margin-bottom:.75rem">
@@ -1461,16 +1488,16 @@ const CanMapping = () => {
     <div id="canmapping" class="tabdiv main-content" style="display:flex">
       <div class="main-right">
         <h3 class="underline">Actions</h3>
-        <button onclick=${() => setMappings([...mappings, { name: '', txrx: 'tx', canid: 0, pos: 0, bits: 8, gain: 1 }])}>Add new mapping</button>
-        <button onclick=${saveMappings}>Save mappings to flash</button>
-        ${state.canMode && html`<button onclick=${loadMappings}>Reload from device</button>`}
+        <button onclick=${() => setMappings([...mappings, { name: '', txrx: 'tx', canid: 0, pos: 0, bits: 8, gain: 1 }])}><${Icon} n="plus" />Add new mapping</button>
+        <button onclick=${saveMappings}><${Icon} n="save" />Save mappings to flash</button>
+        ${state.canMode && html`<button onclick=${loadMappings}><${Icon} n="refresh" />Reload from device</button>`}
         <button onclick=${async () => {
           if (!confirm('Remove ALL CAN mappings from the device?')) return;
           await api.getText('can clear');
           await api.getText('save');
           setMappings([]);
           loadMappings();
-        }} style="color:var(--red)">Remove all mappings</button>
+        }} style="color:var(--red)"><${Icon} n="trash" />Remove all mappings</button>
       </div>
       <div class="main-left">
         <h2>CAN Mapping</h2>
@@ -1554,7 +1581,7 @@ const Files = () => {
             await api.uploadFile(fd);
             dispatch({ type: 'SET_FILE_LIST', payload: await api.getFileList() });
           }} />
-          <label class="butt" for="updatefile2">Upload file</label>
+          <label class="butt" for="updatefile2"><${Icon} n="upload" />Upload file</label>
         </form>
       </div>
       <div class="main-left">
@@ -1736,7 +1763,7 @@ const Settings = () => {
           </select>
           <p style="font-size:.8rem;margin:1rem 0 .35rem">Accent colour</p>
           <div class="accent-swatches">
-            <button class="swatch reset ${!accent ? 'sel' : ''}" title="Default" onclick=${() => pickAccent('')}>↺</button>
+            <button class="swatch reset ${!accent ? 'sel' : ''}" title="Default" onclick=${() => pickAccent('')}><${Icon} n="undo" size=${12} /></button>
             ${ACCENT_PRESETS.map(c => html`
               <button class="swatch ${accent === c ? 'sel' : ''}" style=${{ background: c }} title=${c} onclick=${() => pickAccent(c)}></button>
             `)}
@@ -1769,7 +1796,7 @@ const Settings = () => {
                 setSavedCanMode(canMode);
                 setTimeout(() => setSaving(false), 2000);
               } catch (e) { setSaving(false); }
-            }} style="font-size:.75rem;padding:4px 12px;margin-left:auto;${canMode !== savedCanMode ? 'border-color:var(--amber);color:var(--amber)' : ''}" disabled=${saving}>${saving ? 'Saving...' : 'Save'}</button>
+            }} style="font-size:.75rem;padding:4px 12px;margin-left:auto;${canMode !== savedCanMode ? 'border-color:var(--amber);color:var(--amber)' : ''}" disabled=${saving}><${Icon} n="save" />${saving ? 'Saving...' : 'Save'}</button>
           </div>
           ${canMode !== savedCanMode && html`
             <p style="color:var(--amber);font-size:.78rem;margin:.25rem 0 0">
@@ -1838,7 +1865,7 @@ const Settings = () => {
               <button onclick=${() => {
                 const id = parseInt(prompt('Enter node ID (1-32):', '1'));
                 if (id >= 1 && id <= 32) dispatch({ type: 'ADD_CAN_NODE', payload: { nodeId: id, name: '' } });
-              }} style="font-size:.75rem;padding:4px 12px">+ Add node</button>
+              }} style="font-size:.75rem;padding:4px 12px"><${Icon} n="plus" />Add node</button>
             </div>
             ${state.canNodes.length > 0 && html`
               <div style="display:flex;flex-direction:column;gap:3px">
@@ -1894,7 +1921,7 @@ const Support = () => html`
   <div id="support" class="tabdiv main-content" style="display:flex">
     <div class="main-right">
       <h3 class="underline">Actions</h3>
-      <a href="/remote.html" target="_blank"><button>Start remote support session</button></a>
+      <a href="/remote.html" target="_blank"><button><${Icon} n="life" />Start remote support session</button></a>
     </div>
     <div class="main-left">
       <h2>Support</h2>
@@ -2154,8 +2181,8 @@ const Gauges = () => {
       <div class="main-right">
         <h3 class="underline">Edit Gauges</h3>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px">
-          <button onclick=${addGauge}>+ Add Gauge</button>
-          <button onclick=${() => { saveLayout(gaugeItems); setEditing(false); }}>Save & Done</button>
+          <button onclick=${addGauge}><${Icon} n="plus" />Add Gauge</button>
+          <button onclick=${() => { saveLayout(gaugeItems); setEditing(false); }}><${Icon} n="check" />Save & Done</button>
         </div>
         ${gaugeItems.length > 0 && html`
           <h3>Active (${gaugeItems.length})</h3>
@@ -2181,7 +2208,7 @@ const Gauges = () => {
                 <input type="color" value=${g.color || '#4cc9f0'} oninput=${e => updateGaugeConfig(g.id, 'color', e.target.value)}
                   title="Gauge colour"
                   style="width:30px;height:26px;padding:0;border:1px solid var(--border2);border-radius:6px;background:none;cursor:pointer" />
-                ${g.color && html`<button onclick=${() => updateGaugeConfig(g.id, 'color', '')} style="font-size:.65rem;padding:2px 8px" title="Reset to theme gradient">↺</button>`}
+                ${g.color && html`<button onclick=${() => updateGaugeConfig(g.id, 'color', '')} style="font-size:.65rem;padding:2px 8px" title="Reset to theme gradient"><${Icon} n="undo" size=${11} /></button>`}
               </div>
               <div style="display:flex;gap:6px;align-items:center">
                 <label style="white-space:nowrap;font-size:.72rem">Min</label>
@@ -2199,9 +2226,9 @@ const Gauges = () => {
       <div class="main-left">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem">
           <h2 style="margin:0">Gauges</h2>
-          ${!editing && html`<button onclick=${() => setEditing(true)} style="font-size:.75rem;padding:4px 12px">✎ Edit Layout</button>`}
+          ${!editing && html`<button onclick=${() => setEditing(true)} style="font-size:.75rem;padding:4px 12px"><${Icon} n="edit" />Edit Layout</button>`}
         </div>
-        ${gaugeItems.length === 0 && !editing && html`<p style="color:var(--text3);font-size:.85rem;text-align:center;padding:2rem 0">Click ✎ Edit Layout to add a gauge.</p>`}
+        ${gaugeItems.length === 0 && !editing && html`<p style="color:var(--text3);font-size:.85rem;text-align:center;padding:2rem 0">Click Edit Layout to add a gauge.</p>`}
         <div id="gauge-container" style="display:flex;flex-wrap:wrap;gap:1.5rem;justify-content:center;align-items:flex-start">
           ${gaugeItems.map(g => {
             const unit = (state.spotValues && state.spotValues[g.name] && state.spotValues[g.name].unit && state.spotValues[g.name].unit.indexOf('=') === -1) ? state.spotValues[g.name].unit : '';

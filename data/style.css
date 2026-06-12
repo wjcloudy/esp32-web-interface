@@ -189,6 +189,8 @@ p { margin: 0 0 .5rem; color: var(--text2); line-height: 1.6; }
 .tab-icon { display: flex; align-items: center; flex-shrink: 0; color: var(--text3); transition: color var(--transition); }
 .tab-dot { display: none; }
 
+.btn-ic { display: inline-flex; align-items: center; flex-shrink: 0; }
+
 .navbar-text { overflow: hidden; text-overflow: ellipsis; }
 
 #spinner-div { display: flex; align-items: center; gap: 8px; padding: 8px 16px; font-size: .75rem; color: var(--text3); }
@@ -388,7 +390,7 @@ tbody tr:hover { background: var(--accent-glow); }
 td { font-variant-numeric: tabular-nums; }
 
 /* Spot values columns */
-#spotValues td.sv-name { font-weight: 500; }
+#spotValues td.sv-name { font-weight: 500; overflow-wrap: anywhere; }
 #spotValues td.sv-val { font-family: var(--num); font-weight: 600; color: var(--accent); }
 #spotValues td.sv-unit { color: var(--text3); font-size: .78rem; }
 #spotValues td.sv-spark { color: var(--accent); opacity: .75; padding: 2px 8px; }
@@ -468,7 +470,9 @@ td { font-variant-numeric: tabular-nums; }
 
 /* ===== ERROR ===== */
 .communication-error-bar {
-  position: fixed; top: 14px; left: 50%; transform: translateX(-50%); z-index: 200;
+  /* centered over the content area — the navbar paints above this
+     element's stacking context, so never slide underneath it */
+  position: fixed; top: 14px; left: calc(50% + var(--navbar-w) / 2); transform: translateX(-50%); z-index: 200;
   padding: 9px 20px;
   background: var(--glass); backdrop-filter: blur(20px) saturate(140%); -webkit-backdrop-filter: blur(20px) saturate(140%);
   border: 1px solid var(--tone-danger); color: var(--tone-danger);
@@ -479,7 +483,7 @@ td { font-variant-numeric: tabular-nums; }
      the translateX(-50%) centering */
   animation: toast-rise .25s ease both;
   white-space: nowrap;
-  max-width: calc(100vw - 24px);
+  max-width: calc(100vw - var(--navbar-w) - 24px);
 }
 @keyframes toast-rise {
   from { opacity: 0; transform: translate(-50%, -10px); }
@@ -560,6 +564,8 @@ td { font-variant-numeric: tabular-nums; }
     pointer-events: none; font-variant-numeric: tabular-nums;
   }
   .main-content { flex-direction: column !important; gap: .5rem; }
+  /* touch overlay scrollbars don't need the desktop gutter */
+  .main-left, .fullheight { padding-right: 0; scrollbar-gutter: auto; }
   .main-right { width: 100%; flex-direction: row; flex-wrap: wrap; gap: 4px; padding: .5rem 0; position: static; box-shadow: none; min-width: auto; }
   .main-right button, .main-right .butt { width: auto; font-size: .75rem; padding: 5px 10px; }
   .main-right .toggle-row { width: auto; min-width: 0; font-size: .72rem; padding: 5px 10px; }
@@ -577,7 +583,20 @@ td { font-variant-numeric: tabular-nums; }
   .small-modal-container, .large-modal-container, .can-mapping-modal-container { width: 95vw; }
   table { font-size: .8rem; }
   #spotValues { font-size: .9rem; }
-  thead th, tbody td { padding: 6px 8px; }
+  thead th, tbody td { padding: 6px 6px; }
+  /* compact fixed columns so names get the space (!important beats the
+     inline header widths) */
+  #spotValues th.h-fav { width: 26px !important; }
+  #spotValues th.h-val { width: 70px !important; min-width: 70px !important; }
+  #spotValues th.h-spark { width: 58px !important; }
+  #spotValues th.h-unit { width: 34px !important; min-width: 34px !important; }
+  #spotValuesWrap.multi-col #spotValues th:first-child,
+  #spotValuesWrap.multi-col #spotValues td:first-child { width: 26px; }
+  #spotValuesWrap.multi-col #spotValues td.sv-val { width: 70px; }
+  #spotValuesWrap.multi-col #spotValues td.sv-spark { width: 58px; }
+  #spotValuesWrap.multi-col #spotValues td.sv-unit { width: 34px; }
+  #spotValues td.sv-spark { padding: 2px 2px; }
+  #spotValues td.sv-spark .spark { width: 100%; height: auto; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -595,3 +614,10 @@ td { font-variant-numeric: tabular-nums; }
 #spotValuesWrap.multi-col #spotValues tbody { display: block; }
 #spotValuesWrap.multi-col #spotValues tr { break-inside: avoid; display: table; width: 100%; table-layout: fixed; }
 #spotValuesWrap.multi-col #spotValues thead { display: table; width: 100%; table-layout: fixed; }
+/* fixed layout needs explicit widths or every column gets an equal share
+   (long names then overflow into the value column) */
+#spotValuesWrap.multi-col #spotValues th:first-child,
+#spotValuesWrap.multi-col #spotValues td:first-child { width: 30px; }
+#spotValuesWrap.multi-col #spotValues td.sv-val { width: 100px; }
+#spotValuesWrap.multi-col #spotValues td.sv-spark { width: 76px; }
+#spotValuesWrap.multi-col #spotValues td.sv-unit { width: 44px; }
