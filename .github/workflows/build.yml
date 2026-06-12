@@ -26,7 +26,9 @@ jobs:
           key: pio-${{ runner.os }}-${{ hashFiles('platformio.ini') }}
 
       - name: Install PlatformIO
-        run: pip install platformio
+        # pinned to the version used for local builds — newer cores change
+        # build behaviour/layout
+        run: pip install "platformio==6.1.19"
 
       - name: Build firmware (both targets)
         run: pio run -e release -e release-t2can
@@ -35,6 +37,9 @@ jobs:
         run: |
           pio run -e release -t buildfs
           pio run -e release-t2can -t buildfs
+
+      - name: List build outputs
+        run: find .pio/build -maxdepth 2 -name '*.bin' | sort
 
       - name: Merge combined images
         run: |
