@@ -2,7 +2,7 @@ name: Build combined images
 
 on:
   push:
-    branches: [uart-backend]
+    branches: [main]
     tags: ['v*']
   pull_request:
   workflow_dispatch:

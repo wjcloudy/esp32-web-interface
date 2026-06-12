@@ -2,7 +2,7 @@
 
 **A modern web interface for [OpenInverter](https://openinverter.org) systems — over UART or CAN bus.**
 
-[![Build combined images](https://github.com/wjcloudy/esp32-web-interface/actions/workflows/build.yml/badge.svg?branch=uart-backend)](https://github.com/wjcloudy/esp32-web-interface/actions/workflows/build.yml)
+[![Build combined images](https://github.com/wjcloudy/esp32-web-interface/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/wjcloudy/esp32-web-interface/actions/workflows/build.yml)
 [![Latest release](https://img.shields.io/github/v/release/wjcloudy/esp32-web-interface)](https://github.com/wjcloudy/esp32-web-interface/releases/latest)
 
 <img width="1325" height="813" alt="Dashboard" src="https://github.com/user-attachments/assets/c89a4b9f-ab54-4fa1-a785-3fb7d5112a4c" />
@@ -53,7 +53,7 @@ Pre-built **flash-at-`0x0` combined images** for both supported boards:
 | Source | What you get |
 |---|---|
 | [Latest release](https://github.com/wjcloudy/esp32-web-interface/releases/latest) | Version-stamped raw `.bin` files (e.g. `esp32-web-interface_v4.1-0x000.bin`) |
-| [CI builds](https://github.com/wjcloudy/esp32-web-interface/actions/workflows/build.yml?query=branch%3Auart-backend) | Every push, as run artifacts (zipped) |
+| [CI builds](https://github.com/wjcloudy/esp32-web-interface/actions/workflows/build.yml?query=branch%3Amain) | Every push, as run artifacts (zipped) |
 
 ### 2. Flash it
 Flash the image at offset `0x0` with [ESP Web Tools](https://espressif.github.io/esptool-js/) or `esptool.py`:
