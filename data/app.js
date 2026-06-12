@@ -410,8 +410,7 @@ const Navbar = () => {
           <option value="-1">Off</option>
         </select>
       </div>
-      <div id="data-age" style="display:flex;align-items:center;gap:6px">
-        ${state.fetching && !state.logging && html`<div class="css-spinner"></div>`}
+      <div id="data-age" class=${state.fetching && !state.logging ? 'fetching' : ''} style="display:flex;align-items:center;gap:6px">
         ${state.logging
           ? html`<span style="flex:1;text-align:center"><span class="fast-badge">⚡ FAST</span></span>`
           : html`<span style="flex:1;text-align:center">${state.fetchAge}s ago</span>`}
