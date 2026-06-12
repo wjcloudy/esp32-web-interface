@@ -490,7 +490,7 @@ const Navbar = () => {
       ${(() => {
         const ok = state.canMode ? state.canConnected : (!state.commError && state.status != null);
         const label = state.canMode ? 'CAN #' + state.canActiveNodeId : 'UART';
-        return html`<div style="text-align:center;padding:4px 0 0"><span style="background:${ok ? 'var(--green)' : 'var(--red)'};color:#fff;padding:2px 8px;border-radius:10px;font-size:.65rem;font-weight:600;letter-spacing:.03em">${label}</span></div>`;
+        return html`<div style="text-align:center;padding:4px 0 0"><span style="background:${ok ? 'var(--green)' : 'var(--red)'};color:${ok ? '#06301d' : '#fff'};padding:2px 8px;border-radius:10px;font-size:.65rem;font-weight:700;letter-spacing:.03em">${label}</span></div>`;
       })()}
     </aside>
   `;
@@ -818,17 +818,24 @@ const SpotValues = () => {
   const hasFavs = (state.spotFavorites || []).length > 0;
   const showFavs = state.showFavoritesOnly && hasFavs;
 
+  // The inverter's UART terminal truncates commands at 128 chars — when the
+  // favourites no longer fit a single 'get', skip fast mode and keep normal
+  // json polling (CAN mode allows long commands)
+  const fastCmdLen = 4 + (state.spotFavorites || []).join(',').length;
+  const fastModeOk = state.canMode || fastCmdLen <= 128;
+
   // High-perf fetch loop when in favorites-only mode
   useEffect(() => {
-    if (!showFavs) {
+    if (!showFavs || !fastModeOk) {
       dispatch({ type: 'SET_LOGGING', payload: false });
       setFastVals({});
       return;
     }
-    const names = state.spotFavorites;
+    const names = state.spotFavorites.slice(); // freeze this loop's list
     if (names.length === 0) return;
 
     dispatch({ type: 'SET_LOGGING', payload: true });
+    setFastVals({}); // drop values from a previous favourites list immediately
     let active = true;
     const interval = 100;
 
@@ -839,6 +846,8 @@ const SpotValues = () => {
         const text = await api.getText('get ' + names.join(','));
         if (!active) return;
         const vals = text.match(/[\-\d\.]+/g) || [];
+        // A count mismatch means the response can't be trusted positionally
+        if (vals.length !== names.length) throw new Error('count mismatch');
         const next = {};
         names.forEach((name, i) => {
           const val = parseFloat(vals[i]);
@@ -858,7 +867,7 @@ const SpotValues = () => {
       dispatch({ type: 'SET_LOGGING', payload: false });
       if (fetchRef.current) { clearTimeout(fetchRef.current); fetchRef.current = null; }
     };
-  }, [showFavs, state.spotFavorites]);
+  }, [showFavs, state.spotFavorites, fastModeOk]);
 
   // Search always searches all items, then favorites filter applies
   let filtered = term ? all.filter(v => v.name.toLowerCase().includes(term)) : all;
@@ -866,7 +875,9 @@ const SpotValues = () => {
   const isFav = (name) => (state.spotFavorites || []).includes(name);
   // Use fast value if available, otherwise store value (with enum resolution)
   const getDisplay = (v) => {
-    if (showFavs && fastVals[v.name] !== undefined) {
+    // Entries without a param id (e.g. serial) can't be read by the fast
+    // 'get' loop — always show their static value
+    if (showFavs && fastVals[v.name] !== undefined && v.id !== undefined) {
       const val = fastVals[v.name];
       if (v.enums) {
         if (v.enums[val] !== undefined) return v.enums[val];
@@ -909,6 +920,11 @@ const SpotValues = () => {
           onChange=${() => dispatch({ type: 'TOGGLE_FAVORITES_ONLY' })} />
         <${ToggleRow} label="Sparklines" checked=${sparks}
           onChange=${on => { setSparks(on); try { localStorage.setItem('spotSparks', on ? '1' : '0'); } catch (e) {} }} />
+        ${showFavs && !fastModeOk && html`
+          <p style="font-size:.72rem;color:var(--amber);margin:.25rem 0 0">
+            Fast mode off — too many favourites for the UART command limit; values update at the normal refresh rate.
+          </p>
+        `}
       </div>
       <div class="main-left">
         <h2>Spot Values</h2>
@@ -1378,8 +1394,8 @@ const Plot = () => {
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem;flex-wrap:wrap;gap:6px">
           <h2 style="margin:0">Plot</h2>
           <div style="display:flex;gap:6px;align-items:center">
-            <button onclick=${togglePlotting} style=${{ background: plotting ? 'var(--red)' : 'var(--green)', color: '#fff', borderColor: 'transparent', fontWeight: 600, fontSize: '.8rem', padding: '4px 14px' }}>
-              ${plotting ? '⏹ Stop' : '▶ Start'}
+            <button onclick=${togglePlotting} style=${{ background: plotting ? 'var(--red)' : 'var(--green)', color: plotting ? '#fff' : '#06301d', borderColor: 'transparent', fontWeight: 600, fontSize: '.8rem', padding: '4px 14px' }}>
+              ${plotting ? html`<${Icon} n="stop" />` : html`<${Icon} n="play" />`}${plotting ? 'Stop' : 'Start'}
             </button>
             ${!editing && html`<button onclick=${() => { if (plotting) setPlotting(false); setEditing(true); }} style="font-size:.75rem;padding:4px 12px"><${Icon} n="edit" />Edit Layout</button>`}
           </div>

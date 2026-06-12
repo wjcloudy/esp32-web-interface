@@ -110,9 +110,13 @@ static int canGetParamId(const String& name) {
   String search = "\"" + name + "\"";
   int pos = canParamJson.indexOf(search);
   if (pos < 0) return -1;
-  // Find "id": after the name
-  int idPos = canParamJson.indexOf("\"id\"", pos);
-  if (idPos < 0) return -1;
+  // Find "id" within this entry's object only — entries without an id
+  // (e.g. serial) must not pick up the next entry's id
+  int objStart = canParamJson.indexOf('{', pos + search.length());
+  if (objStart < 0) return -1;
+  int objEnd = canParamJson.indexOf('}', objStart); // entries are flat objects
+  int idPos = canParamJson.indexOf("\"id\"", objStart);
+  if (idPos < 0 || (objEnd > 0 && idPos > objEnd)) return -1;
   idPos = canParamJson.indexOf(':', idPos) + 1;
   while (idPos < canParamJson.length() && (canParamJson[idPos] == ' ' || canParamJson[idPos] == '\t')) idPos++;
   return canParamJson.substring(idPos).toInt();
@@ -734,13 +738,15 @@ static void handleCommand() {
   const int cmdBufSize = 128;
   if(!server.hasArg("cmd")) {server.send(500, "text/plain", "BAD ARGS"); return;}
 
-  String cmd = server.arg("cmd").substring(0, cmdBufSize);
-
-  // Route through CAN if in CAN mode
+  // Route through CAN if in CAN mode. CAN commands aren't bound by the
+  // inverter's UART terminal buffer, so allow long ones (many-favourite
+  // 'get' lists exceed 128 chars easily)
   if (canMode) {
-    handleCanCommand(cmd);
+    handleCanCommand(server.arg("cmd").substring(0, 1024));
     return;
   }
+
+  String cmd = server.arg("cmd").substring(0, cmdBufSize);
 
   int repeat = 0;
   char buffer[255];
@@ -877,7 +883,7 @@ static String canExecuteCommand(const String& cmdStr, int repeat) {
     result = "";
     int commaIdx = 0;
     int count = 0;
-    while (commaIdx >= 0 && count < 50) {
+    while (commaIdx >= 0 && count < 128) {
       int nextComma = names.indexOf(',', commaIdx);
       String name;
       if (nextComma >= 0) {
