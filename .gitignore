@@ -3,3 +3,4 @@
 platformio-local-override.ini
 .vscode/
 /*.gz
+*-0x000.bin

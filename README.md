@@ -54,14 +54,13 @@ Pre-built **flash-at-`0x0` combined images** for both supported boards:
 |---|---|
 | [Latest release](https://github.com/wjcloudy/esp32-web-interface/releases/latest) | Version-stamped raw `.bin` files (e.g. `esp32-web-interface_v4.1-0x000.bin`) |
 | [CI builds](https://github.com/wjcloudy/esp32-web-interface/actions/workflows/build.yml?query=branch%3Auart-backend) | Every push, as run artifacts (zipped) |
-| This repo | Current-build copies: `esp32-web-interface-0x000.bin`, `esp32-web-interface-t2can-0x000.bin` |
 
 ### 2. Flash it
 Flash the image at offset `0x0` with [ESP Web Tools](https://espressif.github.io/esptool-js/) or `esptool.py`:
 
 ```sh
-esptool.py --chip esp32   write_flash 0x0 esp32-web-interface-0x000.bin        # classic ESP32
-esptool.py --chip esp32s3 write_flash 0x0 esp32-web-interface-t2can-0x000.bin  # LILYGO T-2Can
+esptool.py --chip esp32   write_flash 0x0 esp32-web-interface_v4.1-0x000.bin        # classic ESP32
+esptool.py --chip esp32s3 write_flash 0x0 esp32-web-interface-t2can_v4.1-0x000.bin  # LILYGO T-2Can
 ```
 
 ### 3. Connect
