@@ -32,6 +32,8 @@ Web interface for Huebner inverter
 # About
 > **v4.0** — This fork features a complete frontend rewrite using Preact + HTM, replacing jQuery with a modern single-page application. New pages include real-time Gauges (radial & line charts), multi-chart Plotting, UART pin swap Settings, and a searchable interface throughout. See the [commit history](https://github.com/wjcloudy/esp32-web-interface/commits/uart-backend) for details.
 
+> **📦 Pre-built images** — every push builds combined flash-at-`0x0` images for the classic ESP32 and the LILYGO T-2Can (ESP32-S3) via GitHub Actions. Grab the **latest build** from the most recent run on the [build workflow page](https://github.com/wjcloudy/esp32-web-interface/actions/workflows/build.yml?query=branch%3Auart-backend) (artifacts at the bottom of each run, zipped), or download raw `.bin` files from the [latest release](https://github.com/wjcloudy/esp32-web-interface/releases/latest).
+
 This repository hosts the source code for the Web Interface for the Huebner inverter, and derivated projects:
 * [OpenInverter Sine (and FOC) firmware](https://github.com/jsphuebner/stm32-sine)
 * [Vehicle Control Unit for Electric Vehicle Conversion Projects](https://github.com/damienmaguire/Stm32-vcu)
