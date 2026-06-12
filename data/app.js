@@ -377,6 +377,7 @@ const ICONS = {
   book: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>',
   x: '<line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>',
   rss: '<path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1"/>',
+  chevron: '<polyline points="6 9 12 15 18 9"/>',
   expand: '<polyline points="7 6 12 11 17 6"/><polyline points="7 13 12 18 17 13"/>',
   collapse: '<polyline points="17 11 12 6 7 11"/><polyline points="17 18 12 13 7 18"/>',
   life: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><line x1="4.93" y1="4.93" x2="9.17" y2="9.17"/><line x1="14.83" y1="14.83" x2="19.07" y2="19.07"/><line x1="14.83" y1="9.17" x2="19.07" y2="4.93"/><line x1="4.93" y1="19.07" x2="9.17" y2="14.83"/>',
@@ -655,6 +656,7 @@ const Parameters = () => {
   const [subToken, setSubToken] = useState('');
   const [showSubscribe, setShowSubscribe] = useState(false);
   const [search, setSearch] = useState('');
+  const [actionsOpen, setActionsOpen] = useState(false); // responsive-only expander
 
   if (!state.params) return html`<div class="tabdiv main-content" style="display:flex"><p>Loading...</p></div>`;
 
@@ -739,6 +741,11 @@ const Parameters = () => {
           <button onclick=${() => dispatch({ type: 'SET_ALL_CATEGORIES', payload: true })} style="flex:1 1 0;width:auto;min-width:0;justify-content:center"><${Icon} n="expand" />Expand</button>
           <button onclick=${() => dispatch({ type: 'SET_ALL_CATEGORIES', payload: false })} style="flex:1 1 0;width:auto;min-width:0;justify-content:center"><${Icon} n="collapse" />Collapse</button>
         </div>
+        <button class="actions-expander" onclick=${() => setActionsOpen(!actionsOpen)}>
+          <span class="btn-ic" style=${'transition:transform .18s;transform:rotate(' + (actionsOpen ? 180 : 0) + 'deg)'}><${Icon} n="chevron" /></span>
+          Actions
+        </button>
+        <div class="collapsible-actions ${actionsOpen ? 'open' : ''}">
         <h3 class="underline">Save & Load</h3>
         <button onclick=${() => api.getText('save').then(r => alert(r || 'Parameters saved'))}><${Icon} n="save" />Save parameters to flash</button>
         <button onclick=${() => api.getText('load')}><${Icon} n="undo" />Restore parameters from flash</button>
@@ -756,6 +763,7 @@ const Parameters = () => {
           onChange=${() => dispatch({ type: 'TOGGLE_FAVORITES_ONLY' })} />`}
         <a href="/syncofs.html" target="_blank"><button><${Icon} n="external" />Launch syncofs tuner</button></a>
         <a href="https://openinverter.org/wiki/Parameters" target="_blank"><button><${Icon} n="book" />Parameter reference</button></a>
+        </div>
       </div>
       <div class="main-left">
         <h2>Parameters</h2>
@@ -948,8 +956,8 @@ const SpotValues = () => {
         <input type="text" placeholder="Search spot values..." value=${search}
           oninput=${e => setSearch(e.target.value)}
           style="width:100%;margin-bottom:.25rem" />
-        <p style="font-size:.75rem;color:var(--text3);margin-bottom:.25rem">${filtered.length} of ${all.length} items</p>
-        <h3 class="underline" style="margin-top:1rem">View</h3>
+        <p style="font-size:.75rem;color:var(--text3);margin:0 0 .25rem">${filtered.length} of ${all.length} items</p>
+        <h3 class="underline">View</h3>
         <${ToggleRow} label="★ Favorites only" checked=${showFavs} disabled=${!hasFavs}
           onChange=${() => dispatch({ type: 'TOGGLE_FAVORITES_ONLY' })} />
         <${ToggleRow} label="Sparklines" checked=${sparks}

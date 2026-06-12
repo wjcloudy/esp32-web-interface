@@ -248,6 +248,19 @@ input:checked + .slider::before { transform: translateX(14px); }
 .can-node-select { position: relative; width: 100%; }
 .can-node-select .can-node-short { display: none; }
 
+/* responsive actions expander: desktop renders the group inline,
+   slim layouts collapse it behind a clearly-labelled Actions button */
+.actions-expander { display: none; }
+.collapsible-actions { display: contents; }
+@media (max-width: 900px) {
+  .actions-expander {
+    display: inline-flex; align-items: center; gap: 6px;
+    width: auto; font-weight: 600;
+  }
+  .collapsible-actions { display: none; }
+  .collapsible-actions.open { display: contents; }
+}
+
 /* accent colour swatches */
 .accent-swatches { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .accent-swatches .swatch {
