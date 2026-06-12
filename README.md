@@ -30,7 +30,7 @@ Web interface for Huebner inverter
 </details>
 
 # About
-> **v4.0** — This fork features a complete frontend rewrite using Preact + HTM, replacing jQuery with a modern single-page application. New pages include real-time Gauges (radial & line charts), multi-chart Plotting, UART pin swap Settings, and a searchable interface throughout. See the [commit history](https://github.com/wjcloudy/esp32-web-interface/commits/uart-backend) for details.
+> **v4.1** — This fork features a complete frontend rewrite using Preact + HTM, replacing jQuery with a modern single-page application. New pages include real-time Gauges (radial & line charts), multi-chart Plotting, UART pin swap Settings, and a searchable interface throughout. See the [commit history](https://github.com/wjcloudy/esp32-web-interface/commits/uart-backend) for details.
 
 > **📦 Pre-built images** — every push builds combined flash-at-`0x0` images for the classic ESP32 and the LILYGO T-2Can (ESP32-S3) via GitHub Actions. Grab the **latest build** from the most recent run on the [build workflow page](https://github.com/wjcloudy/esp32-web-interface/actions/workflows/build.yml?query=branch%3Auart-backend) (artifacts at the bottom of each run, zipped), or download raw `.bin` files from the [latest release](https://github.com/wjcloudy/esp32-web-interface/releases/latest).
 
@@ -72,7 +72,7 @@ Tompile it follow the [instructions below](#development).
 
 # Flashing / Upgrading
 ## Web Flasher (recommended for first install)
-A pre-built combined binary (`esp32-web-interface_4.00-0x000.bin`) is available in [releases](https://github.com/wjcloudy/esp32-web-interface/releases). Flash it at offset `0x0` using [ESP Web Tools](https://espressif.github.io/esptool-js/) or any ESP32 flasher. The binary uses `dio` flash mode for universal compatibility.
+Pre-built combined binaries are available in [releases](https://github.com/wjcloudy/esp32-web-interface/releases) (version-stamped, e.g. `esp32-web-interface_v4.1-0x000.bin`) or as the current-build copies in this repo (`esp32-web-interface-0x000.bin`, `esp32-web-interface-t2can-0x000.bin`). Flash at offset `0x0` using [ESP Web Tools](https://espressif.github.io/esptool-js/) or any ESP32 flasher. The binary uses `dio` flash mode for universal compatibility.
 
 To build your own combined binary, see [PlatformIO usage — Building a combined binary](doc/PLATFORMIO_usage.md#building-a-combined-binary-for-web-flasher).
 

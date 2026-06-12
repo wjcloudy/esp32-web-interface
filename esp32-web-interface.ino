@@ -1789,7 +1789,10 @@ void setup(void){
   server.on("/baud", handleBaud);
   server.on("/settings", HTTP_GET, handleSettings);
   server.on("/settings", HTTP_POST, handleSettings);
-  server.on("/version", [](){ server.send(200, "text/plain", "4.0"); });
+  #ifndef WEB_VERSION
+#define WEB_VERSION "dev"
+#endif
+  server.on("/version", [](){ server.send(200, "text/plain", WEB_VERSION); });
   server.on("/reboot", [](){ server.send(200, "text/plain", "Rebooting..."); ESP.restart(); });
   server.on("/reset-inverter", [](){
     server.send(200, "text/plain", "Inverter reset sent");

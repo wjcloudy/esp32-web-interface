@@ -156,6 +156,7 @@ const initialState = {
   canNodes: [],
   canActiveNodeId: 1,
   canConnected: false,
+  webVersion: '',
   history: {}, // recent numeric samples for dashboard sparklines
 };
 
@@ -303,6 +304,8 @@ function reducer(state, action) {
     }
     case 'SET_DEFAULT_NODE':
       return { ...state, canNodes: state.canNodes.map(n => ({ ...n, default: n.nodeId === action.payload })) };
+    case 'SET_WEB_VERSION':
+      return { ...state, webVersion: action.payload };
     case 'SET_CAN_CONNECTED':
       return { ...state, canConnected: action.payload };
     case 'SET_PARAM_VALUE':
@@ -469,7 +472,7 @@ const Navbar = () => {
         </div>
       `)}
       <div id="version">
-        ${state.firmwareVersion && html`F/W: ${state.firmwareVersion}<br/>`}Web: v4.0
+        ${state.firmwareVersion && html`F/W: ${state.firmwareVersion}<br/>`}Web: ${state.webVersion || '—'}
       </div>
       <div class="control" style="flex-direction:column;align-items:flex-start;gap:2px">
         <span style="font-size:.65rem;text-transform:uppercase;letter-spacing:.05em">Refresh</span>
@@ -2450,6 +2453,7 @@ const App = () => {
 
   // Load CAN settings on mount
   useEffect(() => {
+    fetch('/version').then(r => r.text()).then(v => dispatch({ type: 'SET_WEB_VERSION', payload: v.trim() })).catch(() => {});
     fetch('/settings').then(r => r.json()).then(data => {
       const mode = data.can_mode === true;
       const nodeId = data.can_node_id || 1;
