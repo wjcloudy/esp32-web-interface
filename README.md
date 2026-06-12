@@ -1,8 +1,9 @@
 esp32-web-interface
 =====================
 Web interface for Huebner inverter
-<img width="497" height="871" alt="image" src="https://github.com/user-attachments/assets/77d312ec-e358-4b59-9520-b8d8ae00f639" />
-<img width="400" height="246" alt="image" src="https://github.com/user-attachments/assets/e2a678b9-2fc6-47b3-81fd-f31499bdb7ae" />
+<img width="400" height="246" alt="image" src="https://github.com/user-attachments/assets/2016ba1e-7c93-4e45-9433-85f95bdc4e1d" />
+<img width="400" height="246" alt="image" src="https://github.com/user-attachments/assets/59710372-2b97-4ed2-9807-bf9dddd751ed" />
+
 
 # Table of Contents
 <details>
