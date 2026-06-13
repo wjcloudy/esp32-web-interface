@@ -957,6 +957,19 @@ const SpotValues = () => {
     return () => ro.disconnect();
   }, [filtered]);
 
+  // Tooltips sit above the name by default; for items near the top of the
+  // scroll area (the top row of each column in multi-column layout) that would
+  // clip, so flip those below on hover when there isn't room above.
+  const flipTipIfClipped = (e) => {
+    const wrap = wrapRef.current;
+    const tip = e.target.closest && e.target.closest('.tooltip');
+    if (!wrap || !tip) return;
+    const txt = tip.querySelector('.tooltiptext');
+    if (!txt) return;
+    const roomAbove = tip.getBoundingClientRect().top - wrap.getBoundingClientRect().top;
+    tip.classList.toggle('tip-below', roomAbove < txt.offsetHeight + 10);
+  };
+
   return html`
     <div id="spotvalues" class="tabdiv main-content" style="display:flex">
       <div class="main-right">
@@ -978,7 +991,7 @@ const SpotValues = () => {
       </div>
       <div class="main-left">
         <h2>Spot Values</h2>
-        <div id="spotValuesWrap" ref=${wrapRef} class="fullheight ${multiCol ? 'multi-col' : ''}" style="overflow-y:auto">
+        <div id="spotValuesWrap" ref=${wrapRef} class="fullheight ${multiCol ? 'multi-col' : ''}" style="overflow-y:auto" onmouseover=${flipTipIfClipped}>
         <table id="spotValues" style="width:auto;table-layout:auto">
           <thead><tr><th class="h-fav" style="width:32px"></th><th>Name</th><th class="h-val" style="width:100px;min-width:100px">Value</th>${sparks && html`<th class="h-spark" style="width:76px">Trend</th>`}<th class="h-unit" style="width:44px;min-width:44px">Unit</th></tr></thead>
           <tbody>

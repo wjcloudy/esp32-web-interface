@@ -553,6 +553,7 @@ td { font-variant-numeric: tabular-nums; }
 }
 .tooltip:hover .tooltiptext { visibility: visible; }
 .tooltiptext-empty { color: var(--text3); font-style: italic; }
+.tooltip.tip-below .tooltiptext { top: 100%; bottom: auto; margin-top: 6px; margin-bottom: 0; }
 
 .beta-feature { display: none; }
 
