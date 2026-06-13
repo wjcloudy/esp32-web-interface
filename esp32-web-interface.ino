@@ -629,6 +629,10 @@ static uint8_t espOtaHdr[16];
 static int espOtaHdrGot;
 static uint32_t espOtaFwLen, espOtaFsLen, espOtaAppDone, espOtaFsDone;
 static int espOtaPhase;           // 0=header 1=app 2=fs 3=finished 4=error
+// Background URL-download progress, polled by the UI via /espupdate-status
+static volatile int espOtaDlState = 0;  // 0 idle, 1 downloading/flashing, 2 success, 3 error
+static volatile int espOtaDlPct = 0;
+static String espOtaDlUrl;
 
 static void espOtaReset(){
   espOtaDone = false; espOtaOk = false; espOtaErr = "";
@@ -703,34 +707,34 @@ void handleEspUpdateUpload(){
 // Download a combined OTA image from a URL and flash it server-side. The ESP
 // fetches it directly (the browser can't — GitHub release downloads have no CORS
 // headers), following redirects, and streams the body through the same parser.
-void handleEspUpdateFromUrl(){
-  String url = server.arg("url");
-  if(url.length() == 0){ server.send(400, "application/json", "{\"ok\":false,\"message\":\"Missing url\"}"); return; }
-  DBG_OUTPUT_PORT.println("ESP OTA from URL: " + url);
+// Runs as a background task so the web server stays responsive and the UI can
+// poll /espupdate-status for progress.
+static void espOtaDownloadTask(void* param){
+  (void)param;
   espOtaReset();
+  espOtaDlPct = 0; espOtaDlState = 1;
 
   WiFiClientSecure client;
   client.setInsecure();            // skip cert validation; the image is validated on flash
   HTTPClient http;
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
   http.setTimeout(20000);
-  if(!http.begin(client, url)){
-    server.send(502, "application/json", "{\"ok\":false,\"message\":\"Could not start download\"}");
-    return;
+  if(!http.begin(client, espOtaDlUrl)){
+    espOtaErr = "Could not start download"; espOtaDlState = 3; vTaskDelete(NULL); return;
   }
   int code = http.GET();
   if(code != HTTP_CODE_OK){
-    http.end();
-    server.send(502, "application/json", String("{\"ok\":false,\"message\":\"Download HTTP ") + code + "\"}");
-    return;
+    http.end(); espOtaErr = String("Download HTTP ") + code; espOtaDlState = 3; vTaskDelete(NULL); return;
   }
+  int total = http.getSize();
   WiFiClient* stream = http.getStreamPtr();
   uint8_t buf[1024];
+  uint32_t got = 0;
   while(http.connected() && espOtaPhase < 3){
     size_t avail = stream->available();
     if(avail){
       int n = stream->readBytes(buf, avail > sizeof(buf) ? sizeof(buf) : avail);
-      if(n > 0) espOtaFeed(buf, n);
+      if(n > 0){ espOtaFeed(buf, n); got += n; if(total > 0) espOtaDlPct = (int)((uint64_t)got * 100 / (uint32_t)total); }
     } else {
       delay(1);
     }
@@ -738,13 +742,27 @@ void handleEspUpdateFromUrl(){
   http.end();
   espOtaDone = true;
   espOtaOk = (espOtaPhase == 3);
-  if(!espOtaOk && espOtaErr.length() == 0) espOtaErr = "Incomplete download";
-  bool ok = espOtaOk;
-  server.sendHeader("Connection", "close");
-  server.send(ok ? 200 : 500, "application/json",
-    ok ? "{\"ok\":true}" : (String("{\"ok\":false,\"message\":\"") + espOtaErr + "\"}"));
-  delay(250);
-  if(ok) ESP.restart();
+  if(espOtaOk){
+    espOtaDlPct = 100; espOtaDlState = 2;
+    DBG_OUTPUT_PORT.println("ESP OTA from URL complete, rebooting");
+    delay(1200);                   // let the UI poll catch the success before the link drops
+    ESP.restart();
+  } else {
+    if(espOtaErr.length() == 0) espOtaErr = "Incomplete download";
+    espOtaDlState = 3;
+    vTaskDelete(NULL);
+  }
+}
+
+void handleEspUpdateFromUrl(){
+  if(espOtaDlState == 1){ server.send(409, "application/json", "{\"ok\":false,\"message\":\"Update already in progress\"}"); return; }
+  String url = server.arg("url");
+  if(url.length() == 0){ server.send(400, "application/json", "{\"ok\":false,\"message\":\"Missing url\"}"); return; }
+  DBG_OUTPUT_PORT.println("ESP OTA from URL: " + url);
+  espOtaDlUrl = url;
+  espOtaErr = ""; espOtaDlPct = 0; espOtaDlState = 1;
+  xTaskCreate(espOtaDownloadTask, "espota_dl", 16384, NULL, 1, NULL);
+  server.send(200, "application/json", "{\"ok\":true,\"started\":true}");
 }
 
 void handleFileDelete(){
@@ -2048,6 +2066,11 @@ void setup(void){
 
   //ESP32 self-update by downloading a combined OTA image from a URL (server-side, no browser CORS)
   server.on("/espupdate-url", HTTP_POST, handleEspUpdateFromUrl);
+  server.on("/espupdate-status", HTTP_GET, [](){
+    String msg = (espOtaDlState == 3) ? espOtaErr : "";   // only read the String once the task is done writing it
+    server.send(200, "application/json",
+      String("{\"state\":") + espOtaDlState + ",\"pct\":" + espOtaDlPct + ",\"message\":\"" + msg + "\"}");
+  });
 
   server.on("/wifi", handleWifi);
   server.on("/cmd", handleCommand);

@@ -1096,7 +1096,7 @@ const Update = () => {
     const name = ghAssetUrl.split('/').pop();
     if (!confirm('Download and install "' + name + '"?\nThe firmware and UI are flashed together and the device will reboot.')) return;
     setGhMsg('');
-    setUpdating(true); setProgress(0); setUpdateMsg('Device is downloading and flashing ' + name + ' — this can take a minute. Do not power off.');
+    setUpdating(true); setProgress(0); setUpdateMsg('Device is downloading ' + name + ' — do not power off.');
     dispatch({ type: 'SET_LOGGING', payload: true });
     try {
       const r = await fetch('/espupdate-url', {
@@ -1106,9 +1106,22 @@ const Update = () => {
       });
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j.ok) throw new Error(j.message || ('HTTP ' + r.status));
-      setProgress(100);
-      setUpdateMsg('Flashed — rebooting, reloading shortly...');
-      setTimeout(() => location.reload(), 7000);
+      // The download/flash runs in the background on the device; poll for progress.
+      let fails = 0;
+      while (true) {
+        await new Promise(res => setTimeout(res, 500));
+        let st;
+        try { st = await (await fetch('/espupdate-status')).json(); fails = 0; }
+        catch (e) {
+          // device likely rebooting after a successful flash
+          if (++fails > 4) { setProgress(100); setUpdateMsg('Flashed — rebooting, reloading shortly...'); setTimeout(() => location.reload(), 7000); return; }
+          continue;
+        }
+        if (st.state === 2) { setProgress(100); setUpdateMsg('Flashed — rebooting, reloading shortly...'); setTimeout(() => location.reload(), 7000); return; }
+        if (st.state === 3) throw new Error(st.message || 'Update failed');
+        setProgress(st.pct || 0);
+        setUpdateMsg('Downloading & flashing... ' + (st.pct || 0) + '%');
+      }
     } catch (e) {
       setUpdateMsg('Error: ' + e.message);
       setUpdating(false);
