@@ -1025,6 +1025,25 @@ const SpotValues = () => {
   `;
 };
 
+// Export the web interface configuration (favourites, gauges, plots, virtual
+// values, UI prefs) as one JSON bundle. Shared by the Settings and Update tabs.
+const exportUiSettings = async () => {
+  const grab = (url) => fetch(url).then(r => r.json()).catch(() => null);
+  const [favorites, gauges, plots, virtualvals] = await Promise.all([grab('/favorites.json'), grab('/gauges.json'), grab('/plots.json'), grab('/virtualvals.json')]);
+  const prefs = {};
+  try {
+    ['theme', 'accentColor', 'spotSparks'].forEach(k => {
+      const v = localStorage.getItem(k);
+      if (v != null) prefs[k] = v;
+    });
+  } catch (e) {}
+  const bundle = { type: 'openinverter-ui-settings', version: 1, exported: new Date().toISOString(), favorites, gauges, plots, virtualvals, prefs };
+  const a = document.createElement('a');
+  a.href = 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(bundle, null, 2));
+  a.download = 'ui-settings.json';
+  a.click();
+};
+
 // ==================== Update ====================
 
 const Update = () => {
@@ -1094,7 +1113,7 @@ const Update = () => {
   const installFromGithub = async () => {
     if (!ghAssetUrl) return;
     const name = ghAssetUrl.split('/').pop();
-    if (!confirm('Download and install "' + name + '"?\nThe firmware and UI are flashed together and the device will reboot.')) return;
+    if (!confirm('Download and install "' + name + '"?\n\nThis erases saved settings and favourites (the whole filesystem is replaced) — export them first if you want to keep them.\n\nThe device will reboot when done.')) return;
     setGhMsg('');
     setUpdating(true); setProgress(0); setUpdateMsg('Device is downloading ' + name + ' — do not power off.');
     dispatch({ type: 'SET_LOGGING', payload: true });
@@ -1279,7 +1298,7 @@ const Update = () => {
     }
     const wrongBoard = !file.name.startsWith(otaTarget + '_');
     const warn = wrongBoard ? '\n\nWARNING: this image is not built for this board (' + otaTarget + ').' : '';
-    if (!confirm('Update the web interface from "' + file.name + '"?' + warn + '\nThe firmware and UI are flashed together and the device will reboot.')) return;
+    if (!confirm('Update the web interface from "' + file.name + '"?' + warn + '\n\nThis erases saved settings and favourites (the whole filesystem is replaced) — export them first if you want to keep them.\n\nThe device will reboot when done.')) return;
     setUpdating(true); setProgress(0); setUpdateMsg('Uploading OTA image...');
     dispatch({ type: 'SET_LOGGING', payload: true }); // pause polling so it doesn't compete with the upload
     try {
@@ -1313,6 +1332,8 @@ const Update = () => {
           <p>${otaMsg}</p>
         </div>
         <h3 class="underline">Web Interface</h3>
+        <button onclick=${exportUiSettings} title="Updating erases saved settings — back them up first"><${Icon} n="download" />Export settings (backup)</button>
+        <div class="flex-break"></div>
         <input type="text" value=${ghUrl} oninput=${e => setGhUrl(e.target.value)}
           placeholder="https://github.com/owner/repo" style="width:100%;margin-bottom:.25rem;font-size:.8rem" />
         <button onclick=${getGhReleases}><${Icon} n="cloud" />Get releases</button>
@@ -1358,6 +1379,7 @@ const Update = () => {
           <p>Update the web interface over the air from the combined <code>*-ota.bin</code> image, which carries the ESP32 firmware and the UI together so they can't drift out of sync.</p>
           <p><b>Get releases</b> lists releases from the GitHub repo above (pre-filled with the repo this build came from). Choose a release; the image for your board is selected by default. Then <b>Download & install</b>, or use <b>Install OTA image from file</b> to flash one you built locally.</p>
           <p>Use <b>Upload single file</b> for individual file tweaks.</p>
+          <p><b>Updating erases your saved settings and favourites</b> — the whole filesystem is replaced. Use <b>Export settings (backup)</b> first, then restore them from Settings afterwards.</p>
           <p style="font-size:.8rem;color:var(--text3);margin:0">The bootloader and partition table aren't touched, so a bad image stays recoverable over USB. The web interface reboots and the page reloads when done.</p>
         </div>
       </div>
@@ -2051,25 +2073,7 @@ const Settings = () => {
     try { hex ? localStorage.setItem('accentColor', hex) : localStorage.removeItem('accentColor'); } catch (e) {}
   };
 
-  // Export/import the web interface configuration (favourites, gauges,
-  // plots, UI prefs) as one JSON bundle
-  const exportUiSettings = async () => {
-    const grab = (url) => fetch(url).then(r => r.json()).catch(() => null);
-    const [favorites, gauges, plots, virtualvals] = await Promise.all([grab('/favorites.json'), grab('/gauges.json'), grab('/plots.json'), grab('/virtualvals.json')]);
-    const prefs = {};
-    try {
-      ['theme', 'accentColor', 'spotSparks'].forEach(k => {
-        const v = localStorage.getItem(k);
-        if (v != null) prefs[k] = v;
-      });
-    } catch (e) {}
-    const bundle = { type: 'openinverter-ui-settings', version: 1, exported: new Date().toISOString(), favorites, gauges, plots, virtualvals, prefs };
-    const a = document.createElement('a');
-    a.href = 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(bundle, null, 2));
-    a.download = 'ui-settings.json';
-    a.click();
-  };
-
+  // Import a previously exported web interface configuration bundle
   const importUiSettings = async (e) => {
     const file = e.target.files && e.target.files[0];
     e.target.value = '';
