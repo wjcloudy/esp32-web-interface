@@ -1,536 +1,90 @@
 PlatformIO usage
 ================
 
-# Table of Contents
-<details>
- <summary>Click to open TOC</summary>
-<!-- MarkdownTOC autolink="true" levels="1,2,3,4,5,6" bracket="round" style="unordered" indent="    " autoanchor="false" markdown_preview="github" -->
+All commands below are run from the project root (the directory containing `platformio.ini`).
 
-- [Existing targets and environments](#existing-targets-and-environments)
-- [Building the code](#building-the-code)
-- [Flashing resulting firmware to the ESP8266 board](#flashing-resulting-firmware-to-the-esp8266-board)
-- [Check device output](#check-device-output)
-    - [ROM bootloader messages](#rom-bootloader-messages)
-    - [Normal output to the inverter](#normal-output-to-the-inverter)
-- [Building and flashing the filesystem \(optional\)](#building-and-flashing-the-filesystem-optional)
-    - [Building the filesystem](#building-the-filesystem)
-    - [Flashing the filesystem](#flashing-the-filesystem)
-- [Clean build files if needed](#clean-build-files-if-needed)
+# Environments
 
-<!-- /MarkdownTOC -->
-</details>
+| Environment | Board | Notes |
+|---|---|---|
+| `esp32_wemos` | classic ESP32 (Wemos / WROOM dev boards) | **default** |
+| `esp32_wemos_debug` | classic ESP32 | debug build with serial debug output |
+| `esp32_t2can` | LILYGO T-2Can (ESP32-S3) | 16MB flash, PSRAM, built-in CAN |
+| `esp32_t2can_debug` | LILYGO T-2Can (ESP32-S3) | debug build |
 
-All the following commands assume that you are at the 'root' of the project, i.e.
-in the same directory as the `platformio.ini` file.
+Select an environment with `-e` / `--environment` (default is `esp32_wemos`), and a target with `-t` / `--target` (no target = build the firmware). List everything with `pio run --list-targets`.
 
-# Existing targets and environments
-You can list existing target and environments with
-```
-$ pio run --list-targets
-Environment    Group     Name         Title                        Description
--------------  --------  -----------  ---------------------------  ----------------------
-debug          Platform  buildfs      Build Filesystem Image
-debug          Platform  erase        Erase Flash
-debug          Platform  size         Program Size                 Calculate program size
-debug          Platform  upload       Upload
-debug          Platform  uploadfs     Upload Filesystem Image
-debug          Platform  uploadfsota  Upload Filesystem Image OTA
+Two pre-scripts run automatically on every build, so there are **no manual steps** to remember:
+- `version.py` injects `WEB_VERSION` (from `git describe`), `WEB_REPO` (the repo's origin URL), and `WEB_OTA_TARGET` (the env name, e.g. `esp32_wemos`).
+- `gzip_assets.py` regenerates the `data/*.gz` files the device serves whenever a source changes — you never gzip by hand.
 
-release        Platform  buildfs      Build Filesystem Image
-release        Platform  erase        Erase Flash
-release        Platform  size         Program Size                 Calculate program size
-release        Platform  upload       Upload
-release        Platform  uploadfs     Upload Filesystem Image
-release        Platform  uploadfsota  Upload Filesystem Image OTA
+# Building the firmware
+
+```sh
+pio run -e esp32_wemos      # classic ESP32
+pio run -e esp32_t2can      # LILYGO T-2Can
 ```
 
-Some additional targets exist but are not show in this list:
-* `clean` : clean all built files
-* `envdump` : dump current build environment
-* `monitor` : automatically start pio device monitor after successful build operation.
+# Flashing the firmware
 
-You will be able to select an environment with the `-e`, or `--environment` command line flag. The default environment is `release`
-You will be able to select an target with the `-t`, or `--target` command line flag. With no flag, the default behaviour is to build the sources.
-
-# Building the code
-Run this command (need to do this after each update of the files):
-
-```
-$ pio run
-Processing release (platform: espressif8266; framework: arduino; board: modwifi)
-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-Verbose mode can be enabled via `-v, --verbose` option
-CONFIGURATION: https://docs.platformio.org/page/boards/espressif8266/modwifi.html
-PLATFORM: Espressif 8266 (4.0.1) > Olimex MOD-WIFI-ESP8266(-DEV)
-HARDWARE: ESP8266 80MHz, 80KB RAM, 2MB Flash
-PACKAGES:
- - framework-arduinoespressif8266 @ 3.30002.0 (3.0.2)
- - tool-esptool @ 1.413.0 (4.13)
- - tool-esptoolpy @ 1.30300.0 (3.3.0)
- - toolchain-xtensa @ 2.100300.210717 (10.3.0)
-Converting FSBrowser.ino
-LDF: Library Dependency Finder -> https://bit.ly/configure-pio-ldf
-LDF Modes: Finder ~ chain, Compatibility ~ soft
-Found 35 compatible libraries
-Scanning dependencies...
-Dependency Graph
-|-- ArduinoOTA @ 1.0
-|   |-- ESP8266WiFi @ 1.0
-|   |-- ESP8266mDNS @ 1.2
-|   |   |-- ESP8266WiFi @ 1.0
-|-- ESP8266HTTPUpdateServer @ 1.0
-|   |-- ESP8266WebServer @ 1.0
-|   |   |-- ESP8266WiFi @ 1.0
-|   |-- ESP8266WiFi @ 1.0
-|-- ESP8266WebServer @ 1.0
-|   |-- ESP8266WiFi @ 1.0
-|-- ESP8266WiFi @ 1.0
-|-- ESP8266mDNS @ 1.2
-|   |-- ESP8266WiFi @ 1.0
-|-- Ticker @ 1.0
-Building in release mode
-Compiling .pio/build/release/src/FSBrowser.ino.cpp.o
-Compiling .pio/build/release/src/src/arm_debug.cpp.o
-...
-
-...
-Compiling .pio/build/release/FrameworkArduino/umm_malloc/umm_malloc.cpp.o
-Compiling .pio/build/release/FrameworkArduino/umm_malloc/umm_poison.c.o
-Archiving .pio/build/release/libFrameworkArduino.a
-Indexing .pio/build/release/libFrameworkArduino.a
-Linking .pio/build/release/firmware.elf
-Retrieving maximum program size .pio/build/release/firmware.elf
-Checking size .pio/build/release/firmware.elf
-Advanced Memory Usage is available via "PlatformIO Home > Project Inspect"
-RAM:   [====      ]  38.9% (used 31896 bytes from 81920 bytes)
-Flash: [====      ]  36.9% (used 385089 bytes from 1044464 bytes)
-Building .pio/build/release/firmware.bin
-Creating BIN file ".pio/build/release/firmware.bin" using "..../.platformio/packages/framework-arduinoespressif8266/bootloaders/eboot/eboot.elf" and ".pio/build/release/firmware.elf"
-====================================================================================================================================== [SUCCESS] Took 9.97 seconds ======================================================================================================================================
-
-Environment    Status    Duration
--------------  --------  ------------
-release        SUCCESS   00:00:09.971
-======================================================================================================================================
+```sh
+pio run -e esp32_wemos -t upload
 ```
 
+By default this uploads over USB serial. For wireless (OTA) uploads, set the board's address in `platformio-local-override.ini` (git-ignored) — the upload then goes over WiFi with no cable:
 
-# Flashing resulting firmware to the ESP8266 board
-Note: you should first setup the ESP8266 in UART mode. (In general, keep the button depressed when applying power, then release the button)
+```ini
+[env:esp32_wemos]
+upload_protocol = espota
+upload_port = 192.168.1.89
 
-```
-$ pio run --target upload
-Processing release (platform: espressif8266; framework: arduino; board: modwifi)
-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-Verbose mode can be enabled via `-v, --verbose` option
-CONFIGURATION: https://docs.platformio.org/page/boards/espressif8266/modwifi.html
-PLATFORM: Espressif 8266 (4.0.1) > Olimex MOD-WIFI-ESP8266(-DEV)
-HARDWARE: ESP8266 80MHz, 80KB RAM, 2MB Flash
-PACKAGES:
- - framework-arduinoespressif8266 @ 3.30002.0 (3.0.2)
- - tool-esptool @ 1.413.0 (4.13)
- - tool-esptoolpy @ 1.30300.0 (3.3.0)
- - tool-mklittlefs @ 1.203.210628 (2.3)
- - tool-mkspiffs @ 1.200.0 (2.0)
- - toolchain-xtensa @ 2.100300.210717 (10.3.0)
-Converting FSBrowser.ino
-LDF: Library Dependency Finder -> https://bit.ly/configure-pio-ldf
-LDF Modes: Finder ~ chain, Compatibility ~ soft
-Found 35 compatible libraries
-Scanning dependencies...
-Dependency Graph
-|-- ArduinoOTA @ 1.0
-|   |-- ESP8266WiFi @ 1.0
-|   |-- ESP8266mDNS @ 1.2
-|   |   |-- ESP8266WiFi @ 1.0
-|-- ESP8266HTTPUpdateServer @ 1.0
-|   |-- ESP8266WebServer @ 1.0
-|   |   |-- ESP8266WiFi @ 1.0
-|   |-- ESP8266WiFi @ 1.0
-|-- ESP8266WebServer @ 1.0
-|   |-- ESP8266WiFi @ 1.0
-|-- ESP8266WiFi @ 1.0
-|-- ESP8266mDNS @ 1.2
-|   |-- ESP8266WiFi @ 1.0
-|-- Ticker @ 1.0
-Building in release mode
-Compiling .pio/build/release/src/FSBrowser.ino.cpp.o
-...
-
-...
-Retrieving maximum program size .pio/build/release/firmware.elf
-Checking size .pio/build/release/firmware.elf
-Advanced Memory Usage is available via "PlatformIO Home > Project Inspect"
-RAM:   [====      ]  38.9% (used 31896 bytes from 81920 bytes)
-Flash: [====      ]  36.9% (used 385089 bytes from 1044464 bytes)
-Configuring upload protocol...
-AVAILABLE: espota, esptool
-CURRENT: upload_protocol = esptool
-Looking for upload port...
-Using manually specified: /dev/cu.usbserial-DGAJb113318
-Uploading .pio/build/release/firmware.bin
-esptool.py v3.3
-Serial port /dev/cu.usbserial-DGAJb113318
-WARNING: Pre-connection option "no_reset" was selected. Connection may fail if the chip is not in bootloader or flasher stub mode.
-Connecting....
-Chip is ESP8266EX
-Features: WiFi
-Crystal is 26MHz
-MAC: c4:5b:be:76:1b:b8
-Uploading stub...
-Running stub...
-Stub running...
-Changing baud rate to 921600
-Changed.
-Configuring flash size...
-Flash will be erased from 0x00000000 to 0x0005ffff...
-Compressed 389248 bytes to 277860...
-Writing at 0x00000000... (5 %)
-Writing at 0x00005b7b... (11 %)
-Writing at 0x0000b880... (17 %)
-Writing at 0x00011ae4... (23 %)
-Writing at 0x00017987... (29 %)
-Writing at 0x0001d5ad... (35 %)
-Writing at 0x00022dbe... (41 %)
-Writing at 0x00028689... (47 %)
-Writing at 0x0002df5c... (52 %)
-Writing at 0x000330f0... (58 %)
-Writing at 0x000380f6... (64 %)
-Writing at 0x0003d293... (70 %)
-Writing at 0x00042b6d... (76 %)
-Writing at 0x000482ec... (82 %)
-Writing at 0x0004d696... (88 %)
-Writing at 0x00052cb4... (94 %)
-Writing at 0x0005986c... (100 %)
-Wrote 389248 bytes (277860 compressed) at 0x00000000 in 3.8 seconds (effective 816.7 kbit/s)...
-Hash of data verified.
-
-Leaving...
-Soft resetting...
-====================================================================================================================================== [SUCCESS] Took 8.37 seconds ======================================================================================================================================
-
-Environment    Status    Duration
--------------  --------  ------------
-release        SUCCESS   00:00:08.371
-====================================================================================================================================== 1 succeeded in 00:00:08.371 ======================================================================================================================================
-```
-# Building a combined binary for web flasher
-
-To publish a single `.bin` file that can be flashed at offset `0x0` via [ESP Web Tools](https://espressif.github.io/esptool-js/) or any other web-based flasher, you need to merge the bootloader, partition table, firmware, and SPIFFS image into one file.
-
-## Prerequisite: Gzip compress web assets
-
-The web interface serves `.gz` files from SPIFFS for faster transfer. Before building the filesystem, gzip the source files in `data/`:
-
-**PowerShell (Windows):**
-```powershell
-$dataDir = "data"
-foreach ($f in @("app.js", "style.css", "index.html")) {
-  $path = Join-Path $dataDir $f
-  $in = [System.IO.File]::ReadAllBytes($path)
-  $outPath = "$path.gz"
-  $outStream = [System.IO.File]::Create($outPath)
-  $gzip = New-Object System.IO.Compression.GZipStream($outStream, [System.IO.Compression.CompressionMode]::Compress)
-  $gzip.Write($in, 0, $in.Length)
-  $gzip.Close()
-  $outStream.Close()
-}
+[env:esp32_t2can]
+upload_protocol = espota
+upload_port = 192.168.1.92
 ```
 
-**Bash (Linux/macOS):**
-```bash
-gzip -9 -k -f data/app.js data/style.css data/index.html
+# Flashing the web interface (filesystem)
+
+The web UI lives in a SPIFFS image built from the `data/` directory.
+
+```sh
+pio run -e esp32_wemos -t uploadfs   # build + flash the filesystem
+pio run -e esp32_wemos -t buildfs    # build only (-> .pio/build/<env>/spiffs.bin)
 ```
 
-The SPIFFS build includes both the original and `.gz` files — the ESP32 serves the compressed version to browsers that support it.
+Individual files can also be replaced live via the web interface (Update → Upload single file), which posts to the `/edit` endpoint; `upload.sh` does the same from the command line.
 
-> **Note:** This gzip step is required for **every** build (normal or combined) whenever you change `app.js`, `style.css`, or `index.html`. Without it, the compressed `.gz` copies served to browsers will be stale.
+# Combined images
 
-## Normal build (firmware only, no SPIFFS merge)
+CI ([.github/workflows/build.yml](../.github/workflows/build.yml)) publishes two images per board on every `v*` tag:
 
-For day-to-day development and OTA updates, build just the firmware:
+- **`<target>_<ver>-0x000.bin`** — a full-flash image (bootloader + partition table + firmware + filesystem) for flashing a blank board at offset `0x0` with `esptool.py` or [ESP Web Tools](https://espressif.github.io/esptool-js/).
+- **`<target>_<ver>-ota.bin`** — a combined OTA image (firmware + filesystem only, no bootloader/partition table) for in-browser updates from the Update tab. The two halves are always flashed together so they can't drift out of sync.
 
-```bash
-# 1. Gzip assets (see above)
-# 2. Build firmware
-pio run --environment release
+To build the full-flash image locally for the classic ESP32:
 
-# 3. Upload firmware via OTA
-pio run --target upload --environment release
-
-# 4. Upload filesystem via OTA (after changing web files)
-pio run --target uploadfsota --environment release
+```sh
+pio run -e esp32_wemos
+pio run -e esp32_wemos -t buildfs
+esptool.py --chip esp32 merge_bin -o esp32_wemos-0x000.bin \
+  0x1000   .pio/build/esp32_wemos/bootloader.bin \
+  0x8000   .pio/build/esp32_wemos/partitions.bin \
+  0x10000  .pio/build/esp32_wemos/firmware.bin \
+  0x290000 .pio/build/esp32_wemos/spiffs.bin
 ```
 
-## Combined binary build (for web flasher)
+The LILYGO T-2Can (ESP32-S3, 16MB) uses a different bootloader offset (`0x0`) and SPIFFS offset (`0xc90000`) — see the `Merge combined images` step in the workflow for the exact offsets.
 
-The default `board_build.flash_mode = qout` in `platformio.ini` is correct for standard ESP32 dev boards. No changes needed.
+# Serial monitor
 
-```bash
-# 1. Gzip assets (see above)
-# 2. Build firmware
-pio run --environment release
-
-# 3. Build SPIFFS filesystem image
-pio run --target buildfs --environment release
-
-# 4. Merge into single binary
-esptool.py --chip esp32 merge_bin \
-  -o esp32-web-interface_4.00-0x000.bin \
-  0x1000 .pio/build/release/bootloader.bin \
-  0x8000 .pio/build/release/partitions.bin \
-  0x10000 .pio/build/release/firmware.bin \
-  0x290000 .pio/build/release/spiffs.bin
+```sh
+pio device monitor -e esp32_wemos
 ```
 
-Or on Windows PowerShell:
-```powershell
-# Build
-pio run --environment release
-pio run --target buildfs --environment release
+In normal operation the serial port is connected to the inverter, so leave debug output disabled (use an `*_debug` environment only while developing).
 
-# Merge
-C:\Users\$env:USERNAME\.platformio\penv\Scripts\python.exe `
-  C:\Users\$env:USERNAME\.platformio\packages\tool-esptoolpy\esptool.py `
-  --chip esp32 merge_bin `
-  -o esp32-web-interface_4.00-0x000.bin `
-  0x1000 .pio\build\release\bootloader.bin `
-  0x8000 .pio\build\release\partitions.bin `
-  0x10000 .pio\build\release\firmware.bin `
-  0x290000 .pio\build\release\spiffs.bin
-```
+# Clean build files
 
-This produces `esp32-web-interface_4.00-0x000.bin` (~4MB) — a complete flash image. Flash it at offset `0x0` with any ESP32 flasher tool (esptool, ESP Web Tools, etc.).
-
-To flash via wired serial:
-```bash
-esptool.py --chip esp32 --port COM5 write_flash 0x0 esp32-web-interface_4.00-0x000.bin
-```
-
-> **Note:** The SPIFFS offset (`0x290000`) matches the default 4MB partition scheme (`default.csv`). If you use a custom partition table, adjust accordingly. The `qout` flash mode is the default and works on standard ESP32 dev boards. If your board needs `dio`, change `board_build.flash_mode` in `platformio.ini`.
-
-# Check device output
-
-## ROM bootloader messages
-
-Most of the ESP8266 boards have a 26MHz crystal (instead of the standard 40MHz) so the ROM bootloader outputs at 115200 * 26/40 = 74880.
-
-These messages are not very useful but can help you to confirm that the board is working as expected.
-```
-$ pio device monitor --baud 74880
---- Terminal on /dev/cu.usbserial-DGAJb113318 | 74880 8-N-1
---- Available filters and text transformations: colorize, debug, default, direct, esp8266_exception_decoder, hexlify, log2file, nocontrol, printable, send_on_enter, time
---- More details at https://bit.ly/pio-monitor-filters
---- Quit: Ctrl+C | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
-
- ets Jan  8 2013,rst cause:1, boot mode:(3,0)
-
-load 0x4010f000, len 3460, room 16
-tail 4
-chksum 0xcc
-load 0x3fff20b8, len 40, room 4
-tail 4
-chksum 0xc9
-csum 0xc9
-v0005f080
-~ld
-```
-
-## Normal output to the inverter
-
-In normal operations, the Web Interface wants to talk to an inverter. The following will show the messages that it tries to send to the inverter:
-```
-$ pio device monitor
---- Terminal on /dev/cu.usbserial-DGAJb113318 | 115200 8-N-1
---- Available filters and text transformations: colorize, debug, default, direct, esp8266_exception_decoder, hexlify, log2file, nocontrol, printable, send_on_enter, time
---- More details at https://bit.ly/pio-monitor-filters
---- Quit: Ctrl+C | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H
-fastuart
-
-json
-```
-
-# Building and flashing the filesystem (optional)
-It's also possible to automate the building of the filesystem, and its uploading.
-
-(It's optional as you can also do it by using the `/edit` endpoint of the main application - there's an `upload.sh` file for this.)
-
-## Building the filesystem
-This will only build it.
-```
-$ pio run --target buildfs
-Processing release (platform: espressif8266; framework: arduino; board: modwifi)
-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-Verbose mode can be enabled via `-v, --verbose` option
-CONFIGURATION: https://docs.platformio.org/page/boards/espressif8266/modwifi.html
-PLATFORM: Espressif 8266 (4.0.1) > Olimex MOD-WIFI-ESP8266(-DEV)
-HARDWARE: ESP8266 80MHz, 80KB RAM, 2MB Flash
-PACKAGES:
- - framework-arduinoespressif8266 @ 3.30002.0 (3.0.2)
- - tool-esptool @ 1.413.0 (4.13)
- - tool-esptoolpy @ 1.30300.0 (3.3.0)
- - tool-mklittlefs @ 1.203.210628 (2.3)
- - tool-mkspiffs @ 1.200.0 (2.0)
- - toolchain-xtensa @ 2.100300.210717 (10.3.0)
-Converting FSBrowser.ino
-LDF: Library Dependency Finder -> https://bit.ly/configure-pio-ldf
-LDF Modes: Finder ~ chain, Compatibility ~ soft
-Found 35 compatible libraries
-Scanning dependencies...
-Dependency Graph
-|-- ArduinoOTA @ 1.0
-|   |-- ESP8266WiFi @ 1.0
-|   |-- ESP8266mDNS @ 1.2
-|   |   |-- ESP8266WiFi @ 1.0
-|-- ESP8266HTTPUpdateServer @ 1.0
-|   |-- ESP8266WebServer @ 1.0
-|   |   |-- ESP8266WiFi @ 1.0
-|   |-- ESP8266WiFi @ 1.0
-|-- ESP8266WebServer @ 1.0
-|   |-- ESP8266WiFi @ 1.0
-|-- ESP8266WiFi @ 1.0
-|-- ESP8266mDNS @ 1.2
-|   |-- ESP8266WiFi @ 1.0
-|-- Ticker @ 1.0
-Building in release mode
-Building file system image from 'FSBrowser/data' directory to .pio/build/release/spiffs.bin
-/wifi-updated.html
-/gauges.html
-/ajax-loader.gif
-/index.html
-/inverter.js
-/remote.html
-/chart.min.js.gz
-/syncofs.html
-/gauge.min.js.gz
-/log.js
-/index.js
-/jquery.core.min.js.gz
-/chartjs-annotation.min.js.gz
-/wifi.html
-/log.html
-/style.css
-/gauges.js
-/jquery.knob.min.js.gz
-/refresh.png
-====================================================================================================================================== [SUCCESS] Took 1.38 seconds ======================================================================================================================================
-
-Environment    Status    Duration
--------------  --------  ------------
-release        SUCCESS   00:00:01.383
-====================================================================================================================================== 1 succeeded in 00:00:01.383 ======================================================================================================================================
-```
-
-## Flashing the filesystem
-This action does the build + flash steps in one operation.
-```
-$ pio run --target uploadfs
-Processing release (platform: espressif8266; framework: arduino; board: modwifi)
-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-Verbose mode can be enabled via `-v, --verbose` option
-CONFIGURATION: https://docs.platformio.org/page/boards/espressif8266/modwifi.html
-PLATFORM: Espressif 8266 (4.0.1) > Olimex MOD-WIFI-ESP8266(-DEV)
-HARDWARE: ESP8266 80MHz, 80KB RAM, 2MB Flash
-PACKAGES:
- - framework-arduinoespressif8266 @ 3.30002.0 (3.0.2)
- - tool-esptool @ 1.413.0 (4.13)
- - tool-esptoolpy @ 1.30300.0 (3.3.0)
- - tool-mklittlefs @ 1.203.210628 (2.3)
- - tool-mkspiffs @ 1.200.0 (2.0)
- - toolchain-xtensa @ 2.100300.210717 (10.3.0)
-Converting FSBrowser.ino
-LDF: Library Dependency Finder -> https://bit.ly/configure-pio-ldf
-LDF Modes: Finder ~ chain, Compatibility ~ soft
-Found 35 compatible libraries
-Scanning dependencies...
-Dependency Graph
-|-- ArduinoOTA @ 1.0
-|   |-- ESP8266WiFi @ 1.0
-|   |-- ESP8266mDNS @ 1.2
-|   |   |-- ESP8266WiFi @ 1.0
-|-- ESP8266HTTPUpdateServer @ 1.0
-|   |-- ESP8266WebServer @ 1.0
-|   |   |-- ESP8266WiFi @ 1.0
-|   |-- ESP8266WiFi @ 1.0
-|-- ESP8266WebServer @ 1.0
-|   |-- ESP8266WiFi @ 1.0
-|-- ESP8266WiFi @ 1.0
-|-- ESP8266mDNS @ 1.2
-|   |-- ESP8266WiFi @ 1.0
-|-- Ticker @ 1.0
-Building in release mode
-Building file system image from 'FSBrowser/data' directory to .pio/build/release/spiffs.bin
-/wifi-updated.html
-/gauges.html
-/ajax-loader.gif
-/index.html
-/inverter.js
-/remote.html
-/chart.min.js.gz
-/syncofs.html
-/gauge.min.js.gz
-/log.js
-/index.js
-/jquery.core.min.js.gz
-/chartjs-annotation.min.js.gz
-/wifi.html
-/log.html
-/style.css
-/gauges.js
-/jquery.knob.min.js.gz
-/refresh.png
-Looking for upload port...
-Using manually specified: /dev/cu.usbserial-DGAJb113318
-Uploading .pio/build/release/spiffs.bin
-esptool.py v3.3
-Serial port /dev/cu.usbserial-DGAJb113318
-WARNING: Pre-connection option "no_reset" was selected. Connection may fail if the chip is not in bootloader or flasher stub mode.
-Connecting....
-Chip is ESP8266EX
-Features: WiFi
-Crystal is 26MHz
-MAC: c4:5b:be:76:1b:b8
-Uploading stub...
-Running stub...
-Stub running...
-Changing baud rate to 921600
-Changed.
-Configuring flash size...
-Flash will be erased from 0x00180000 to 0x001f9fff...
-Compressed 499712 bytes to 140809...
-Writing at 0x00180000... (11 %)
-Writing at 0x0018c88a... (22 %)
-Writing at 0x001945b8... (33 %)
-Writing at 0x0019c553... (44 %)
-Writing at 0x001a4604... (55 %)
-Writing at 0x001af7a7... (66 %)
-Writing at 0x001b9998... (77 %)
-Writing at 0x001c5b85... (88 %)
-Writing at 0x001cdaa6... (100 %)
-Wrote 499712 bytes (140809 compressed) at 0x00180000 in 2.9 seconds (effective 1371.8 kbit/s)...
-Hash of data verified.
-
-Leaving...
-Soft resetting...
-====================================================================================================================================== [SUCCESS] Took 5.93 seconds ======================================================================================================================================
-
-Environment    Status    Duration
--------------  --------  ------------
-release        SUCCESS   00:00:05.926
-====================================================================================================================================== 1 succeeded in 00:00:05.926 ======================================================================================================================================
-```
-
-# Clean build files if needed
-```
-$ pio run --target clean
-Processing release (platform: espressif8266; framework: arduino; board: modwifi)
-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-Build environment is clean
-Done cleaning
-====================================================================================================================================== [SUCCESS] Took 0.39 seconds ======================================================================================================================================
-
-Environment    Status    Duration
--------------  --------  ------------
-release        SUCCESS   00:00:00.389
-====================================================================================================================================== 1 succeeded in 00:00:00.389 ======================================================================================================================================
+```sh
+pio run -t clean
 ```

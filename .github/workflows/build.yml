@@ -47,17 +47,17 @@ jobs:
       # build dir, deleting the previous step's binaries.
       - name: Build firmware (both targets)
         run: |
-          pio run -e release -e release-t2can
-          mkdir -p out/release out/release-t2can
-          cp .pio/build/release/bootloader.bin .pio/build/release/partitions.bin .pio/build/release/firmware.bin out/release/
-          cp .pio/build/release-t2can/bootloader.bin .pio/build/release-t2can/partitions.bin .pio/build/release-t2can/firmware.bin out/release-t2can/
+          pio run -e esp32_wemos -e esp32_t2can
+          mkdir -p out/esp32_wemos out/esp32_t2can
+          cp .pio/build/esp32_wemos/bootloader.bin .pio/build/esp32_wemos/partitions.bin .pio/build/esp32_wemos/firmware.bin out/esp32_wemos/
+          cp .pio/build/esp32_t2can/bootloader.bin .pio/build/esp32_t2can/partitions.bin .pio/build/esp32_t2can/firmware.bin out/esp32_t2can/
 
       - name: Build filesystems
         run: |
-          pio run -e release -t buildfs
-          pio run -e release-t2can -t buildfs
-          cp .pio/build/release/spiffs.bin out/release/
-          cp .pio/build/release-t2can/spiffs.bin out/release-t2can/
+          pio run -e esp32_wemos -t buildfs
+          pio run -e esp32_t2can -t buildfs
+          cp .pio/build/esp32_wemos/spiffs.bin out/esp32_wemos/
+          cp .pio/build/esp32_t2can/spiffs.bin out/esp32_t2can/
 
       - name: List build outputs
         run: find out -name '*.bin' | sort
@@ -66,34 +66,70 @@ jobs:
         run: |
           ESPTOOL=~/.platformio/packages/tool-esptoolpy/esptool.py
           BOOT_APP0=~/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin
-          python "$ESPTOOL" --chip esp32 merge_bin -o "esp32-web-interface_${VER}-0x000.bin" \
-            0x1000   out/release/bootloader.bin \
-            0x8000   out/release/partitions.bin \
+          python "$ESPTOOL" --chip esp32 merge_bin -o "esp32_wemos_${VER}-0x000.bin" \
+            0x1000   out/esp32_wemos/bootloader.bin \
+            0x8000   out/esp32_wemos/partitions.bin \
             0xe000   "$BOOT_APP0" \
-            0x10000  out/release/firmware.bin \
-            0x290000 out/release/spiffs.bin
-          python "$ESPTOOL" --chip esp32s3 merge_bin -o "esp32-web-interface-t2can_${VER}-0x000.bin" \
-            0x0      out/release-t2can/bootloader.bin \
-            0x8000   out/release-t2can/partitions.bin \
+            0x10000  out/esp32_wemos/firmware.bin \
+            0x290000 out/esp32_wemos/spiffs.bin
+          python "$ESPTOOL" --chip esp32s3 merge_bin -o "esp32_t2can_${VER}-0x000.bin" \
+            0x0      out/esp32_t2can/bootloader.bin \
+            0x8000   out/esp32_t2can/partitions.bin \
             0xe000   "$BOOT_APP0" \
-            0x10000  out/release-t2can/firmware.bin \
-            0xc90000 out/release-t2can/spiffs.bin
-          ls -la esp32-web-interface*.bin
+            0x10000  out/esp32_t2can/firmware.bin \
+            0xc90000 out/esp32_t2can/spiffs.bin
+          ls -la esp32_wemos_*.bin esp32_t2can_*.bin
+
+      # Combined OTA images for in-browser updates from the web interface:
+      # header ("OIWEBOTA" + uint32 LE firmware len + uint32 LE filesystem len)
+      # followed by firmware.bin then spiffs.bin. Unlike the 0x000 images these
+      # carry no bootloader/partition table, so they're OTA-flashable.
+      - name: Build OTA images (firmware + filesystem)
+        run: |
+          python - <<'PY'
+          import struct, os
+          ver = os.environ['VER']
+          targets = {
+              'esp32_wemos': 'esp32_wemos_%s-ota.bin' % ver,
+              'esp32_t2can': 'esp32_t2can_%s-ota.bin' % ver,
+          }
+          for env, out in targets.items():
+              fw = open('out/%s/firmware.bin' % env, 'rb').read()
+              fs = open('out/%s/spiffs.bin' % env, 'rb').read()
+              hdr = b'OIWEBOTA' + struct.pack('<II', len(fw), len(fs))
+              open(out, 'wb').write(hdr + fw + fs)
+              print('wrote', out, len(hdr) + len(fw) + len(fs), 'bytes')
+          PY
+          ls -la esp32_wemos_*-ota.bin esp32_t2can_*-ota.bin
 
       # Note: Actions artifacts always download as zips (GitHub limitation) —
       # raw .bin downloads come from release assets on v* tags
-      - name: Upload ESP32 image
+      - name: Upload Wemos OTA image
         uses: actions/upload-artifact@v4
         with:
-          name: esp32-web-interface_${{ env.VER }}-0x000
-          path: esp32-web-interface_${{ env.VER }}-0x000.bin
+          name: esp32_wemos_${{ env.VER }}-ota
+          path: esp32_wemos_${{ env.VER }}-ota.bin
+          retention-days: 30
+
+      - name: Upload T-2Can OTA image
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp32_t2can_${{ env.VER }}-ota
+          path: esp32_t2can_${{ env.VER }}-ota.bin
+          retention-days: 30
+
+      - name: Upload Wemos image
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp32_wemos_${{ env.VER }}-0x000
+          path: esp32_wemos_${{ env.VER }}-0x000.bin
           retention-days: 30
 
       - name: Upload T-2Can image
         uses: actions/upload-artifact@v4
         with:
-          name: esp32-web-interface-t2can_${{ env.VER }}-0x000
-          path: esp32-web-interface-t2can_${{ env.VER }}-0x000.bin
+          name: esp32_t2can_${{ env.VER }}-0x000
+          path: esp32_t2can_${{ env.VER }}-0x000.bin
           retention-days: 30
 
       - name: Attach images to release
@@ -101,5 +137,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            esp32-web-interface_${{ env.VER }}-0x000.bin
-            esp32-web-interface-t2can_${{ env.VER }}-0x000.bin
+            esp32_wemos_${{ env.VER }}-0x000.bin
+            esp32_t2can_${{ env.VER }}-0x000.bin
+            esp32_wemos_${{ env.VER }}-ota.bin
+            esp32_t2can_${{ env.VER }}-ota.bin

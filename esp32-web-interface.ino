@@ -1,8 +1,8 @@
-/* 
-  FSWebServer - Example WebServer with SPIFFS backend for esp8266
+/*
+  FSWebServer - Example WebServer with SPIFFS backend
   Copyright (c) 2015 Hristo Gochkov. All rights reserved.
-  This file is part of the ESP8266WebServer library for Arduino environment.
- 
+  This file is based on the WebServer library for Arduino environment.
+
   This library is free software; you can redistribute it and/or
   modify it under the terms of the GNU Lesser General Public
   License as published by the Free Software Foundation; either
@@ -14,16 +14,9 @@
   You should have received a copy of the GNU Lesser General Public
   License along with this library; if not, write to the Free Software
   Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
-  
-  upload the contents of the data folder with MkSPIFFS Tool ("ESP8266 Sketch Data Upload" in Tools menu in Arduino IDE)
-  or you can upload the contents of a folder if you CD in that folder and run the following command:
-  for file in `ls -A1`; do curl -F "file=@$PWD/$file" esp8266fs.local/edit; done
-  
-  access the sample web page at http://esp8266fs.local
-  edit the page by going to http://esp8266fs.local/edit
 */
 /*
- * This file is part of the esp8266 web interface
+ * This file is part of the esp32 web interface
  *
  * Copyright (C) 2018 Johannes Huebner <dev@johanneshuebner.com>
  *
@@ -47,6 +40,7 @@
 #include <HTTPUpdateServer.h>
 #include <ESPmDNS.h>
 #include <ArduinoOTA.h>
+#include <Update.h>
 #include <FS.h>
 #include <Ticker.h>
 
@@ -387,16 +381,20 @@ static float canReadParamValue(int paramId) {
   return canDecodeValue(raw);
 }
 
+#ifndef WEB_REPO
+#define WEB_REPO ""
+#endif
+#ifndef WEB_OTA_TARGET
+#define WEB_OTA_TARGET "esp32_wemos"
+#endif
+
 WebServer server(80);
 HTTPUpdateServer updater;
 //holds the current upload
 File fsUploadFile;
 Ticker sta_tick;
 
-//SWD over ESP8266
-/*
-  https://github.com/scanlime/esp8266-arm-swd
-*/
+//SWD bit-banging, ported from https://github.com/scanlime/esp8266-arm-swd
 #include <StreamString.h>
 
 RTC_PCF8523 ext_rtc;
@@ -608,6 +606,91 @@ void handleFileUpload(){
     } else {
       DBG_OUTPUT_PORT.println("ERROR: Upload failed - file was not written (SPIFFS open failed)");
     }
+  }
+}
+
+// Browser-driven OTA of the ESP32 itself: app firmware (U_FLASH) or the SPIFFS
+// filesystem image (U_SPIFFS). The target is taken from the ?cmd=fs|app query
+// arg, with the uploaded file name as a fallback. Streams straight into the
+// Update partition; the POST responder reboots on success. The bootloader and
+// partition table are never touched, so a bad image is recoverable over serial.
+// Combined OTA image: a small header followed by the app firmware and the
+// SPIFFS image, so the two are always flashed together and can never drift out
+// of sync. Format: "OIWEBOTA" + uint32 LE firmware length + uint32 LE
+// filesystem length, then firmware.bin, then spiffs.bin. The bootloader and
+// partition table are never touched, so a bad image stays recoverable over USB.
+static const char ESP_OTA_MAGIC[8] = {'O','I','W','E','B','O','T','A'};
+static bool espOtaDone = false;   // upload finished (whether or not it worked)
+static bool espOtaOk = false;     // both partitions flashed successfully
+static String espOtaErr;
+static uint8_t espOtaHdr[16];
+static int espOtaHdrGot;
+static uint32_t espOtaFwLen, espOtaFsLen, espOtaAppDone, espOtaFsDone;
+static int espOtaPhase;           // 0=header 1=app 2=fs 3=finished 4=error
+
+static void espOtaFail(const String& msg){
+  if(espOtaErr.length() == 0) espOtaErr = msg;
+  espOtaPhase = 4;
+  Update.abort();
+  DBG_OUTPUT_PORT.println("ESP OTA error: " + espOtaErr);
+}
+
+// Stream the combined image through a small state machine: parse the header,
+// flash the app partition, then the filesystem partition. A single upload
+// buffer may straddle any boundary, so each phase consumes only its share.
+static void espOtaFeed(const uint8_t* data, size_t len){
+  size_t i = 0;
+  while(i < len && espOtaPhase < 3){
+    if(espOtaPhase == 0){
+      while(espOtaHdrGot < 16 && i < len) espOtaHdr[espOtaHdrGot++] = data[i++];
+      if(espOtaHdrGot < 16) return;
+      if(memcmp(espOtaHdr, ESP_OTA_MAGIC, 8) != 0){ espOtaFail("Not a combined OTA image"); return; }
+      espOtaFwLen = espOtaHdr[8] | (espOtaHdr[9] << 8) | (espOtaHdr[10] << 16) | ((uint32_t)espOtaHdr[11] << 24);
+      espOtaFsLen = espOtaHdr[12] | (espOtaHdr[13] << 8) | (espOtaHdr[14] << 16) | ((uint32_t)espOtaHdr[15] << 24);
+      if(espOtaFwLen == 0 || espOtaFsLen == 0){ espOtaFail("Bad OTA header"); return; }
+      if(!Update.begin(espOtaFwLen, U_FLASH)){ espOtaFail(Update.errorString()); return; }
+      espOtaPhase = 1;
+    } else if(espOtaPhase == 1){
+      size_t want = espOtaFwLen - espOtaAppDone;
+      size_t n = want < (len - i) ? want : (len - i);
+      if(n && Update.write((uint8_t*)data + i, n) != n){ espOtaFail(Update.errorString()); return; }
+      espOtaAppDone += n; i += n;
+      if(espOtaAppDone == espOtaFwLen){
+        if(!Update.end(true)){ espOtaFail(Update.errorString()); return; }
+        if(!Update.begin(espOtaFsLen, U_SPIFFS)){ espOtaFail(Update.errorString()); return; }
+        espOtaPhase = 2;
+      }
+    } else { // espOtaPhase == 2
+      size_t want = espOtaFsLen - espOtaFsDone;
+      size_t n = want < (len - i) ? want : (len - i);
+      if(n && Update.write((uint8_t*)data + i, n) != n){ espOtaFail(Update.errorString()); return; }
+      espOtaFsDone += n; i += n;
+      if(espOtaFsDone == espOtaFsLen){
+        if(!Update.end(true)){ espOtaFail(Update.errorString()); return; }
+        espOtaPhase = 3;
+      }
+    }
+  }
+}
+
+void handleEspUpdateUpload(){
+  if(server.uri() != "/espupdate") return;
+  HTTPUpload& upload = server.upload();
+  if(upload.status == UPLOAD_FILE_START){
+    espOtaDone = false; espOtaOk = false; espOtaErr = "";
+    espOtaHdrGot = 0; espOtaPhase = 0;
+    espOtaFwLen = espOtaFsLen = espOtaAppDone = espOtaFsDone = 0;
+    DBG_OUTPUT_PORT.println("ESP OTA start: " + upload.filename);
+  } else if(upload.status == UPLOAD_FILE_WRITE){
+    espOtaFeed(upload.buf, upload.currentSize);
+  } else if(upload.status == UPLOAD_FILE_END){
+    espOtaDone = true;
+    espOtaOk = (espOtaPhase == 3);
+    if(!espOtaOk && espOtaErr.length() == 0) espOtaErr = "Incomplete OTA image";
+    if(espOtaOk) DBG_OUTPUT_PORT.println("ESP OTA complete: app " + String(espOtaFwLen) + " + fs " + String(espOtaFsLen) + " bytes");
+  } else if(upload.status == UPLOAD_FILE_ABORTED){
+    espOtaDone = true; espOtaOk = false; espOtaErr = "Upload aborted";
+    Update.abort();
   }
 }
 
@@ -1899,6 +1982,17 @@ void setup(void){
   //second callback handles file uploads at that location
   server.on("/edit", HTTP_POST, [](){ server.send(200, "text/plain", ""); }, handleFileUpload);
 
+  //ESP32 self-update: flash app firmware or the SPIFFS filesystem from the browser
+  server.on("/espupdate", HTTP_POST, [](){
+    bool ok = espOtaDone && espOtaOk;
+    String msg = ok ? "" : (espOtaErr.length() ? espOtaErr : (espOtaDone ? "Update failed" : "No image received"));
+    String body = ok ? "{\"ok\":true}" : (String("{\"ok\":false,\"message\":\"") + msg + "\"}");
+    server.sendHeader("Connection", "close");
+    server.send(ok ? 200 : 500, "application/json", body);
+    delay(250);
+    if(ok) ESP.restart();
+  }, handleEspUpdateUpload);
+
   server.on("/wifi", handleWifi);
   server.on("/cmd", handleCommand);
   server.on("/fwupdate", handleUpdate);
@@ -1911,6 +2005,10 @@ void setup(void){
 #define WEB_VERSION "dev"
 #endif
   server.on("/version", [](){ server.send(200, "text/plain", WEB_VERSION); });
+  server.on("/otainfo", [](){
+    server.send(200, "application/json",
+      String("{\"version\":\"") + WEB_VERSION + "\",\"repo\":\"" + WEB_REPO + "\",\"target\":\"" + WEB_OTA_TARGET + "\"}");
+  });
   server.on("/reboot", [](){ server.send(200, "text/plain", "Rebooting..."); ESP.restart(); });
   server.on("/reset-inverter", [](){
     server.send(200, "text/plain", "Inverter reset sent");

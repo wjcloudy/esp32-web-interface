@@ -1,15 +1,15 @@
 # Openinverter Web Interface Protocol
 
-This document describes the protocol used on the serial interface between this ESP8266 module, and
+This document describes the protocol used on the serial interface between this ESP32 module, and
 an inverter or VCU.
 
 ## General
 
-Commands are sent by the ESP8266. Each command consists of a single line consisting of a command word
+Commands are sent by the ESP32. Each command consists of a single line consisting of a command word
 followed optionally by parameters and terminates with a newline character. Commands must be echoed back
-to the ESP8266.
+to the ESP32.
 
-Following the echo, the esp8266 will receive an unlimited quantity of response data, terminated by a
+Following the echo, the ESP32 will receive an unlimited quantity of response data, terminated by a
 100ms timeout.
 
 Except where otherwise noted, the responses are free text and should generally contain a single human

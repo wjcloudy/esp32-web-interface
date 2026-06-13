@@ -13,4 +13,26 @@ except Exception:
     ver = "unknown"
 
 env.Append(CPPDEFINES=[("WEB_VERSION", env.StringifyMacro(ver))])
-print("WEB_VERSION:", ver)
+
+# Repo this build came from, normalised to a github.com https URL (no .git), so
+# the UI can default the "Update from GitHub" field to the right place.
+try:
+    repo = subprocess.check_output(
+        ["git", "config", "--get", "remote.origin.url"],
+        text=True, stderr=subprocess.DEVNULL
+    ).strip()
+except Exception:
+    repo = ""
+if repo.startswith("git@github.com:"):
+    repo = "https://github.com/" + repo[len("git@github.com:"):]
+if repo.endswith(".git"):
+    repo = repo[:-4]
+env.Append(CPPDEFINES=[("WEB_REPO", env.StringifyMacro(repo))])
+
+# OTA asset name prefix for this build target, so the UI can pre-select the
+# matching <prefix>_<ver>-ota.bin and avoid flashing the wrong board's image.
+pioenv = env["PIOENV"]
+target = "esp32_t2can" if "t2can" in pioenv else "esp32_wemos"
+env.Append(CPPDEFINES=[("WEB_OTA_TARGET", env.StringifyMacro(target))])
+
+print("WEB_VERSION:", ver, "| WEB_REPO:", repo, "| WEB_OTA_TARGET:", target)

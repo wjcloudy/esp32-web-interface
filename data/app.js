@@ -66,6 +66,19 @@ const api = {
     return r.json();
   },
 
+  // Build info from the firmware: which repo it was built from and its OTA
+  // target, so the GitHub update UI defaults to the right place and image.
+  async getOtaInfo() {
+    try { const r = await fetch('/otainfo'); if (r.ok) return await r.json(); } catch (e) {}
+    return { version: '', repo: '', target: 'esp32_wemos' };
+  },
+
+  async fetchReleasesFor(owner, repo) {
+    const r = await fetch('https://api.github.com/repos/' + owner + '/' + repo + '/releases');
+    if (!r.ok) throw new Error('GitHub API HTTP ' + r.status);
+    return r.json();
+  },
+
   async runUpdateStep(step, file) {
     const r = await fetch('/fwupdate?step=' + step + '&file=' + encodeURIComponent(file));
     const json = await r.json().catch(() => ({}));
@@ -1021,8 +1034,82 @@ const Update = () => {
   const [updateMsg, setUpdateMsg] = useState('');
   const [releases, setReleases] = useState([]);
   const [otaMsg, setOtaMsg] = useState('');
+  // Update-from-GitHub state for the web interface OTA
+  const [otaTarget, setOtaTarget] = useState('esp32_wemos');
+  const [ghUrl, setGhUrl] = useState('');
+  const [ghReleases, setGhReleases] = useState([]); // [{tag, assets:[{name,url}]}]
+  const [ghTag, setGhTag] = useState('');
+  const [ghAssetUrl, setGhAssetUrl] = useState('');
+  const [ghMsg, setGhMsg] = useState('');
   const fileRef = useRef(null);
   const webFileRef = useRef(null);
+  const espOtaRef = useRef(null);
+
+  // Default the GitHub URL to the repo this firmware was built from.
+  useEffect(() => {
+    api.getOtaInfo().then(info => {
+      setOtaTarget(info.target || 'esp32_wemos');
+      setGhUrl(info.repo || 'https://github.com/wjcloudy/esp32-web-interface');
+    });
+  }, []);
+
+  // The OTA asset matching this board, e.g. esp32_wemos_<ver>-ota.bin (matched on
+  // the '<target>_' prefix so the two targets never cross-match). undefined if none.
+  const matchTargetAsset = (assets) => assets.find(a => a.name.startsWith(otaTarget + '_'));
+
+  // Default-select the matching image; if none matches, fall back to the first
+  // but warn so the user picks a target deliberately (any asset is still selectable).
+  const applyAssetDefault = (assets) => {
+    const match = matchTargetAsset(assets);
+    setGhAssetUrl((match || assets[0]).url);
+    setGhMsg(match ? '' : 'No image matches this board (' + otaTarget + ') — choose a target manually below');
+  };
+
+  const getGhReleases = async () => {
+    const m = ghUrl.match(/github\.com[/:]([^/]+)\/([^/.\s]+)/);
+    if (!m) { setGhMsg('Enter a github.com repository URL'); return; }
+    setGhMsg('Loading releases...');
+    setGhReleases([]); setGhTag(''); setGhAssetUrl('');
+    try {
+      const rels = await api.fetchReleasesFor(m[1], m[2]);
+      const list = (rels || []).map(r => ({
+        tag: r.tag_name,
+        assets: (r.assets || []).filter(a => a.name.endsWith('-ota.bin')).map(a => ({ name: a.name, url: a.browser_download_url })),
+      })).filter(r => r.assets.length);
+      setGhReleases(list);
+      if (!list.length) { setGhMsg('No OTA images (*-ota.bin) found in this repo\'s releases'); return; }
+      setGhTag(list[0].tag);
+      applyAssetDefault(list[0].assets);
+    } catch (e) { setGhMsg('Failed: ' + e.message); }
+  };
+
+  const onGhTag = (tag) => {
+    setGhTag(tag);
+    const rel = ghReleases.find(r => r.tag === tag);
+    if (rel) applyAssetDefault(rel.assets);
+  };
+
+  const installFromGithub = async () => {
+    if (!ghAssetUrl) return;
+    const name = ghAssetUrl.split('/').pop();
+    if (!confirm('Download and install "' + name + '"?\nThe firmware and UI are flashed together and the device will reboot.')) return;
+    setGhMsg('Downloading ' + name + '...');
+    try {
+      const blob = await fetch(ghAssetUrl).then(r => { if (!r.ok) throw new Error('download HTTP ' + r.status); return r.blob(); });
+      setGhMsg('');
+      const file = new File([blob], name);
+      setUpdating(true); setProgress(0); setUpdateMsg('Uploading OTA image...');
+      dispatch({ type: 'SET_LOGGING', payload: true });
+      await flashEsp(file);
+      setProgress(100);
+      setUpdateMsg('Flashed — rebooting, reloading shortly...');
+      setTimeout(() => location.reload(), 7000);
+    } catch (e) {
+      setGhMsg('Error: ' + e.message);
+      setUpdating(false);
+      dispatch({ type: 'SET_LOGGING', payload: false });
+    }
+  };
 
   const installFirmware = async () => {
     const file = fileRef.current?.files?.[0];
@@ -1143,6 +1230,52 @@ const Update = () => {
     dispatch({ type: 'SET_FILE_LIST', payload: await api.getFileList() });
   };
 
+  // OTA-flash the web interface from a combined image (firmware + filesystem in
+  // one file). Uses XHR so we get real upload progress; the device reboots when
+  // done. The firmware and UI are always flashed together so they stay in sync.
+  const flashEsp = (file) => new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/espupdate');
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) setProgress(Math.round(100 * e.loaded / e.total)); };
+    xhr.onload = () => {
+      let ok = xhr.status === 200;
+      try { ok = JSON.parse(xhr.responseText).ok; } catch (err) {}
+      if (ok) resolve();
+      else { let m = ''; try { m = JSON.parse(xhr.responseText).message; } catch (err) {} reject(new Error(m || ('HTTP ' + xhr.status))); }
+    };
+    // The ESP reboots and drops the connection right after a successful flash,
+    // which can surface as an error — but onload usually fires first.
+    xhr.onerror = () => reject(new Error('Connection lost during upload'));
+    const fd = new FormData();
+    fd.append('espfile', file, file.name);
+    xhr.send(fd);
+  });
+
+  const installEsp = async () => {
+    const file = espOtaRef.current?.files?.[0];
+    if (espOtaRef.current) espOtaRef.current.value = ''; // allow re-selecting the same file
+    if (!file) return;
+    if (!file.name.endsWith('-ota.bin')) {
+      alert('That does not look like an OTA image.\nExpected a combined "*-ota.bin" file, e.g. ' + otaTarget + '_<version>-ota.bin.\n(The full-flash "*-0x000.bin" image cannot be flashed over the air.)');
+      return;
+    }
+    const wrongBoard = !file.name.startsWith(otaTarget + '_');
+    const warn = wrongBoard ? '\n\nWARNING: this image is not built for this board (' + otaTarget + ').' : '';
+    if (!confirm('Update the web interface from "' + file.name + '"?' + warn + '\nThe firmware and UI are flashed together and the device will reboot.')) return;
+    setUpdating(true); setProgress(0); setUpdateMsg('Uploading OTA image...');
+    dispatch({ type: 'SET_LOGGING', payload: true }); // pause polling so it doesn't compete with the upload
+    try {
+      await flashEsp(file);
+      setProgress(100);
+      setUpdateMsg('Flashed — rebooting, reloading shortly...');
+      setTimeout(() => location.reload(), 7000);
+    } catch (e) {
+      setUpdateMsg('Error: ' + e.message);
+      dispatch({ type: 'SET_LOGGING', payload: false });
+      setTimeout(() => setUpdating(false), 4000);
+    }
+  };
+
   return html`
     <div id="update" class="tabdiv main-content" style="display:flex">
       <div class="main-right">
@@ -1162,9 +1295,27 @@ const Update = () => {
           <p>${otaMsg}</p>
         </div>
         <h3 class="underline">Web Interface</h3>
+        <input type="text" value=${ghUrl} oninput=${e => setGhUrl(e.target.value)}
+          placeholder="https://github.com/owner/repo" style="width:100%;margin-bottom:.25rem;font-size:.8rem" />
+        <button onclick=${getGhReleases}><${Icon} n="cloud" />Get releases</button>
+        <div class="flex-break"></div>
+        ${ghReleases.length > 0 && html`
+          <select class="styled" value=${ghTag} onchange=${e => onGhTag(e.target.value)} style="width:100%;margin-top:.25rem">
+            ${ghReleases.map(r => html`<option value=${r.tag}>${r.tag}</option>`)}
+          </select>
+          <select class="styled" value=${ghAssetUrl} onchange=${e => setGhAssetUrl(e.target.value)} style="width:100%;margin-top:.25rem">
+            ${(ghReleases.find(r => r.tag === ghTag)?.assets || []).map(a => html`<option value=${a.url}>${a.name}${a.name.startsWith(otaTarget + '_') ? ' (this board)' : ''}</option>`)}
+          </select>
+          <button onclick=${installFromGithub} style="margin-top:.25rem"><${Icon} n="download" />Download & install</button>
+        `}
+        ${ghMsg && html`<p style="font-size:.8rem;margin:.25rem 0 0">${ghMsg}</p>`}
+        <form enctype="multipart/form-data">
+          <input id="esp-ota-file" type="file" accept=".bin" ref=${espOtaRef} hidden onchange=${installEsp} />
+          <label class="butt" for="esp-ota-file"><${Icon} n="upload" />Install OTA image from file</label>
+        </form>
         <form id="uploadform" enctype="multipart/form-data">
           <input id="updatefile" name="updatefile" type="file" ref=${webFileRef} hidden onchange=${uploadWebFile} />
-          <label class="butt" for="updatefile"><${Icon} n="upload" />Upload file</label>
+          <label class="butt" for="updatefile"><${Icon} n="upload" />Upload single file</label>
         </form>
         ${updating && html`
           <div id="progress" class="graph">
@@ -1185,7 +1336,10 @@ const Update = () => {
         </div>
         <div class="dash-box compact">
           <h3>Web Interface</h3>
-          <p style="margin:0">Upload individual web interface files using the <b>Upload file</b> button.</p>
+          <p>Update the web interface over the air from the combined <code>*-ota.bin</code> image, which carries the ESP32 firmware and the UI together so they can't drift out of sync.</p>
+          <p><b>Get releases</b> lists releases from the GitHub repo above (pre-filled with the repo this build came from). Choose a release; the image for your board is selected by default. Then <b>Download & install</b>, or use <b>Install OTA image from file</b> to flash one you built locally.</p>
+          <p>Use <b>Upload single file</b> for individual file tweaks.</p>
+          <p style="font-size:.8rem;color:var(--text3);margin:0">The bootloader and partition table aren't touched, so a bad image stays recoverable over USB. The web interface reboots and the page reloads when done.</p>
         </div>
       </div>
     </div>

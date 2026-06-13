@@ -22,7 +22,7 @@ In some cases you will want to customize some aspects of the project configurati
 If these aspects are useful to others, then you should consider doing a PR to share those change.
 
 However in some cases there are some changes that are specific to your working environment, for example the
-name of the serial port on which you communicate with the ESP8266 board, etc...
+name of the serial port on which you communicate with the ESP32 board, etc...
 
 To that end, you can create a local file named `platformio-local-override.ini` ; which is explicitely ignored
 by the git version control (cf `.gitignore`).

@@ -1,5 +1,5 @@
 /*
- * This file is part of the esp8266 web interface
+ * This file is part of the esp32 web interface
  *
  * Copyright (C) 2018 Johannes Huebner <dev@johanneshuebner.com>
  *

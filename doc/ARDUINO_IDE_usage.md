@@ -21,7 +21,7 @@ To compile, you need to choose, in the `Sketch` menu, `Verify / Compile`
 Choose, in the `Sketch` menu, `Upload`. It will compile and send to the board with the chosen method (serial / OTA)
 
 # Flashing the filesystem
-Choose, in the `Tools` menu, the `ESP8266 Sketch Data Upload` option, which will package, and flash the files in the `data` directory (HTML files for the web interface)
+Choose, in the `Tools` menu, the `ESP32 Sketch Data Upload` option, which will package, and flash the files in the `data` directory (HTML files for the web interface)
 
 # Debugging
 In case you're debugging and have enabled (`Tools` > `Debug port` / `Tools` > `Debug level`) some kind of debugging output, you may use the `Tools` / `Serial monitor` to check the debug messages.
