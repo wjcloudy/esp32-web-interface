@@ -737,9 +737,11 @@ const Parameters = () => {
         <h3 class="underline">Filter</h3>
         <input type="text" placeholder="Search parameters..." value=${search}
           oninput=${e => setSearch(e.target.value)} style="width:100%;margin-bottom:.25rem" />
-        <div style="display:flex;gap:6px;width:100%">
-          <button onclick=${() => dispatch({ type: 'SET_ALL_CATEGORIES', payload: true })} style="flex:1 1 0;width:auto;min-width:0;justify-content:center"><${Icon} n="expand" />Expand</button>
-          <button onclick=${() => dispatch({ type: 'SET_ALL_CATEGORIES', payload: false })} style="flex:1 1 0;width:auto;min-width:0;justify-content:center"><${Icon} n="collapse" />Collapse</button>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;width:100%;align-items:stretch">
+          <button onclick=${() => dispatch({ type: 'SET_ALL_CATEGORIES', payload: true })} style="flex:0 0 auto;width:auto;min-width:0;padding:5px 8px;justify-content:center"><${Icon} n="expand" />Expand</button>
+          <button onclick=${() => dispatch({ type: 'SET_ALL_CATEGORIES', payload: false })} style="flex:0 0 auto;width:auto;min-width:0;padding:5px 8px;justify-content:center"><${Icon} n="collapse" />Collapse</button>
+          ${hasFavs && html`<div style="flex:1 1 140px;min-width:140px;display:flex"><${ToggleRow} label="★ Favorites only" checked=${showFavs}
+            onChange=${() => dispatch({ type: 'TOGGLE_FAVORITES_ONLY' })} /></div>`}
         </div>
         <button class="actions-expander" onclick=${() => setActionsOpen(!actionsOpen)}>
           <span class="btn-ic" style=${'transition:transform .18s;transform:rotate(' + (actionsOpen ? 180 : 0) + 'deg)'}><${Icon} n="chevron" /></span>
@@ -759,8 +761,6 @@ const Parameters = () => {
         <button onclick=${() => setShowSubscribe(true)}><${Icon} n="rss" />Subscribe to parameter set</button>
         <button onclick=${stopSubscription}><${Icon} n="x" />Stop subscription</button>
         <h3 class="underline">Misc</h3>
-        ${hasFavs && html`<${ToggleRow} label="★ Favorites only" checked=${showFavs}
-          onChange=${() => dispatch({ type: 'TOGGLE_FAVORITES_ONLY' })} />`}
         <a href="/syncofs.html" target="_blank"><button><${Icon} n="external" />Launch syncofs tuner</button></a>
         <a href="https://openinverter.org/wiki/Parameters" target="_blank"><button><${Icon} n="book" />Parameter reference</button></a>
         </div>
@@ -783,7 +783,7 @@ const Parameters = () => {
                     ${state.paramFavorites.includes(p.name) ? '★' : '☆'}
                   </td>
                   <td>${p.i !== undefined ? p.i : '-'}</td>
-                  <td><div class="tooltip">${p.name}<span class="tooltiptext">${docstrings.get(p.name) || ''}</span></div></td>
+                  <td><div class="tooltip">${p.name}<span class="tooltiptext ${docstrings.get(p.name) ? '' : 'tooltiptext-empty'}">${docstrings.get(p.name) || 'No description available.'}</span></div></td>
                   <td>
                     ${editing === p.name ? html`
                       <input type="number" min=${p.minimum} max=${p.maximum} step="0.05" value=${editValue} 
@@ -932,6 +932,13 @@ const SpotValues = () => {
     return v.display;
   };
 
+  // Tooltip text for a spot value. Virtual values are CAN-RX mappings, so we
+  // point the user at the CAN Mapping page rather than a static docstring.
+  const svTip = (v) => v.virtual
+    ? 'Virtual spot value, mapped from a received CAN frame. Edit it on the CAN Mapping page.'
+    : (docstrings.get(v.name) || 'No description available.');
+  const svTipEmpty = (v) => !v.virtual && !docstrings.get(v.name);
+
   // Enable multi-column only if table content overflows available height
   useEffect(() => {
     const el = wrapRef.current;
@@ -957,8 +964,8 @@ const SpotValues = () => {
         <input type="text" placeholder="Search spot values..." value=${search}
           oninput=${e => setSearch(e.target.value)}
           style="width:100%;margin-bottom:.25rem" />
-        <p style="font-size:.75rem;color:var(--text3);margin:0 0 .25rem">${filtered.length} of ${all.length} items</p>
-        <h3 class="underline">View</h3>
+        <p class="sv-count" style="font-size:.75rem;color:var(--text3);margin:0 0 .25rem">${filtered.length} of ${all.length} items</p>
+        <h3 class="underline sv-view-head">View</h3>
         <${ToggleRow} label="★ Favorites only" checked=${showFavs} disabled=${!hasFavs}
           onChange=${() => dispatch({ type: 'TOGGLE_FAVORITES_ONLY' })} />
         <${ToggleRow} label="Sparklines" checked=${sparks}
@@ -982,7 +989,7 @@ const SpotValues = () => {
                     style="background:none;border:none;cursor:pointer;font-size:1rem;padding:0;color:${isFav(v.name)?'var(--amber)':'var(--text3)'}">
                     ${isFav(v.name) ? '★' : '☆'}
                   </button>
-                </td><td class="sv-name">${v.name}</td><td class="sv-val">${getDisplay(v)}</td>${sparks && html`<td class="sv-spark">${!v.enums && html`<${Sparkline} data=${histRef.current[v.name]} width=${64} height=${16} />`}</td>`}<td class="sv-unit">${v.unit && v.unit.indexOf('=') === -1 ? v.unit : ''}</td></tr>
+                </td><td class="sv-name"><div class="tooltip">${v.name}<span class="tooltiptext ${svTipEmpty(v) ? 'tooltiptext-empty' : ''}">${svTip(v)}</span></div></td><td class="sv-val">${getDisplay(v)}</td>${sparks && html`<td class="sv-spark">${!v.enums && html`<${Sparkline} data=${histRef.current[v.name]} width=${64} height=${16} />`}</td>`}<td class="sv-unit">${v.unit && v.unit.indexOf('=') === -1 ? v.unit : ''}</td></tr>
             `)}
           </tbody>
         </table>
@@ -2077,8 +2084,7 @@ const Settings = () => {
           ${canMode && html`
             <h3 style="margin-top:.75rem">CAN Bus</h3>
             <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:.25rem;align-items:center">
-              <label style="font-size:.75rem">Speed
-                <select value=${canSpeed} onchange=${e => setCanSpeed(parseInt(e.target.value))} class="styled" style="font-size:.7rem">
+              <label style="font-size:.75rem">Speed <select value=${canSpeed} onchange=${e => setCanSpeed(parseInt(e.target.value))} class="styled" style="font-size:.7rem">
                   <option value="0">125k</option>
                   <option value="1">250k</option>
                   <option value="2">500k</option>

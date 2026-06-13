@@ -545,13 +545,14 @@ td { font-variant-numeric: tabular-nums; }
 /* ===== TOOLTIP ===== */
 .tooltip { position: relative; display: inline-block; border-bottom: 1px dotted var(--text3); cursor: help; }
 .tooltiptext {
-  visibility: hidden; width: 180px; bottom: 100%; left: 50%; transform: translateX(-50%);
-  background: var(--surface3); color: var(--text); text-align: center;
+  visibility: hidden; width: 180px; bottom: 100%; left: 0; max-width: calc(100vw - 24px);
+  background: var(--surface3); color: var(--text); text-align: left;
   padding: 8px 12px; border-radius: var(--radius-xs); font-size: .75rem; font-weight: 400;
   position: absolute; z-index: 10; margin-bottom: 6px;
   box-shadow: var(--shadow); border: 1px solid var(--border2);
 }
 .tooltip:hover .tooltiptext { visibility: visible; }
+.tooltiptext-empty { color: var(--text3); font-style: italic; }
 
 .beta-feature { display: none; }
 
@@ -585,6 +586,8 @@ td { font-variant-numeric: tabular-nums; }
   .main-right .toggle-row { width: auto; min-width: 0; font-size: .72rem; padding: 5px 10px; }
   .main-right h3 { margin: .5rem 0 2px; font-size: .7rem; display: block; width: 100%; }
   .main-right h3:first-child { margin-top: 0; }
+  /* reclaim vertical space on Spot Values: drop the item count and View header */
+  .sv-count, .sv-view-head { display: none; }
   .dash-row { flex-direction: column; }
   .tabdiv { padding: .75rem; }
   .panel-toggle { display: none; }
