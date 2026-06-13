@@ -1089,23 +1089,28 @@ const Update = () => {
     if (rel) applyAssetDefault(rel.assets);
   };
 
+  // The device downloads and flashes the image itself — the browser can't fetch
+  // GitHub release assets (the download redirects to a host with no CORS headers).
   const installFromGithub = async () => {
     if (!ghAssetUrl) return;
     const name = ghAssetUrl.split('/').pop();
     if (!confirm('Download and install "' + name + '"?\nThe firmware and UI are flashed together and the device will reboot.')) return;
-    setGhMsg('Downloading ' + name + '...');
+    setGhMsg('');
+    setUpdating(true); setProgress(0); setUpdateMsg('Device is downloading and flashing ' + name + ' — this can take a minute. Do not power off.');
+    dispatch({ type: 'SET_LOGGING', payload: true });
     try {
-      const blob = await fetch(ghAssetUrl).then(r => { if (!r.ok) throw new Error('download HTTP ' + r.status); return r.blob(); });
-      setGhMsg('');
-      const file = new File([blob], name);
-      setUpdating(true); setProgress(0); setUpdateMsg('Uploading OTA image...');
-      dispatch({ type: 'SET_LOGGING', payload: true });
-      await flashEsp(file);
+      const r = await fetch('/espupdate-url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'url=' + encodeURIComponent(ghAssetUrl),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || !j.ok) throw new Error(j.message || ('HTTP ' + r.status));
       setProgress(100);
       setUpdateMsg('Flashed — rebooting, reloading shortly...');
       setTimeout(() => location.reload(), 7000);
     } catch (e) {
-      setGhMsg('Error: ' + e.message);
+      setUpdateMsg('Error: ' + e.message);
       setUpdating(false);
       dispatch({ type: 'SET_LOGGING', payload: false });
     }
@@ -1307,6 +1312,7 @@ const Update = () => {
             ${(ghReleases.find(r => r.tag === ghTag)?.assets || []).map(a => html`<option value=${a.url}>${a.name}${a.name.startsWith(otaTarget + '_') ? ' (this board)' : ''}</option>`)}
           </select>
           <button onclick=${installFromGithub} style="margin-top:.25rem"><${Icon} n="download" />Download & install</button>
+          <div class="flex-break"></div>
         `}
         ${ghMsg && html`<p style="font-size:.8rem;margin:.25rem 0 0">${ghMsg}</p>`}
         <form enctype="multipart/form-data">
