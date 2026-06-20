@@ -2756,12 +2756,15 @@ const App = () => {
     let running = true;
     const rate = state.refreshRate; // -1 = off, 0 = max speed (continuous), else ms interval
 
+    // Returns true if it actually polled, false if paused (hidden / off /
+    // favourites streaming holds `logging`). Callers must yield when it's
+    // false so the loop never busy-spins.
     const fetchOnce = async () => {
-      if (document.hidden || state.refreshRate === -1 || state.logging) return;
+      if (document.hidden || state.refreshRate === -1 || state.logging) return false;
       dispatch({ type: 'SET_FETCHING' });
       try {
         const json = await api.getJSON('json');
-        if (!running) return;
+        if (!running) return true;
         dispatch({ type: 'SET_PARAMS', payload: json });
         if (state.activeTab === 'dashboard') {
           api.getText('errors').then(r => dispatch({ type: 'SET_MESSAGES', payload: r }));
@@ -2769,6 +2772,7 @@ const App = () => {
       } catch (e) {
         if (running) dispatch({ type: 'FETCH_ERROR' });
       }
+      return true;
     };
 
     // FPS counter
@@ -2786,8 +2790,12 @@ const App = () => {
     } else if (rate === 0) {
       (async function loop() {
         while (running) {
-          await fetchOnce();
-          updateFPS();
+          const polled = await fetchOnce();
+          if (polled) updateFPS();
+          // Paused (tab hidden, or favourites streaming holds `logging`): yield a
+          // macrotask instead of busy-spinning, which would starve setTimeout
+          // callbacks like the favourites fetch loop.
+          else await new Promise(r => setTimeout(r, 250));
         }
       })();
     } else {
