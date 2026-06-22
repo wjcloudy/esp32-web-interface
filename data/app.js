@@ -1064,7 +1064,7 @@ const exportUiSettings = async () => {
   const [favorites, gauges, plots, virtualvals] = await Promise.all([grab('/favorites.json'), grab('/gauges.json'), grab('/plots.json'), grab('/virtualvals.json')]);
   const prefs = {};
   try {
-    ['theme', 'accentColor', 'spotSparks'].forEach(k => {
+    ['theme', 'accentColor', 'spotSparks', 'keepAwake'].forEach(k => {
       const v = localStorage.getItem(k);
       if (v != null) prefs[k] = v;
     });
@@ -2092,6 +2092,27 @@ function getAccent() { try { return localStorage.getItem('accentColor') || ''; }
 // Apply saved accent on load
 applyAccent(getAccent());
 
+// Keep-awake: stop the screen sleeping while the interface is open. Uses the
+// Screen Wake Lock API where available (secure contexts) and falls back to a
+// hidden looping video, so it also works over plain http on the ESP. (NoSleep.js)
+let _noSleep = null;
+try { if (typeof NoSleep !== 'undefined') _noSleep = new NoSleep(); } catch (e) {}
+function getKeepAwake() { try { return localStorage.getItem('keepAwake') === '1'; } catch (e) { return false; } }
+function setKeepAwake(on) {
+  try { localStorage.setItem('keepAwake', on ? '1' : '0'); } catch (e) {}
+  if (!_noSleep) return;
+  if (on) _noSleep.enable().catch(() => {}); else _noSleep.disable();
+}
+// If it was left on, re-arm on the first user gesture (enabling the video
+// fallback needs one), since there's no gesture on page load.
+if (_noSleep && getKeepAwake()) {
+  const arm = () => {
+    _noSleep.enable().catch(() => {});
+    ['click', 'touchstart', 'keydown'].forEach(ev => document.removeEventListener(ev, arm));
+  };
+  ['click', 'touchstart', 'keydown'].forEach(ev => document.addEventListener(ev, arm));
+}
+
 const Settings = () => {
   const { state, dispatch } = useContext(Store);
   const [txrxSwapped, setTxrxSwapped] = useState(true);
@@ -2099,6 +2120,7 @@ const Settings = () => {
   const [saving, setSaving] = useState(false);
   const [theme, setThemeState] = useState(getTheme);
   const [accent, setAccentState] = useState(getAccent);
+  const [keepAwake, setKeepAwakeState] = useState(getKeepAwake);
   const pickAccent = (hex) => {
     setAccentState(hex || '');
     applyAccent(hex);
@@ -2242,6 +2264,10 @@ const Settings = () => {
             `)}
             <input type="color" value=${accent || '#4cc9f0'} oninput=${e => pickAccent(e.target.value)} title="Custom colour" />
           </div>
+          <p style="font-size:.8rem;margin:1rem 0 .35rem">Display</p>
+          <${ToggleRow} label="Keep screen awake" checked=${keepAwake}
+            onChange=${on => { setKeepAwakeState(on); setKeepAwake(on); }} />
+          <p style="font-size:.72rem;color:var(--text3);margin:.35rem 0 0">Stops the screen sleeping while this page is open.</p>
         </div>
 
         <div class="dash-box compact" style="margin-bottom:1rem">

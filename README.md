@@ -155,3 +155,5 @@ Web UI sources live in [`data/`](data/) — plain Preact + HTM with no build ste
 ## Credits
 
 This is a fork of [jsphuebner/esp32-web-interface](https://github.com/jsphuebner/esp32-web-interface) with a rewritten frontend and a CAN bus backend. Thanks to Johannes Huebner and the [OpenInverter community](https://openinverter.org/forum/).
+
+Bundled third-party libraries and their licenses are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
