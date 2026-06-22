@@ -33,12 +33,23 @@ const api = {
     return result;
   },
 
-  async getText(cmd, repeat) {
+  async getText(cmd, repeat, timeoutMs) {
     let url = '/cmd?cmd=' + encodeURIComponent(cmd);
     if (repeat) url += '&repeat=' + repeat;
-    const r = await fetch(url);
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    return r.text();
+    const opts = {};
+    let timer;
+    if (timeoutMs) {
+      const ac = new AbortController();
+      opts.signal = ac.signal;
+      timer = setTimeout(() => ac.abort(), timeoutMs);
+    }
+    try {
+      const r = await fetch(url, opts);
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return await r.text();
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   },
 
   async uploadFile(formData) {
@@ -164,6 +175,7 @@ const initialState = {
   fps: 0,
   rightPanelOpen: true,
   logging: false,
+  cmdBusy: false, // a terminal command is in flight (drives the CMD badge)
   canMode: false,
   canNodeId: 1,
   canNodes: [],
@@ -267,6 +279,8 @@ function reducer(state, action) {
       return { ...state, rightPanelOpen: !state.rightPanelOpen };
     case 'SET_LOGGING':
       return { ...state, logging: action.payload };
+    case 'SET_CMD_BUSY':
+      return { ...state, cmdBusy: action.payload };
     case 'SET_MESSAGES':
       return { ...state, messages: action.payload };
     case 'FETCH_ERROR':
@@ -498,7 +512,9 @@ const Navbar = () => {
         </select>
       </div>
       <div id="data-age" class=${state.fetching && !state.logging ? 'fetching' : ''} style="display:flex;align-items:center;gap:6px">
-        ${state.logging
+        ${state.cmdBusy
+          ? html`<span style="flex:1;text-align:center"><span class="fast-badge">CMD</span></span>`
+          : state.logging
           ? html`<span style="flex:1;text-align:center"><span class="fast-badge">⚡ FAST</span></span>`
           : html`<span style="flex:1;text-align:center">${state.fetchAge}s ago</span>`}
       </div>
@@ -545,10 +561,26 @@ const Dashboard = () => {
   const [canData, setCanData] = useState('00 00 00 00 00 00 00 00');
 
   const send = async () => {
-    if (!cmd.trim()) return;
-    const reply = await api.getText(cmd);
-    setCmdOutput(o => o + reply + '\n');
+    const c = cmd.trim();
+    if (!c) return;
+    setCmdOutput(o => o + '> ' + c + '\n'); // echo the outgoing command
     setCmd('');
+    dispatch({ type: 'SET_LOGGING', payload: true }); // pause the json poll so it can't contend for the single UART
+    dispatch({ type: 'SET_CMD_BUSY', payload: true }); // show the CMD badge while the command runs
+    try {
+      // Generous timeout: a silent inverter returns empty in ~0.2s (firmware
+      // self-times-out the UART), so this only catches a hung ESP/connection —
+      // and it must comfortably clear a large/slow response like 'json' (~4s).
+      const reply = await api.getText(c, 0, 15000);
+      const text = reply.replace(/\s+$/, ''); // drop trailing whitespace/newlines
+      setCmdOutput(o => o + (text ? text : '(no response)') + '\n');
+    } catch (e) {
+      const msg = (e && e.name === 'AbortError') ? 'timed out — no response' : (e.message || 'request failed');
+      setCmdOutput(o => o + 'error: ' + msg + '\n');
+    } finally {
+      dispatch({ type: 'SET_LOGGING', payload: false });
+      dispatch({ type: 'SET_CMD_BUSY', payload: false });
+    }
   };
 
   return html`
