@@ -57,11 +57,18 @@
 #ifndef DBG_OUTPUT_PORT
 #define DBG_OUTPUT_PORT Serial2
 #endif
+
+#ifndef ENABLE_SDCARD
+#define ENABLE_SDCARD 1
+#endif
+
 #define INVERTER_PORT UART_NUM_0
 #define INVERTER_RX 1 //3 - Swapped for Wemos board onto Zombie and other OI boards
 #define INVERTER_TX 3 //1 - Swapped for Wemos board onto Zombie and other OI boards
 #define UART_TIMEOUT (100 / portTICK_PERIOD_MS)
 #define UART_MESSBUF_SIZE 100
+#define CAN_NODE_ID_MIN 1
+#define CAN_NODE_ID_MAX 127
 #ifndef LED_BUILTIN
 #define LED_BUILTIN 2 //clashes with SDIO, need to change to suit hardware and uncomment lines
 #endif
@@ -81,7 +88,7 @@ bool fastUart = false;
 bool fastUartAvailable = true;
 bool txrxSwapped = true; // default: swapped for Wemos/OI/Zombie boards
 bool canMode = false; // true = CAN bus mode, false = UART mode
-int canNodeId = 1;
+int canNodeId = CAN_NODE_ID_MIN;
 int canSpeed = 2; // 0=125k, 1=250k, 2=500k
 int canRxPin = CAN_RX_PIN;
 int canTxPin = CAN_TX_PIN;
@@ -410,6 +417,9 @@ uint16_t indexSDIObuffer = 0;
 uint16_t blockCountSD = 0;
 File dataFile;
 int startLogAttempt = 0;
+
+uint32_t deleteOldest(uint64_t spaceRequired);
+String formatBytes(uint64_t bytes);
 
 bool createNextSDFile()
 {
@@ -1858,8 +1868,8 @@ static void loadSettings()
       int tp = json.indexOf("\"can_tx_pin\":");
       if (tp >= 0) canTxPin = json.substring(tp + 13).toInt();
 
-      if (canNodeId < 1) canNodeId = 1;
-      if (canNodeId > 32) canNodeId = 32;
+      if (canNodeId < CAN_NODE_ID_MIN) canNodeId = CAN_NODE_ID_MIN;
+      if (canNodeId > CAN_NODE_ID_MAX) canNodeId = CAN_NODE_ID_MAX;
       if (canSpeed < 0 || canSpeed > 2) canSpeed = 2;
     }
   }
@@ -1878,8 +1888,8 @@ static void handleSettings()
     if (server.hasArg("can_speed")) canSpeed = server.arg("can_speed").toInt();
     if (server.hasArg("can_rx_pin")) canRxPin = server.arg("can_rx_pin").toInt();
     if (server.hasArg("can_tx_pin")) canTxPin = server.arg("can_tx_pin").toInt();
-    if (canNodeId < 1) canNodeId = 1;
-    if (canNodeId > 32) canNodeId = 32;
+    if (canNodeId < CAN_NODE_ID_MIN) canNodeId = CAN_NODE_ID_MIN;
+    if (canNodeId > CAN_NODE_ID_MAX) canNodeId = CAN_NODE_ID_MAX;
     if (canSpeed < 0 || canSpeed > 2) canSpeed = 2;
 
     // Save can_nodes JSON array if provided, otherwise keep the stored list
@@ -1971,7 +1981,7 @@ void setup(void){
   else
     DBG_OUTPUT_PORT.println("No RTC found, defaulting to sequential file names"); 
 
-#ifndef S3_SKIP_SD_MMC
+#if ENABLE_SDCARD && !defined(S3_SKIP_SD_MMC)
   //initialise SD card in SDIO mode with timeout (SD_MMC.begin blocks without card)
   {
     TaskHandle_t sdTask = NULL;
@@ -1998,6 +2008,9 @@ void setup(void){
       DBG_OUTPUT_PORT.println("SD_MMC timed out or no card");
     }
   }
+#else
+  haveSDCard = false;
+  DBG_OUTPUT_PORT.println("SD_MMC disabled");
 #endif
 
   //SPIFFS already started above (before UART init to load settings)
@@ -2146,7 +2159,7 @@ void setup(void){
     bool first = true;
     CanSpeed speed = (canSpeed == 0) ? CAN_125K : (canSpeed == 1) ? CAN_250K : CAN_500K;
     // Scan node IDs 1-32 by reading serial number
-    for (int nid = 1; nid <= 32; nid++) {
+    for (int nid = 1; nid <= CAN_NODE_ID_MAX; nid++) {
       // Switch to narrow filter for this node to avoid noise
       canDriverInitForDevice(nid, speed, canTxPin, canRxPin);
 
@@ -2249,8 +2262,8 @@ void setup(void){
   server.on("/set-can-node", [](){
     if (server.hasArg("id")) {
       canNodeId = server.arg("id").toInt();
-      if (canNodeId < 1) canNodeId = 1;
-      if (canNodeId > 32) canNodeId = 32;
+      if (canNodeId < CAN_NODE_ID_MIN) canNodeId = CAN_NODE_ID_MIN;
+      if (canNodeId > CAN_NODE_ID_MAX) canNodeId = CAN_NODE_ID_MAX;
       // Clear parameter cache so it reloads for the new device
       canParamCacheLoaded = false;
       canParamJson = "";
@@ -2340,6 +2353,12 @@ void binaryLoggingStop()
 
  
 void loop(void){
+  static bool httpRestartedAfterSta = false;
+  if (!httpRestartedAfterSta && WiFi.status() == WL_CONNECTED) {
+    server.begin();
+    httpRestartedAfterSta = true;
+  }
+
   // note: ArduinoOTA.handle() calls MDNS.update();
   server.handleClient();
   ArduinoOTA.handle();
