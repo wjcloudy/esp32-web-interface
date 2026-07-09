@@ -173,6 +173,10 @@ export function createMockEsp({ port = 0 } = {}) {
         return text('reset');
       }
       if (p === '/__test/fw-status') { fwStatus = JSON.parse(body.toString() || '{}'); return text('ok'); }
+      if (p === '/__test/put-file') { // seed a SPIFFS file directly (raw body)
+        files.set((url.searchParams.get('name') || 'file').replace(/^\//, ''), body);
+        return text('ok');
+      }
 
       // --- firmware API ---
       if (p === '/cmd') {

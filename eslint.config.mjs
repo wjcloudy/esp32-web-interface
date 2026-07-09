@@ -43,12 +43,13 @@ export default [
         docstrings: 'readonly',
         Chart: 'readonly',
         NoSleep: 'readonly',
+        GridStack: 'readonly',
       },
     },
     rules: {
       ...js.configs.recommended.rules,
       // Existing style in this codebase — not worth failing contributors over
-      'no-unused-vars': ['error', { args: 'none', caughtErrors: 'none' }],
+      'no-unused-vars': ['error', { args: 'none', caughtErrors: 'none', ignoreRestSiblings: true }],
       'no-empty': ['error', { allowEmptyCatch: true }],
       'no-useless-escape': 'off', // defensive regex escapes are pervasive here
       'no-case-declarations': 'off', // reducer switch style

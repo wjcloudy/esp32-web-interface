@@ -2671,97 +2671,178 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px }) => 
           ? (v != null && html`<div class="g-unit g-enum">${enumLabel(enums, v)}</div>`)
           : (unit && html`<div class="g-unit">${unit}</div>`)}
       </div>
-      <div class="g-min" style=${'left:' + Math.round(size * 0.174) + 'px;bottom:' + Math.round(size * 0.072) + 'px;font-size:' + Math.max(0.68, size / 230 * 0.68).toFixed(2) + 'rem'}>${min}</div>
-      <div class="g-max" style=${'right:' + Math.round(size * 0.174) + 'px;bottom:' + Math.round(size * 0.072) + 'px;font-size:' + Math.max(0.68, size / 230 * 0.68).toFixed(2) + 'rem'}>${max}</div>
+      ${size >= 90 && html`
+        <div class="g-min" style=${'left:' + Math.round(size * 0.174) + 'px;bottom:' + Math.round(size * 0.072) + 'px;font-size:' + Math.max(0.68, size / 230 * 0.68).toFixed(2) + 'rem'}>${min}</div>
+        <div class="g-max" style=${'right:' + Math.round(size * 0.174) + 'px;bottom:' + Math.round(size * 0.072) + 'px;font-size:' + Math.max(0.68, size / 230 * 0.68).toFixed(2) + 'rem'}>${max}</div>
+      `}
     </div>`;
 };
 
-const GAUGE_PX = { xs: 130, sm: 170, md: 230, lg: 300 };
+// ==================== Gauges (grid dashboard) ====================
+// Named pages of freely draggable/resizable tiles on a GridStack grid
+// (vendored, MIT). The column count is fixed at 12 so a layout is one
+// coordinate space on every device — it scales rather than reflows, and a
+// page laid out on the desktop looks the same on a phone.
+// gauges.json v2: { v: 2, pages: [{ id, name, items: [{ id, name, type,
+// color, min, max, x, y, w, h }] }] }. v1 ({ items, size }) migrates
+// transparently; the settings export bundle carries the file wholesale.
+
+const GRID_COLS = 12;
+const V1_SPAN = { xs: 2, sm: 3, md: 3, lg: 4 }; // legacy fixed sizes -> tile span
+
+function migrateGauges(data) {
+  if (data && Array.isArray(data.pages)) {
+    const pages = data.pages
+      .map((p, pi) => ({
+        id: p.id || pi + 1,
+        name: p.name || 'Page ' + (pi + 1),
+        items: (Array.isArray(p.items) ? p.items : []).map(g => ({ type: 'radial', ...g })),
+      }));
+    return pages.length ? pages : [{ id: 1, name: 'Main', items: [] }];
+  }
+  // v1: single page; flow the old fixed-size list onto the grid
+  const v1 = (data && Array.isArray(data.items)) ? data.items : [];
+  const items = v1.map((g, i) => {
+    const base = typeof g === 'string' ? { name: g, min: 0, max: 100 } : g;
+    const span = V1_SPAN[base.size || (data && data.size)] || 3;
+    const perRow = Math.max(1, Math.floor(GRID_COLS / span));
+    const { size, ...rest } = base;
+    return {
+      type: 'radial', min: 0, max: 4000, ...rest,
+      x: (i % perRow) * span, y: Math.floor(i / perRow) * span, w: span, h: span,
+    };
+  });
+  return [{ id: 1, name: 'Main', items }];
+}
 
 const Gauges = () => {
   const { state, dispatch } = useContext(Store);
-  const [gaugeItems, setGaugeItems] = useState([]);
+  const [pages, setPages] = useState([{ id: 1, name: 'Main', items: [] }]);
+  const [activePage, setActivePage] = useState(1);
   const [lineVals, setLineVals] = useState({});
   const [editing, setEditing] = useState(false);
-  const [gaugeSize, setGaugeSize] = useState('md'); // default size: xs | sm | md | lg (per-gauge g.size overrides)
+  const [cellPx, setCellPx] = useState(60); // square cell edge, tracks container width
   const fetchRef = useRef(null);
   const nextId = useRef(1);
+  const gridRef = useRef(null);  // .grid-stack DOM node
+  const gridApi = useRef(null);  // GridStack instance
+  const activeRef = useRef(activePage);
+  activeRef.current = activePage;
 
-  // Load saved layout and fetch initial spot values for the picker
+  const page = pages.find(p => p.id === activePage) || pages[0];
+  const items = page.items;
+
+  // Load saved layout (migrating v1 if needed) and fetch spot names for the picker
   useEffect(() => {
     (async () => {
       try {
         const r = await fetch('/gauges.json');
         if (r.ok) {
-          const data = await r.json();
-          if (data.items && Array.isArray(data.items)) {
-            const items = data.items.map(g => {
-              if (typeof g === 'string') return { id: nextId.current++, name: g, min: 0, max: 100, type: 'radial' };
-              if (!g.id) return { id: nextId.current++, ...g, type: g.type || 'radial' };
-              if (g.id >= nextId.current) nextId.current = g.id + 1;
-              return { ...g, type: g.type || 'radial' };
-            });
-            setGaugeItems(items);
-          }
-          if (['xs', 'sm', 'md', 'lg'].includes(data.size)) setGaugeSize(data.size);
+          const migrated = migrateGauges(await r.json());
+          let maxId = 0;
+          migrated.forEach(p => p.items.forEach(g => { if (typeof g.id === 'number' && g.id > maxId) maxId = g.id; }));
+          migrated.forEach(p => p.items.forEach(g => { if (!g.id) g.id = ++maxId; }));
+          nextId.current = maxId + 1;
+          setPages(migrated);
+          setActivePage(migrated[0].id);
         }
       } catch (e) { /* no saved layout */ }
+      api.getJSON('json').then(json => dispatch({ type: 'SET_PARAMS', payload: json })).catch(() => {});
     })();
-    // Fetch spot values once for the picker (before high-perf loop pauses main refresh)
-    api.getJSON('json').then(json => {
-      dispatch({ type: 'SET_PARAMS', payload: json });
-    }).catch(() => {});
   }, []);
 
-  const saveLayout = async (items, size) => {
+  const persist = async (nextPages) => {
     try {
-      const json = JSON.stringify({ items, size: size || gaugeSize });
-      const blob = new Blob([json], { type: 'application/json' });
+      const blob = new Blob([JSON.stringify({ v: 2, pages: nextPages })], { type: 'application/json' });
       const fd = new FormData();
       fd.append('updatefile', blob, 'gauges.json');
       await fetch('/edit', { method: 'POST', body: fd });
     } catch (e) { /* ignore */ }
   };
 
-  const addGauge = () => {
-    setGaugeItems([...gaugeItems, { id: nextId.current++, name: '', min: 0, max: 4000, type: 'radial' }]);
-  };
+  const setPageItems = (pageId, updater) =>
+    setPages(ps => ps.map(p => p.id !== pageId ? p : { ...p, items: updater(p.items) }));
 
-  const removeGauge = (id) => {
-    setGaugeItems(gaugeItems.filter(g => g.id !== id));
-  };
-
-  const moveGauge = (fromIdx, toIdx) => {
-    if (fromIdx === toIdx) return;
-    const next = [...gaugeItems];
-    const [item] = next.splice(fromIdx, 1);
-    next.splice(toIdx, 0, item);
-    setGaugeItems(next);
-  };
-
-  // Drag state for reordering
-  const dragIdx = useRef(-1);
-  const [dragOverIdx, setDragOverIdx] = useState(-1);
-  const [dragId, setDragId] = useState(null); // which gauge id is being dragged
-
-  const updateGaugeConfig = (id, field, value) => {
-    setGaugeItems(gaugeItems.map(g => g.id !== id ? g : { ...g, [field]: value }));
-  };
-
-  // High-perf spot value fetching (pauses main json refresh while on gauges page)
-  // Uses a single 'get' command for all gauge names — one call, all values returned
+  // GridStack owns tile geometry while mounted; re-init on page switch,
+  // edit toggle or add/remove, and mirror every 'change' back into state so
+  // Save & Done persists exactly what's on screen.
   useEffect(() => {
-    const names = gaugeItems.map(g => g.name).filter(Boolean);
-    
+    const el = gridRef.current;
+    if (!el || typeof GridStack === 'undefined') return;
+    const grid = GridStack.init({
+      column: GRID_COLS,
+      cellHeight: 60, // corrected to square right below
+      margin: 4,
+      float: true,
+      staticGrid: !editing,
+      alwaysShowResizeHandle: 'mobile',
+    }, el);
+    gridApi.current = grid;
+    const squareCells = () => {
+      const w = el.clientWidth / GRID_COLS;
+      if (w > 0) { grid.cellHeight(Math.round(w)); setCellPx(w); }
+    };
+    squareCells();
+    const ro = new ResizeObserver(squareCells);
+    ro.observe(el);
+    const onChange = () => {
+      const layout = grid.save(false) || [];
+      setPageItems(activeRef.current, prev => prev.map(g => {
+        const l = layout.find(w => String(w.id) === String(g.id));
+        return l ? { ...g, x: l.x, y: l.y, w: l.w, h: l.h } : g;
+      }));
+    };
+    grid.on('change', onChange);
+    return () => { ro.disconnect(); grid.destroy(false); gridApi.current = null; };
+  }, [activePage, items.length, editing, pages.length]);
+
+  const addGauge = () => {
+    setPageItems(activePage, prev => {
+      // Append below current content (float:true keeps y values literal)
+      const y = prev.reduce((m, g) => Math.max(m, (g.y || 0) + (g.h || 3)), 0);
+      return [...prev, {
+        id: nextId.current++, name: '', min: 0, max: 4000, type: 'radial',
+        x: 0, y, w: 3, h: 3,
+      }];
+    });
+  };
+
+  const removeGauge = (id) => setPageItems(activePage, prev => prev.filter(g => g.id !== id));
+
+  const updateGaugeConfig = (id, field, value) =>
+    setPageItems(activePage, prev => prev.map(g => g.id !== id ? g : { ...g, [field]: value }));
+
+  // --- pages ---
+  const addPage = () => {
+    const name = (prompt('Page name (e.g. Driving, Debug)') || '').trim();
+    if (!name) return;
+    const id = Math.max(0, ...pages.map(p => p.id)) + 1;
+    setPages([...pages, { id, name, items: [] }]);
+    setActivePage(id);
+  };
+  const renamePage = () => {
+    const name = (prompt('Rename page', page.name) || '').trim();
+    if (!name) return;
+    setPages(pages.map(p => p.id !== activePage ? p : { ...p, name }));
+  };
+  const deletePage = () => {
+    if (pages.length <= 1) { alert('At least one page is required.'); return; }
+    if (!confirm('Delete page "' + page.name + '" and its ' + items.length + ' gauge(s)?')) return;
+    const next = pages.filter(p => p.id !== activePage);
+    setPages(next);
+    setActivePage(next[0].id);
+  };
+
+  // High-rate spot value fetching for the active page (pauses main json refresh)
+  useEffect(() => {
+    const names = items.map(g => g.name).filter(Boolean);
     if (names.length === 0) {
       dispatch({ type: 'SET_LOGGING', payload: false });
       return;
     }
-
     dispatch({ type: 'SET_LOGGING', payload: true });
     let active = true;
     const interval = 100; // ms between fetches
-    
     const fetchLoop = async () => {
       if (!active) return;
       const t0 = performance.now();
@@ -2770,53 +2851,50 @@ const Gauges = () => {
         if (!active) return;
         const vals = text.match(/[\-\d\.]+/g) || [];
         const next = {};
-        gaugeItems.forEach((g, i) => {
-          const val = parseFloat(vals[i]);
+        let vi = 0;
+        items.forEach(g => {
+          if (!g.name) return;
+          const val = parseFloat(vals[vi++]);
           if (!isNaN(val)) next[g.id] = val;
         });
         setLineVals(prev => ({ ...prev, ...next }));
       } catch (e) { /* ignore */ }
-      // Schedule next fetch — respects actual response time to avoid pileup
       if (active) {
         const elapsed = performance.now() - t0;
-        const delay = Math.max(0, interval - elapsed);
-        fetchRef.current = setTimeout(fetchLoop, delay);
+        fetchRef.current = setTimeout(fetchLoop, Math.max(0, interval - elapsed));
       }
     };
-    
-    fetchRef.current = setTimeout(fetchLoop, 0); // immediate first fetch
-
+    fetchRef.current = setTimeout(fetchLoop, 0);
     return () => {
       active = false;
       dispatch({ type: 'SET_LOGGING', payload: false });
       if (fetchRef.current) { clearTimeout(fetchRef.current); fetchRef.current = null; }
     };
-  }, [gaugeItems]);
+  }, [items]);
 
   const spotNames = state.spotValues ? Object.keys(state.spotValues) : [];
 
   return html`
-    <div id="gauges" class="tabdiv main-content" style="display:flex">
+    <div id="gauges" class="tabdiv main-content ${editing ? 'gauges-editing' : ''}" style="display:flex">
       ${editing && html`
       <div class="main-right">
         <h3 class="underline">Edit Gauges</h3>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px">
           <button onclick=${addGauge}><${Icon} n="plus" />Add Gauge</button>
-          <button onclick=${() => { saveLayout(gaugeItems); setEditing(false); }}><${Icon} n="check" />Save & Done</button>
+          <button onclick=${() => { persist(pages); setEditing(false); }}><${Icon} n="check" />Save & Done</button>
         </div>
-        ${gaugeItems.length > 0 && html`
-          <h3>Active (${gaugeItems.length})</h3>
-          ${gaugeItems.map((g, i) => html`
-            <div
-              ondragover=${e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (dragOverIdx !== i) setDragOverIdx(i); }}
-              ondragleave=${e => { if (dragOverIdx === i) setDragOverIdx(-1); }}
-              ondrop=${e => { e.preventDefault(); const from = dragIdx.current; if (from !== i && from >= 0) moveGauge(from, i); setDragOverIdx(-1); setDragId(null); }}
-              style="margin-bottom:10px;padding:6px 8px;background:var(--surface2);border-radius:var(--radius-xs);font-size:.78rem;${dragOverIdx === i ? 'border-top:2px solid var(--accent);' : ''}${dragId === g.id ? 'opacity:0.4' : ''}">
+        <p style="font-size:.72rem;color:var(--text3);margin:.25rem 0 .5rem">Drag tiles to move them; drag a tile's corner to resize.</p>
+        <h3 class="underline">Page: ${page.name}</h3>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px">
+          <button onclick=${addPage} style="font-size:.75rem;padding:4px 10px"><${Icon} n="plus" />New page</button>
+          <button onclick=${renamePage} style="font-size:.75rem;padding:4px 10px"><${Icon} n="edit" />Rename</button>
+          <button onclick=${deletePage} style="font-size:.75rem;padding:4px 10px;color:var(--red)"><${Icon} n="x" />Delete</button>
+        </div>
+        ${items.length > 0 && html`
+          <h3>Gauges on this page (${items.length})</h3>
+          ${items.map(g => html`
+            <div key=${g.id} style="margin-bottom:10px;padding:6px 8px;background:var(--surface2);border-radius:var(--radius-xs);font-size:.78rem">
               <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
-                <span draggable="true"
-                  ondragstart=${e => { dragIdx.current = i; setDragId(g.id); e.dataTransfer.effectAllowed = 'move'; }}
-                  ondragend=${e => { setDragOverIdx(-1); dragIdx.current = -1; setDragId(null); }}
-                  style="cursor:grab;color:var(--text3);font-size:.9rem;user-select:none;padding-right:4px" title="Drag to reorder">⋮⋮</span>
                 <${FieldPicker} value=${g.name} spotNames=${spotNames} onChange=${name => updateGaugeConfig(g.id, 'name', name)} />
                 <span onclick=${() => removeGauge(g.id)} style="cursor:pointer;color:var(--red);font-weight:700;padding:0 4px" title="Remove">×</span>
               </div>
@@ -2824,13 +2902,6 @@ const Gauges = () => {
                 <select value=${g.type || 'radial'} onchange=${e => updateGaugeConfig(g.id, 'type', e.target.value)} style="font-size:.78rem;padding:4px 6px;width:6em">
                   <option value="radial">Radial</option>
                   <option value="line">Line</option>
-                </select>
-                <select value=${g.size || ''} title="Size for this gauge" onchange=${e => updateGaugeConfig(g.id, 'size', e.target.value)} style="font-size:.78rem;padding:4px 6px;flex:1;min-width:0">
-                  <option value="">Size: default</option>
-                  <option value="xs">Very small</option>
-                  <option value="sm">Small</option>
-                  <option value="md">Medium</option>
-                  <option value="lg">Large</option>
                 </select>
                 <input type="color" value=${g.color || '#4cc9f0'} oninput=${e => updateGaugeConfig(g.id, 'color', e.target.value)}
                   title="Gauge colour"
@@ -2851,45 +2922,40 @@ const Gauges = () => {
       </div>
       `}
       <div class="main-left">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem;gap:8px;flex-wrap:wrap">
           <h2 style="margin:0">Gauges</h2>
-          <div style="display:flex;gap:6px;align-items:center">
-            <select value=${gaugeSize} title="Default gauge size (each gauge can override in Edit Layout)"
-              onchange=${e => { const v = e.target.value; setGaugeSize(v); saveLayout(gaugeItems, v); }}
-              style="font-size:.72rem;padding:4px 26px 4px 8px">
-              <option value="xs">Very small</option>
-              <option value="sm">Small</option>
-              <option value="md">Medium</option>
-              <option value="lg">Large</option>
-            </select>
-            ${!editing && html`<button onclick=${() => setEditing(true)} style="font-size:.75rem;padding:4px 12px"><${Icon} n="edit" />Edit Layout</button>`}
-          </div>
+          ${!editing && html`<button onclick=${() => setEditing(true)} style="font-size:.75rem;padding:4px 12px"><${Icon} n="edit" />Edit Layout</button>`}
         </div>
-        ${gaugeItems.length === 0 && !editing && html`<p style="color:var(--text3);font-size:.85rem;text-align:center;padding:2rem 0">Click Edit Layout to add a gauge.</p>`}
-        ${/* Mixed sizes flow like a wrapping grid; bottom-aligned so dials in a
-            row share a baseline like an instrument panel. Flex (not CSS grid
-            spans) so an oversized gauge can never overflow a narrow screen. */ ''}
-        <div id="gauge-container" style="display:flex;flex-wrap:wrap;column-gap:1.5rem;row-gap:1.25rem;justify-content:center;align-items:flex-end">
-          ${gaugeItems.map(g => {
+        <div id="gauge-pages" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:.6rem">
+          ${pages.map(p => html`
+            <button key=${p.id} class="page-pill ${p.id === activePage ? 'active' : ''}" onclick=${() => setActivePage(p.id)}>${p.name}</button>
+          `)}
+          ${editing && html`<button class="page-pill" title="Add page" onclick=${addPage}>+</button>`}
+        </div>
+        ${items.length === 0 && !editing && html`<p style="color:var(--text3);font-size:.85rem;text-align:center;padding:2rem 0">Click Edit Layout to add a gauge.</p>`}
+        <div class="grid-stack" ref=${gridRef} key=${'page-' + activePage}>
+          ${items.map(g => {
             const sv = state.spotValues && state.spotValues[g.name];
             const unit = (sv && sv.unit && sv.unit.indexOf('=') === -1) ? sv.unit : '';
             const enums = (sv && sv.enums) || null;
-            const px = GAUGE_PX[g.size] || GAUGE_PX[gaugeSize] || 230;
+            const span = Math.min(g.w || 3, g.h || 3);
+            const px = Math.max(56, Math.floor(span * cellPx - 40));
             return html`
-            <div class="gauge-wrapper" style="text-align:center" key="${g.id}">
-              <div style="font-weight:600;font-size:.9rem;margin-bottom:4px">${g.name || '—'}</div>
-              ${(g.type === 'line')
-                ? html`<${GaugeLine} key=${g.id + '-' + px} name=${g.name} min=${g.min} max=${g.max} value=${lineVals[g.id]} unit=${unit} color=${g.color || ''} enums=${enums}
-                    px=${px} />`
-                : html`<${SvgGauge} id=${g.id} value=${lineVals[g.id]} unit=${unit} color=${g.color || ''} enums=${enums}
-                    px=${px}
-                    min=${g.min != null ? g.min : 0} max=${(g.max == null || g.max === 0) ? 4000 : g.max} />`}
-            </div>
-          `; })}
+            <div class="grid-stack-item" key=${g.id} gs-id=${g.id} gs-x=${g.x} gs-y=${g.y} gs-w=${g.w} gs-h=${g.h}>
+              <div class="grid-stack-item-content gauge-tile">
+                <div class="gauge-tile-name">${g.name || '—'}</div>
+                ${(g.type === 'line')
+                  ? html`<${GaugeLine} key=${g.id + '-' + px} name=${g.name} min=${g.min} max=${g.max} value=${lineVals[g.id]} unit=${unit} color=${g.color || ''} enums=${enums}
+                      px=${Math.max(56, Math.floor((g.w || 3) * cellPx - 24))} />`
+                  : html`<${SvgGauge} id=${g.id} value=${lineVals[g.id]} unit=${unit} color=${g.color || ''} enums=${enums}
+                      px=${px}
+                      min=${g.min != null ? g.min : 0} max=${(g.max == null || g.max === 0) ? 4000 : g.max} />`}
+              </div>
+            </div>`;
+          })}
         </div>
       </div>
     </div>
-
   `;
 };
 
