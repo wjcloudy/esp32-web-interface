@@ -3,6 +3,7 @@
 **A modern web interface for [OpenInverter](https://openinverter.org) systems — over UART or CAN bus.**
 
 [![Build combined images](https://github.com/wjcloudy/esp32-web-interface/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/wjcloudy/esp32-web-interface/actions/workflows/build.yml)
+[![Tests](https://github.com/wjcloudy/esp32-web-interface/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/wjcloudy/esp32-web-interface/actions/workflows/tests.yml)
 [![Latest release](https://img.shields.io/github/v/release/wjcloudy/esp32-web-interface)](https://github.com/wjcloudy/esp32-web-interface/releases/latest)
 
 <img width="1325" height="813" alt="Dashboard" src="https://github.com/user-attachments/assets/c89a4b9f-ab54-4fa1-a785-3fb7d5112a4c" />
