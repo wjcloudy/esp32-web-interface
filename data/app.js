@@ -2,7 +2,7 @@
 // Replaces: ui.js, inverter.js, plot.js, log.js, wifi.js, modal.js, index.js, docstrings.js
 
 const { h, render, createContext } = preact;
-const { useState, useEffect, useReducer, useContext, useRef, useCallback, useMemo } = preactHooks;
+const { useState, useEffect, useLayoutEffect, useReducer, useContext, useRef, useMemo } = preactHooks;
 const html = htm.bind(h);
 
 // ==================== API ====================
@@ -185,6 +185,21 @@ const initialState = {
   history: {}, // recent numeric samples for dashboard sparklines
 };
 
+// Friendly display names for common spot values on the dashboard hero card
+const DASH_METRIC_LABELS = {
+  udc: 'Battery voltage', idc: 'Battery current', tmphs: 'Inverter temp',
+  tmpm: 'Motor temp', speed: 'Motor speed', pot: 'Throttle',
+};
+
+// Spot values shown as dashboard hero metrics (max 5, configured in Settings)
+function getDashMetrics() {
+  try {
+    const v = JSON.parse(localStorage.getItem('dashMetrics') || 'null');
+    if (Array.isArray(v) && v.length) return v.filter(Boolean).slice(0, 5);
+  } catch (e) {}
+  return ['udc', 'tmphs'];
+}
+
 function reducer(state, action) {
   switch (action.type) {
     case 'SET_PARAMS': {
@@ -242,8 +257,9 @@ function reducer(state, action) {
         if (cat && !(cat in cv)) cv[cat] = true;
       }
       // Sparkline history: keep the last 60 numeric samples of key telemetry
+      // (udc/tmphs feed the hero card fallbacks; dash metrics are configurable)
       const hist = { ...state.history };
-      for (const k of ['udc', 'tmphs']) {
+      for (const k of new Set(['udc', 'tmphs', ...getDashMetrics()])) {
         const raw = p[k] ? parseFloat(p[k].value) : NaN;
         if (!isNaN(raw)) hist[k] = [...(hist[k] || []).slice(-59), raw];
       }
@@ -614,16 +630,18 @@ const Dashboard = () => {
                 <div class="hero-state">${friendly}</div>
                 <p class="hero-sub">Status: ${state.status}</p>
                 <div class="hero-metrics">
-                  <div class="metric">
-                    <span class="metric-label">Battery voltage</span>
-                    <span class="metric-value">${fmtNum(state.udc)}<span class="metric-unit">V</span></span>
-                    <${Sparkline} data=${state.history.udc} />
-                  </div>
-                  <div class="metric tone-active">
-                    <span class="metric-label">Inverter temp</span>
-                    <span class="metric-value">${fmtNum(state.tmphs)}<span class="metric-unit">°C</span></span>
-                    <${Sparkline} data=${state.history.tmphs} />
-                  </div>
+                  ${getDashMetrics().map((name, idx) => {
+                    const sv = state.spotValues && state.spotValues[name];
+                    const unit = (sv && sv.unit && sv.unit.indexOf('=') === -1) ? sv.unit : '';
+                    const label = DASH_METRIC_LABELS[name] || name;
+                    const disp = !sv ? '—' : (sv.enums ? String(sv.display) : fmtNum(sv.value));
+                    return html`
+                    <div class="metric ${idx === 1 ? 'tone-active' : ''}" key=${name}>
+                      <span class="metric-label">${label}</span>
+                      <span class="metric-value">${disp}${unit && html`<span class="metric-unit">${unit}</span>`}</span>
+                      <${Sparkline} data=${state.history[name]} />
+                    </div>`;
+                  })}
                   ${state.firmwareVersion && html`
                     <div class="metric">
                       <span class="metric-label">Firmware</span>
@@ -702,6 +720,9 @@ const Parameters = () => {
   const [showSubscribe, setShowSubscribe] = useState(false);
   const [search, setSearch] = useState('');
   const [actionsOpen, setActionsOpen] = useState(false); // responsive-only expander
+  const [applying, setApplying] = useState(false); // loading a parameter set from file
+  const [applyPct, setApplyPct] = useState(0);
+  const [applyMsg, setApplyMsg] = useState('');
 
   if (!state.params) return html`<div class="tabdiv main-content" style="display:flex"><p>Loading...</p></div>`;
 
@@ -776,6 +797,53 @@ const Parameters = () => {
     } catch (e) { alert('Failed to stop subscription'); }
   };
 
+  // Load a parameter set from a JSON file and push each value to the inverter.
+  // Nothing is stored on the ESP — the values are applied live (same as a
+  // database subscription), so the user should Save to flash afterwards to
+  // keep them across a reboot. Accepts both the exported nested format
+  // ({name:{value,...}}) and a flat name->value map.
+  const loadParamsFromFile = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = ''; // allow re-selecting the same file later
+    if (!file || applying) return;
+    let parsed;
+    try {
+      parsed = JSON.parse(await file.text());
+    } catch (err) { alert('Could not read parameter file: ' + err.message); return; }
+    const entries = [];
+    for (const name in parsed) {
+      const v = parsed[name];
+      const value = (v !== null && typeof v === 'object') ? v.value : v;
+      if (value === undefined || value === null || value === '') continue;
+      entries.push([name, value]);
+    }
+    if (!entries.length) { alert('No parameters found in that file'); return; }
+    const total = entries.length;
+    if (!confirm('Apply ' + total + ' parameter' + (total === 1 ? '' : 's') + ' to the inverter?')) return;
+    // Each 'set' is a serial round-trip, so applying a full set takes a while —
+    // drive the same progress bar the firmware upload uses so it isn't a
+    // silent wait.
+    setApplying(true); setApplyPct(0); setApplyMsg('Applying parameters...');
+    let ok = 0; const failed = [];
+    try {
+      for (let i = 0; i < total; i++) {
+        const [name, value] = entries[i];
+        setApplyMsg('Setting ' + name + ' (' + (i + 1) + ' / ' + total + ')');
+        try { await api.getText('set ' + name + ' ' + value); ok++; }
+        catch (err) { failed.push(name); }
+        setApplyPct(Math.round(100 * (i + 1) / total));
+      }
+      setApplyMsg('Refreshing...');
+      try { dispatch({ type: 'SET_PARAMS', payload: await api.getJSON('json') }); } catch (err) {}
+      setApplyMsg('Applied ' + ok + ' of ' + total);
+    } finally {
+      setApplying(false);
+    }
+    alert('Applied ' + ok + ' of ' + total + ' parameters.' +
+      (failed.length ? '\nFailed: ' + failed.join(', ') : '') +
+      '\n\nUse "Save parameters to flash" to keep these after a reboot.');
+  };
+
   return html`
     <div id="parameters" class="tabdiv main-content" style="display:flex">
       <div class="main-right">
@@ -797,10 +865,16 @@ const Parameters = () => {
         <button onclick=${() => api.getText('save').then(r => alert(r || 'Parameters saved'))}><${Icon} n="save" />Save parameters to flash</button>
         <button onclick=${() => api.getText('load')}><${Icon} n="undo" />Restore parameters from flash</button>
         <a download="params.json" href=${'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(state.params, null, 2))}><button><${Icon} n="download" />Download parameters file</button></a>
-        <form id="paramform" enctype="multipart/form-data" action="edit" method="POST" onsubmit=${async e => { e.preventDefault(); await api.uploadFile(new FormData(e.target)); }}>
-          <input id="paramfile" name="paramfile" type="file" hidden onchange=${e => e.target.form.requestSubmit()} />
-          <label class="butt" for="paramfile"><${Icon} n="upload" />Load parameters from file</label>
-        </form>
+        ${/* No accept filter: Android pickers report .json as octet-stream/plain and grey it out; we validate JSON in loadParamsFromFile instead. */ ''}
+        <input id="paramfile" type="file" hidden onchange=${loadParamsFromFile} />
+        <label class="butt" for="paramfile"><${Icon} n="upload" />Load parameters from file</label>
+        ${applying && html`
+          <div id="progress" class="graph">
+            <div id="bar" style=${{ width: applyPct + '%' }}></div>
+            <p id="progress-label">${applyPct}%</p>
+          </div>
+          <p id="progress-msg">${applyMsg}</p>
+        `}
         <h3 class="underline">Parameter Database</h3>
         <button onclick=${submitToDatabase}><${Icon} n="cloud" />Submit parameters</button>
         <button onclick=${() => setShowSubscribe(true)}><${Icon} n="rss" />Subscribe to parameter set</button>
@@ -1064,7 +1138,7 @@ const exportUiSettings = async () => {
   const [favorites, gauges, plots, virtualvals] = await Promise.all([grab('/favorites.json'), grab('/gauges.json'), grab('/plots.json'), grab('/virtualvals.json')]);
   const prefs = {};
   try {
-    ['theme', 'accentColor', 'spotSparks', 'keepAwake'].forEach(k => {
+    ['theme', 'accentColor', 'spotSparks', 'keepAwake', 'dashMetrics'].forEach(k => {
       const v = localStorage.getItem(k);
       if (v != null) prefs[k] = v;
     });
@@ -1544,7 +1618,7 @@ const Plot = () => {
   const [editing, setEditing] = useState(false);
   const [maxValues, setMaxValues] = useState(500);
   const [burstLength, setBurstLength] = useState(5);
-  const [tick, setTick] = useState(0);
+  const [, setTick] = useState(0); // force re-render tick
   const valsRef = useRef({});
   const nextId = useRef(1);
   const fetchRef = useRef(null);
@@ -1591,9 +1665,6 @@ const Plot = () => {
   };
   const removePlot = (id) => {
     setPlots(plots.filter(p => p.id !== id));
-  };
-  const updatePlot = (id, field, value) => {
-    setPlots(plots.map(p => p.id === id ? { ...p, [field]: value } : p));
   };
   const addItem = (id) => {
     setPlots(plots.map(p => p.id === id ? { ...p, items: [...p.items, { name: '', axis: 'left' }] } : p));
@@ -1734,7 +1805,6 @@ const Logger = () => {
     if (names.length === 0) return;
 
     loggingRef.current = true;
-    let count = 0;
     (async function loop() {
       while (loggingRef.current) {
         try {
@@ -1743,7 +1813,6 @@ const Logger = () => {
           if (!loggingRef.current) break;
           const vals = text.match(/[\-\d\.]+/g) || [];
           const line = vals.join('\t');
-          count++;
           setLogText(prev => {
             const next = prev + line + '\n';
             // Limit to ~500 lines to avoid memory issues
@@ -2092,6 +2161,33 @@ function getAccent() { try { return localStorage.getItem('accentColor') || ''; }
 // Apply saved accent on load
 applyAccent(getAccent());
 
+// Theme + accent also live on the ESP (uiprefs.json) so the look follows the
+// device across browsers, like gauge layouts do. localStorage acts as a
+// fast-start cache (no flash of the wrong theme); the device file wins.
+fetch('/uiprefs.json').then(r => r.ok ? r.json() : null).then(p => {
+  if (!p) return;
+  if (p.theme && p.theme !== getTheme()) setTheme(p.theme);
+  if ('accentColor' in p && (p.accentColor || '') !== getAccent()) {
+    applyAccent(p.accentColor || '');
+    try {
+      if (p.accentColor) localStorage.setItem('accentColor', p.accentColor);
+      else localStorage.removeItem('accentColor');
+    } catch (e) {}
+  }
+}).catch(() => {});
+
+// Debounced (the colour picker fires per mouse-move) write-back to the ESP
+let _uiPrefsTimer;
+function saveUiPrefsToDevice() {
+  clearTimeout(_uiPrefsTimer);
+  _uiPrefsTimer = setTimeout(() => {
+    const blob = new Blob([JSON.stringify({ theme: getTheme(), accentColor: getAccent() || '' })], { type: 'application/json' });
+    const fd = new FormData();
+    fd.append('updatefile', blob, 'uiprefs.json');
+    fetch('/edit', { method: 'POST', body: fd }).catch(() => {});
+  }, 600);
+}
+
 // Keep-awake: stop the screen sleeping while the interface is open. Uses the
 // Screen Wake Lock API where available (secure contexts) and falls back to a
 // hidden looping video, so it also works over plain http on the ESP. (NoSleep.js)
@@ -2125,6 +2221,24 @@ const Settings = () => {
     setAccentState(hex || '');
     applyAccent(hex);
     try { hex ? localStorage.setItem('accentColor', hex) : localStorage.removeItem('accentColor'); } catch (e) {}
+    saveUiPrefsToDevice();
+  };
+
+  // Dashboard hero metrics: five slots, empty = unused (at least slot 1 kept)
+  const [dashMetrics, setDashMetrics] = useState(() => {
+    const m = getDashMetrics();
+    while (m.length < 5) m.push('');
+    return m;
+  });
+  const updateDashMetric = (i, name) => {
+    const next = [...dashMetrics];
+    next[i] = name;
+    setDashMetrics(next);
+    const chosen = next.filter(Boolean).slice(0, 5);
+    try {
+      if (chosen.length) localStorage.setItem('dashMetrics', JSON.stringify(chosen));
+      else localStorage.removeItem('dashMetrics'); // back to the udc/tmphs default
+    } catch (e) {}
   };
 
   // Import a previously exported web interface configuration bundle
@@ -2145,6 +2259,11 @@ const Settings = () => {
       if (bundle.plots) await up('plots.json', bundle.plots);
       if (bundle.virtualvals) { await up('virtualvals.json', bundle.virtualvals); fetch('/virtual-reload').catch(() => {}); }
       try { for (const k in (bundle.prefs || {})) localStorage.setItem(k, bundle.prefs[k]); } catch (err) {}
+      // Theme/accent also live on the device — restore uiprefs.json so the
+      // imported look applies in every browser, not just this one
+      if (bundle.prefs && (bundle.prefs.theme || bundle.prefs.accentColor)) {
+        await up('uiprefs.json', { theme: bundle.prefs.theme || 'system', accentColor: bundle.prefs.accentColor || '' });
+      }
       alert('Settings imported — reloading');
       location.reload();
     } catch (err) { alert('Import failed: ' + err.message); }
@@ -2211,23 +2330,6 @@ const Settings = () => {
     return def ? def.nodeId : canNodeId;
   };
 
-  const saveCanSettings = async () => {
-    setSaving(true);
-    try {
-      const bootNode = defaultNodeId();
-      const params = new URLSearchParams();
-      params.set('can_mode', canMode ? '1' : '0');
-      params.set('can_node_id', bootNode);
-      params.set('can_speed', canSpeed);
-      params.set('can_rx_pin', canRxPin);
-      params.set('can_tx_pin', canTxPin);
-      await fetch('/settings?' + params.toString(), { method: 'POST' });
-      dispatch({ type: 'SET_CAN_CONFIG', payload: { canMode, canNodeId: bootNode } });
-      if (canMode) dispatch({ type: 'SET_CAN_NODE', payload: bootNode });
-      setTimeout(() => setSaving(false), 2000);
-    } catch (e) { setSaving(false); }
-  };
-
   const saveWiFi = async (type) => {
     setWifiMsg('Saving...');
     try {
@@ -2248,9 +2350,9 @@ const Settings = () => {
         <h2>Settings</h2>
 
         <div class="dash-box" style="margin-bottom:1rem">
-          <h3>Theme</h3>
+          <h3>Appearance & Display</h3>
           <p style="font-size:.8rem;margin:0 0 .35rem">Choose appearance — System follows your device setting.</p>
-          <select value=${theme} onchange=${e => { const v = e.target.value; setThemeState(v); setTheme(v); }}
+          <select value=${theme} onchange=${e => { const v = e.target.value; setThemeState(v); setTheme(v); saveUiPrefsToDevice(); }}
             class="styled" style="align-self:flex-start;width:auto;min-width:160px">
             <option value="system">System</option>
             <option value="light">Light</option>
@@ -2265,9 +2367,29 @@ const Settings = () => {
             <input type="color" value=${accent || '#4cc9f0'} oninput=${e => pickAccent(e.target.value)} title="Custom colour" />
           </div>
           <p style="font-size:.8rem;margin:1rem 0 .35rem">Display</p>
-          <${ToggleRow} label="Keep screen awake" checked=${keepAwake}
-            onChange=${on => { setKeepAwakeState(on); setKeepAwake(on); }} />
+          <div style="display:flex;align-items:center;gap:12px;margin-bottom:.25rem">
+            <label class="switch">
+              <input type="checkbox" checked=${keepAwake} onchange=${e => { setKeepAwakeState(e.target.checked); setKeepAwake(e.target.checked); }} />
+              <span class="slider"></span>
+            </label>
+            <span style="font-weight:600">Keep screen awake</span>
+          </div>
           <p style="font-size:.72rem;color:var(--text3);margin:.35rem 0 0">Stops the screen sleeping while this page is open.</p>
+        </div>
+
+        <div class="dash-box" style="margin-bottom:1rem">
+          <h3>Dashboard</h3>
+          <p style="font-size:.8rem;margin:0 0 .5rem">Choose up to 5 spot values to show on the dashboard hero card. Leave a slot empty to hide it.</p>
+          <div style="display:flex;flex-wrap:wrap;gap:8px">
+            ${dashMetrics.map((name, i) => html`
+              <select class="styled" value=${name} onchange=${e => updateDashMetric(i, e.target.value)}
+                style="width:auto;min-width:130px;font-size:.8rem" title=${'Dashboard value ' + (i + 1)}>
+                <option value="">— none —</option>
+                ${Object.keys(state.spotValues || {}).sort().map(n => html`<option value=${n}>${n}${DASH_METRIC_LABELS[n] ? ' (' + DASH_METRIC_LABELS[n] + ')' : ''}</option>`)}
+              </select>
+            `)}
+          </div>
+          ${!dashMetrics.filter(Boolean).length && html`<p style="font-size:.72rem;color:var(--text3);margin:.35rem 0 0">Nothing selected — the default (udc, tmphs) is shown.</p>`}
         </div>
 
         <div class="dash-box compact" style="margin-bottom:1rem">
@@ -2275,13 +2397,13 @@ const Settings = () => {
           <p style="font-size:.8rem;margin:0 0 .5rem">Back up or restore favourites, gauge and plot layouts, and UI preferences as a single file.</p>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             <button onclick=${exportUiSettings} style="width:auto"><${Icon} n="download" />Export settings</button>
-            <input id="ui-settings-import" type="file" accept=".json" hidden onchange=${importUiSettings} />
+            <input id="ui-settings-import" type="file" hidden onchange=${importUiSettings} />
             <label class="butt" for="ui-settings-import" style="width:auto"><${Icon} n="upload" />Import settings</label>
           </div>
         </div>
 
         <div class="dash-box" style="margin-bottom:1rem">
-          <h3>Interface</h3>
+          <h3>Data Interface</h3>
           <div style="display:flex;align-items:center;gap:12px;margin-bottom:.5rem">
             <label class="switch">
               <input type="checkbox" checked=${canMode} onchange=${e => setCanMode(e.target.checked)} />
@@ -2455,11 +2577,15 @@ const Support = () => html`
 // ==================== Gauges ====================
 
 // Mini line chart for gauge line mode — value and unit passed as props
-const GaugeLine = ({ name, min, max, value, unit, color, enums, px = 230 }) => {
+// Rectangular live line gauge. Sized by w/h (any aspect — tiles can be long
+// and flat); the Chart.js chart is resized in place so live resizing never
+// remounts it (which would drop the accumulated history).
+const GaugeLine = ({ name, min, max, value, unit, color, enums, w = 230, h = 175 }) => {
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
   const MAX_POINTS = 20;
-  const w = px, h = Math.round(px * 0.76); // chart fills the square; value sits right below
+  const valueH = Math.max(22, Math.round(Math.min(w, h) * 0.16)); // value strip below the chart
+  const chartW = Math.max(30, w), chartH = Math.max(24, h - valueH);
 
   useEffect(() => {
     if (canvasRef.current && !chartRef.current && typeof Chart !== 'undefined') {
@@ -2470,6 +2596,8 @@ const GaugeLine = ({ name, min, max, value, unit, color, enums, px = 230 }) => {
         type: 'line', data: { datasets: [{ label: name, data: [], borderColor: col, backgroundColor: col + '22', fill: true, pointRadius: 0, tension: 0.3 }] },
         options: {
           animation: false, parsing: false,
+          responsive: false, // sized explicitly via chart.resize below
+          maintainAspectRatio: false, // tiles can be any shape — never snap back to 2:1
           plugins: { legend: { display: false } },
           scales: {
             x: { type: 'linear', display: false },
@@ -2478,8 +2606,17 @@ const GaugeLine = ({ name, min, max, value, unit, color, enums, px = 230 }) => {
           }
         }
       });
+      chartRef.current.resize(chartW, chartH); // size to the tile immediately
     }
+    return () => { if (chartRef.current) { chartRef.current.destroy(); chartRef.current = null; } };
   }, []);
+
+  // Track the tile as it is resized — live, without recreating the chart.
+  // Chart.js owns the canvas w/h (it isn't in the vdom), so Preact re-renders
+  // can't fight the DPR-scaled bitmap.
+  useEffect(() => {
+    if (chartRef.current) chartRef.current.resize(chartW, chartH);
+  }, [chartW, chartH]);
 
   useEffect(() => {
     if (!chartRef.current) return;
@@ -2510,9 +2647,9 @@ const GaugeLine = ({ name, min, max, value, unit, color, enums, px = 230 }) => {
   }, [value]);
 
   return html`
-    <div style=${'width:' + w + 'px;height:' + px + 'px;display:flex;flex-direction:column'}>
-      <canvas ref=${canvasRef} width=${w} height=${h} style=${'width:' + w + 'px;height:' + h + 'px'}></canvas>
-      <div class="g-val" style=${'font-size:' + (px / 230 * 1.6).toFixed(2) + 'rem;margin-top:2px'}>
+    <div style=${'width:' + w + 'px;height:' + h + 'px;display:flex;flex-direction:column;align-items:center;overflow:hidden'}>
+      <canvas ref=${canvasRef}></canvas>
+      <div class="g-val" style=${'font-size:' + Math.max(0.8, Math.min(w, h) / 230 * 1.6).toFixed(2) + 'rem;margin-top:2px;line-height:1'}>
         ${value != null ? (enums ? String(Math.round(value)) : value.toFixed(1)) : '—'}
         ${enums
           ? (value != null && html`<span class="g-unit g-enum" style="display:inline;margin-left:6px">${enumLabel(enums, value)}</span>`)
@@ -2582,95 +2719,296 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px }) => 
           ? (v != null && html`<div class="g-unit g-enum">${enumLabel(enums, v)}</div>`)
           : (unit && html`<div class="g-unit">${unit}</div>`)}
       </div>
-      <div class="g-min" style=${'left:' + Math.round(size * 0.174) + 'px;bottom:' + Math.round(size * 0.072) + 'px;font-size:' + Math.max(0.68, size / 230 * 0.68).toFixed(2) + 'rem'}>${min}</div>
-      <div class="g-max" style=${'right:' + Math.round(size * 0.174) + 'px;bottom:' + Math.round(size * 0.072) + 'px;font-size:' + Math.max(0.68, size / 230 * 0.68).toFixed(2) + 'rem'}>${max}</div>
+      ${size >= 90 && html`
+        <div class="g-min" style=${'left:' + Math.round(size * 0.174) + 'px;bottom:' + Math.round(size * 0.072) + 'px;font-size:' + Math.max(0.68, size / 230 * 0.68).toFixed(2) + 'rem'}>${min}</div>
+        <div class="g-max" style=${'right:' + Math.round(size * 0.174) + 'px;bottom:' + Math.round(size * 0.072) + 'px;font-size:' + Math.max(0.68, size / 230 * 0.68).toFixed(2) + 'rem'}>${max}</div>
+      `}
+    </div>`;
+};
+
+// ==================== Gauges (grid dashboard) ====================
+// Named pages of freely draggable/resizable tiles on a GridStack grid
+// (vendored, MIT). The column count is fixed at 12 so a layout is one
+// coordinate space on every device — it scales rather than reflows, and a
+// page laid out on the desktop looks the same on a phone.
+// gauges.json v2: { v: 2, pages: [{ id, name, items: [{ id, name, type,
+// color, min, max, x, y, w, h }] }] }. v1 ({ items, size }) migrates
+// transparently; the settings export bundle carries the file wholesale.
+
+const GRID_COLS = 12;
+const V1_SPAN = { xs: 2, sm: 3, md: 3, lg: 4 }; // legacy fixed sizes -> tile span
+
+function migrateGauges(data) {
+  if (data && Array.isArray(data.pages)) {
+    const pages = data.pages
+      .map((p, pi) => ({
+        id: p.id || pi + 1,
+        name: p.name || 'Page ' + (pi + 1),
+        items: (Array.isArray(p.items) ? p.items : []).map(g => {
+          const type = g.type || 'radial';
+          const floor = type === 'indicator' ? 1 : 2; // indicators can be 1x1
+          let w = Math.max(floor, g.w || 3), h = Math.max(floor, g.h || 3);
+          if (type !== 'line') w = h = Math.min(w, h); // dials/lamps are square
+          return { type: 'radial', ...g, w, h };
+        }),
+      }));
+    return pages.length ? pages : [{ id: 1, name: 'Main', items: [] }];
+  }
+  // v1: single page; flow the old fixed-size list onto the grid
+  const v1 = (data && Array.isArray(data.items)) ? data.items : [];
+  const items = v1.map((g, i) => {
+    const base = typeof g === 'string' ? { name: g, min: 0, max: 100 } : g;
+    const span = V1_SPAN[base.size || (data && data.size)] || 3;
+    const perRow = Math.max(1, Math.floor(GRID_COLS / span));
+    const { size, ...rest } = base;
+    return {
+      type: 'radial', min: 0, max: 4000, ...rest,
+      x: (i % perRow) * span, y: Math.floor(i / perRow) * span, w: span, h: span,
+    };
+  });
+  return [{ id: 1, name: 'Main', items }];
+}
+
+// Indicator lamp for On/Off and 0/1 values: min/max describe the value's
+// range (like every other gauge type) and the lamp switches at the midpoint —
+// lit in the gauge colour above it, dim below. Min 0 / Max 1 switches at 0.5.
+const IndicatorLamp = ({ value, min, max, color, enums, px }) => {
+  const v = (value == null || isNaN(value)) ? null : value;
+  const lo = (min == null) ? 0 : min;
+  const hi = (max == null) ? lo : max;
+  const on = v != null && v >= (lo + hi) / 2;
+  const col = (color && /^#[0-9a-fA-F]{6}$/.test(color)) ? color : 'var(--accent)';
+  const d = Math.round(px * 0.52);
+  const label = v == null ? '—' : (enums ? enumLabel(enums, v) : (on ? 'ON' : 'OFF'));
+  return html`
+    <div class="ind-wrap" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:${Math.round(px * 0.06)}px">
+      <div class="ind-lamp ${on ? 'on' : ''}" style=${{
+        width: d + 'px', height: d + 'px', borderRadius: '50%',
+        background: on ? col : 'var(--surface)',
+        border: '2px solid ' + (on ? col : 'var(--border2)'),
+        boxShadow: on ? ('0 0 ' + Math.round(px * 0.16) + 'px ' + col) : 'none',
+        transition: 'background .15s, box-shadow .15s',
+      }}></div>
+      ${px >= 40 && html`<div class="g-unit" style=${'font-size:' + Math.max(0.7, px / 230 * 1.0).toFixed(2) + 'rem'}>${label}</div>`}
+    </div>`;
+};
+
+// Fills the tile under the name label and measures itself with a
+// ResizeObserver, so gauges rescale live while a tile is being resized
+// (GridStack changes the DOM size continuously during the drag).
+const GaugeTileBody = ({ g, title, value, unit, enums }) => {
+  const ref = useRef(null);
+  const [dim, setDim] = useState({ w: 0, h: 0 });
+  // Layout effect: measure before first paint so a freshly mounted page
+  // renders at full size in one frame instead of zooming in from nothing
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => {
+      const w = el.clientWidth, h = el.clientHeight;
+      setDim(d => (d.w !== w || d.h !== h) ? { w, h } : d);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const { w, h } = dim;
+  // Small tiles (1x1, or 2x2 on a phone) drop the name row so the gauge
+  // itself always gets the space — the tile's title attribute still names it
+  const showName = h >= 48;
+  const nameH = showName ? Math.min(20, Math.round(h * 0.16)) : 0;
+  const gh = h - nameH - 2;
+  return html`
+    <div ref=${ref} style="flex:1;width:100%;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;overflow:hidden">
+      ${showName && html`<div class="gauge-tile-name" style=${'font-size:' + Math.min(13, Math.max(9, Math.round(nameH * 0.7))) + 'px;line-height:' + nameH + 'px;margin:0'}>${title}</div>`}
+      ${w > 12 && gh > 12 && ((g.type === 'line')
+        ? html`<${GaugeLine} key=${g.id} name=${g.name} min=${g.min} max=${g.max} value=${value} unit=${unit} color=${g.color || ''} enums=${enums}
+            w=${w - 4} h=${gh - 2} />`
+        : (g.type === 'indicator')
+        ? html`<${IndicatorLamp} value=${value} min=${g.min} max=${g.max} color=${g.color || ''} enums=${enums}
+            px=${Math.max(14, Math.min(w, gh) - 4)} />`
+        : html`<${SvgGauge} id=${g.id} value=${value} unit=${unit} color=${g.color || ''} enums=${enums}
+            px=${Math.max(40, Math.min(w, gh) - 4)}
+            min=${g.min != null ? g.min : 0} max=${(g.max == null || g.max === 0) ? 4000 : g.max} />`)}
     </div>`;
 };
 
 const Gauges = () => {
   const { state, dispatch } = useContext(Store);
-  const [gaugeItems, setGaugeItems] = useState([]);
+  const [pages, setPages] = useState([{ id: 1, name: 'Main', items: [] }]);
+  const [activePage, setActivePage] = useState(1);
   const [lineVals, setLineVals] = useState({});
   const [editing, setEditing] = useState(false);
-  const [gaugeSize, setGaugeSize] = useState('md'); // sm | md | lg
+  const [configId, setConfigId] = useState(null); // gauge whose settings modal is open
   const fetchRef = useRef(null);
   const nextId = useRef(1);
+  const gridRef = useRef(null);  // .grid-stack DOM node
+  const gridApi = useRef(null);  // GridStack instance
+  const activeRef = useRef(activePage);
+  activeRef.current = activePage;
 
-  // Load saved layout and fetch initial spot values for the picker
+  const page = pages.find(p => p.id === activePage) || pages[0];
+  const items = page.items;
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+
+  // Load saved layout (migrating v1 if needed) and fetch spot names for the picker
   useEffect(() => {
     (async () => {
       try {
         const r = await fetch('/gauges.json');
         if (r.ok) {
-          const data = await r.json();
-          if (data.items && Array.isArray(data.items)) {
-            const items = data.items.map(g => {
-              if (typeof g === 'string') return { id: nextId.current++, name: g, min: 0, max: 100, type: 'radial' };
-              if (!g.id) return { id: nextId.current++, ...g, type: g.type || 'radial' };
-              if (g.id >= nextId.current) nextId.current = g.id + 1;
-              return { ...g, type: g.type || 'radial' };
-            });
-            setGaugeItems(items);
-          }
-          if (['xs', 'sm', 'md', 'lg'].includes(data.size)) setGaugeSize(data.size);
+          const migrated = migrateGauges(await r.json());
+          let maxId = 0;
+          migrated.forEach(p => p.items.forEach(g => { if (typeof g.id === 'number' && g.id > maxId) maxId = g.id; }));
+          migrated.forEach(p => p.items.forEach(g => { if (!g.id) g.id = ++maxId; }));
+          nextId.current = maxId + 1;
+          setPages(migrated);
+          setActivePage(migrated[0].id);
         }
       } catch (e) { /* no saved layout */ }
+      api.getJSON('json').then(json => dispatch({ type: 'SET_PARAMS', payload: json })).catch(() => {});
     })();
-    // Fetch spot values once for the picker (before high-perf loop pauses main refresh)
-    api.getJSON('json').then(json => {
-      dispatch({ type: 'SET_PARAMS', payload: json });
-    }).catch(() => {});
   }, []);
 
-  const saveLayout = async (items, size) => {
+  const persist = async (nextPages) => {
     try {
-      const json = JSON.stringify({ items, size: size || gaugeSize });
-      const blob = new Blob([json], { type: 'application/json' });
+      const blob = new Blob([JSON.stringify({ v: 2, pages: nextPages })], { type: 'application/json' });
       const fd = new FormData();
       fd.append('updatefile', blob, 'gauges.json');
       await fetch('/edit', { method: 'POST', body: fd });
     } catch (e) { /* ignore */ }
   };
 
+  const setPageItems = (pageId, updater) =>
+    setPages(ps => ps.map(p => p.id !== pageId ? p : { ...p, items: updater(p.items) }));
+
+  // GridStack owns tile geometry while mounted; re-init on page switch,
+  // edit toggle or add/remove, and mirror every 'change' back into state so
+  // Save & Done persists exactly what's on screen.
+  useLayoutEffect(() => {
+    const el = gridRef.current;
+    if (!el || typeof GridStack === 'undefined') return;
+    // Layout effect + correct initial cellHeight + animation off during init:
+    // a page switch paints fully laid out in one frame instead of zooming in.
+    // Animation comes back for the nice drag/drop transitions.
+    const grid = GridStack.init({
+      column: GRID_COLS,
+      cellHeight: Math.max(1, Math.round(el.clientWidth / GRID_COLS)),
+      margin: 4,
+      float: true,
+      animate: false,
+      staticGrid: !editing,
+      alwaysShowResizeHandle: 'mobile',
+    }, el);
+    gridApi.current = grid;
+    requestAnimationFrame(() => { if (gridApi.current === grid) grid.setAnimation(true); });
+    const squareCells = () => {
+      const w = el.clientWidth / GRID_COLS;
+      if (w > 0) grid.cellHeight(Math.round(w));
+    };
+    const ro = new ResizeObserver(squareCells);
+    ro.observe(el);
+    // gridstack strips gs-min-* attributes on first parse, so re-inits would
+    // lose them — enforce minimums at engine level instead (1x1 for
+    // indicator lamps, 2x2 for everything else)
+    const minFor = (id) => {
+      const g = itemsRef.current.find(x => String(x.id) === String(id));
+      return g && g.type === 'indicator' ? 1 : 2;
+    };
+    grid.batchUpdate();
+    grid.getGridItems().forEach(el => {
+      const m = minFor((el.gridstackNode || {}).id);
+      grid.update(el, { minW: m, minH: m });
+    });
+    grid.batchUpdate(false);
+    const onChange = () => {
+      // save() omits default values (x/y 0, w/h 1) — normalise so state (and
+      // the gs- attributes Preact renders) never go undefined or below min
+      const layout = grid.save(false) || [];
+      setPageItems(activeRef.current, prev => prev.map(g => {
+        const l = layout.find(w => String(w.id) === String(g.id));
+        if (!l) return g;
+        const floor = g.type === 'indicator' ? 1 : 2;
+        return { ...g, x: l.x || 0, y: l.y || 0, w: Math.max(floor, l.w || 1), h: Math.max(floor, l.h || 1) };
+      }));
+    };
+    grid.on('change', onChange);
+    // After a resize: enforce the 2x2 minimum (interactive resizes can slip
+    // past engine minW) and keep dial-type gauges square — snap to the nearer
+    // square, growing if the drag grew the tile, shrinking otherwise
+    const prevDim = { w: 0, h: 0 };
+    grid.on('resizestart', (e, el) => {
+      const n = el.gridstackNode || {};
+      prevDim.w = n.w || 0; prevDim.h = n.h || 0;
+    });
+    grid.on('resizestop', (e, el) => {
+      const n = el.gridstackNode;
+      if (!n) return;
+      const g = itemsRef.current.find(x => String(x.id) === String(n.id));
+      const floor = g && g.type === 'indicator' ? 1 : 2;
+      let w = Math.max(floor, n.w || 1), h = Math.max(floor, n.h || 1);
+      if (g && g.type !== 'line') {
+        const grew = (n.w || 1) * (n.h || 1) >= prevDim.w * prevDim.h;
+        w = h = grew ? Math.max(w, h) : Math.min(w, h);
+      }
+      if (n.w !== w || n.h !== h) grid.update(el, { w, h });
+    });
+    return () => { ro.disconnect(); grid.destroy(false); gridApi.current = null; };
+    // types join: a type switch (e.g. radial -> indicator) changes the
+    // engine minimums, so re-init to reapply them
+  }, [activePage, items.length, editing, pages.length, items.map(g => g.type).join()]);
+
   const addGauge = () => {
-    setGaugeItems([...gaugeItems, { id: nextId.current++, name: '', min: 0, max: 4000, type: 'radial' }]);
+    const id = nextId.current++;
+    setPageItems(activePage, prev => {
+      // Append below current content (float:true keeps y values literal)
+      const y = prev.reduce((m, g) => Math.max(m, (g.y || 0) + (g.h || 3)), 0);
+      return [...prev, { id, name: '', min: 0, max: 4000, type: 'radial', x: 0, y, w: 3, h: 3 }];
+    });
+    setConfigId(id); // open its settings straight away
   };
 
   const removeGauge = (id) => {
-    setGaugeItems(gaugeItems.filter(g => g.id !== id));
+    if (configId === id) setConfigId(null);
+    setPageItems(activePage, prev => prev.filter(g => g.id !== id));
   };
 
-  const moveGauge = (fromIdx, toIdx) => {
-    if (fromIdx === toIdx) return;
-    const next = [...gaugeItems];
-    const [item] = next.splice(fromIdx, 1);
-    next.splice(toIdx, 0, item);
-    setGaugeItems(next);
+  const updateGaugeConfig = (id, field, value) =>
+    setPageItems(activePage, prev => prev.map(g => g.id !== id ? g : { ...g, [field]: value }));
+
+  // --- pages ---
+  const addPage = () => {
+    const name = (prompt('Page name (e.g. Driving, Debug)') || '').trim();
+    if (!name) return;
+    const id = Math.max(0, ...pages.map(p => p.id)) + 1;
+    setPages([...pages, { id, name, items: [] }]);
+    setActivePage(id);
+  };
+  const renamePage = () => {
+    const name = (prompt('Rename page', page.name) || '').trim();
+    if (!name) return;
+    setPages(pages.map(p => p.id !== activePage ? p : { ...p, name }));
+  };
+  const deletePage = () => {
+    if (pages.length <= 1) { alert('At least one page is required.'); return; }
+    if (!confirm('Delete page "' + page.name + '" and its ' + items.length + ' gauge(s)?')) return;
+    const next = pages.filter(p => p.id !== activePage);
+    setPages(next);
+    setActivePage(next[0].id);
   };
 
-  // Drag state for reordering
-  const dragIdx = useRef(-1);
-  const [dragOverIdx, setDragOverIdx] = useState(-1);
-  const [dragId, setDragId] = useState(null); // which gauge id is being dragged
-
-  const updateGaugeConfig = (id, field, value) => {
-    setGaugeItems(gaugeItems.map(g => g.id !== id ? g : { ...g, [field]: value }));
-  };
-
-  // High-perf spot value fetching (pauses main json refresh while on gauges page)
-  // Uses a single 'get' command for all gauge names — one call, all values returned
+  // High-rate spot value fetching for the active page (pauses main json refresh)
   useEffect(() => {
-    const names = gaugeItems.map(g => g.name).filter(Boolean);
-    
+    const names = items.map(g => g.name).filter(Boolean);
     if (names.length === 0) {
       dispatch({ type: 'SET_LOGGING', payload: false });
       return;
     }
-
     dispatch({ type: 'SET_LOGGING', payload: true });
     let active = true;
     const interval = 100; // ms between fetches
-    
     const fetchLoop = async () => {
       if (!active) return;
       const t0 = performance.now();
@@ -2679,115 +3017,118 @@ const Gauges = () => {
         if (!active) return;
         const vals = text.match(/[\-\d\.]+/g) || [];
         const next = {};
-        gaugeItems.forEach((g, i) => {
-          const val = parseFloat(vals[i]);
+        let vi = 0;
+        items.forEach(g => {
+          if (!g.name) return;
+          const val = parseFloat(vals[vi++]);
           if (!isNaN(val)) next[g.id] = val;
         });
         setLineVals(prev => ({ ...prev, ...next }));
       } catch (e) { /* ignore */ }
-      // Schedule next fetch — respects actual response time to avoid pileup
       if (active) {
         const elapsed = performance.now() - t0;
-        const delay = Math.max(0, interval - elapsed);
-        fetchRef.current = setTimeout(fetchLoop, delay);
+        fetchRef.current = setTimeout(fetchLoop, Math.max(0, interval - elapsed));
       }
     };
-    
-    fetchRef.current = setTimeout(fetchLoop, 0); // immediate first fetch
-
+    fetchRef.current = setTimeout(fetchLoop, 0);
     return () => {
       active = false;
       dispatch({ type: 'SET_LOGGING', payload: false });
       if (fetchRef.current) { clearTimeout(fetchRef.current); fetchRef.current = null; }
     };
-  }, [gaugeItems]);
+  }, [items]);
 
   const spotNames = state.spotValues ? Object.keys(state.spotValues) : [];
 
   return html`
-    <div id="gauges" class="tabdiv main-content" style="display:flex">
+    <div id="gauges" class="tabdiv main-content ${editing ? 'gauges-editing' : ''}" style="display:flex">
       ${editing && html`
       <div class="main-right">
         <h3 class="underline">Edit Gauges</h3>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px">
           <button onclick=${addGauge}><${Icon} n="plus" />Add Gauge</button>
-          <button onclick=${() => { saveLayout(gaugeItems); setEditing(false); }}><${Icon} n="check" />Save & Done</button>
+          <button onclick=${() => { persist(pages); setEditing(false); }}><${Icon} n="check" />Save & Done</button>
         </div>
-        ${gaugeItems.length > 0 && html`
-          <h3>Active (${gaugeItems.length})</h3>
-          ${gaugeItems.map((g, i) => html`
-            <div
-              ondragover=${e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (dragOverIdx !== i) setDragOverIdx(i); }}
-              ondragleave=${e => { if (dragOverIdx === i) setDragOverIdx(-1); }}
-              ondrop=${e => { e.preventDefault(); const from = dragIdx.current; if (from !== i && from >= 0) moveGauge(from, i); setDragOverIdx(-1); setDragId(null); }}
-              style="margin-bottom:10px;padding:6px 8px;background:var(--surface2);border-radius:var(--radius-xs);font-size:.78rem;${dragOverIdx === i ? 'border-top:2px solid var(--accent);' : ''}${dragId === g.id ? 'opacity:0.4' : ''}">
-              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
-                <span draggable="true"
-                  ondragstart=${e => { dragIdx.current = i; setDragId(g.id); e.dataTransfer.effectAllowed = 'move'; }}
-                  ondragend=${e => { setDragOverIdx(-1); dragIdx.current = -1; setDragId(null); }}
-                  style="cursor:grab;color:var(--text3);font-size:.9rem;user-select:none;padding-right:4px" title="Drag to reorder">⋮⋮</span>
-                <${FieldPicker} value=${g.name} spotNames=${spotNames} onChange=${name => updateGaugeConfig(g.id, 'name', name)} />
-                <span onclick=${() => removeGauge(g.id)} style="cursor:pointer;color:var(--red);font-weight:700;padding:0 4px" title="Remove">×</span>
-              </div>
-              <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px">
-                <select value=${g.type || 'radial'} onchange=${e => updateGaugeConfig(g.id, 'type', e.target.value)} style="font-size:.78rem;padding:4px 6px;width:6em">
-                  <option value="radial">Radial</option>
-                  <option value="line">Line</option>
-                </select>
-                <input type="color" value=${g.color || '#4cc9f0'} oninput=${e => updateGaugeConfig(g.id, 'color', e.target.value)}
-                  title="Gauge colour"
-                  style="width:30px;height:26px;padding:0;border:1px solid var(--border2);border-radius:6px;background:none;cursor:pointer" />
-                ${g.color && html`<button onclick=${() => updateGaugeConfig(g.id, 'color', '')} style="font-size:.65rem;padding:2px 8px" title="Reset to theme gradient"><${Icon} n="undo" size=${11} /></button>`}
-              </div>
-              <div style="display:flex;gap:6px;align-items:center">
-                <label style="white-space:nowrap;font-size:.72rem">Min</label>
-                <input type="number" value=${g.min} oninput=${e => updateGaugeConfig(g.id, 'min', parseFloat(e.target.value) || 0)}
-                  style="width:4.2em;flex:1;padding:4px 5px;font-size:.78rem" step="any" />
-                <label style="white-space:nowrap;font-size:.72rem">Max</label>
-                <input type="number" value=${g.max} oninput=${e => updateGaugeConfig(g.id, 'max', parseFloat(e.target.value) || 0)}
-                  style="width:4.2em;flex:1;padding:4px 5px;font-size:.78rem" step="any" />
-              </div>
-            </div>
-          `)}
-        `}
+        <p style="font-size:.72rem;color:var(--text3);margin:.25rem 0 .5rem">Drag tiles to move them; drag a tile's corner to resize.</p>
+        <h3 class="underline">Page: ${page.name}</h3>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px">
+          <button onclick=${addPage} style="font-size:.75rem;padding:4px 10px"><${Icon} n="plus" />New page</button>
+          <button onclick=${renamePage} style="font-size:.75rem;padding:4px 10px"><${Icon} n="edit" />Rename</button>
+          <button onclick=${deletePage} style="font-size:.75rem;padding:4px 10px;color:var(--red)"><${Icon} n="x" />Delete</button>
+        </div>
+        <p style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">Tap a tile's ⚙ to configure its value, type, colour and range.</p>
       </div>
       `}
       <div class="main-left">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem;gap:8px;flex-wrap:wrap">
           <h2 style="margin:0">Gauges</h2>
-          <div style="display:flex;gap:6px;align-items:center">
-            <select value=${gaugeSize} title="Gauge size"
-              onchange=${e => { const v = e.target.value; setGaugeSize(v); saveLayout(gaugeItems, v); }}
-              style="font-size:.72rem;padding:4px 26px 4px 8px">
-              <option value="xs">Very small</option>
-              <option value="sm">Small</option>
-              <option value="md">Medium</option>
-              <option value="lg">Large</option>
-            </select>
-            ${!editing && html`<button onclick=${() => setEditing(true)} style="font-size:.75rem;padding:4px 12px"><${Icon} n="edit" />Edit Layout</button>`}
-          </div>
+          ${!editing && html`<button onclick=${() => setEditing(true)} style="font-size:.75rem;padding:4px 12px"><${Icon} n="edit" />Edit Layout</button>`}
         </div>
-        ${gaugeItems.length === 0 && !editing && html`<p style="color:var(--text3);font-size:.85rem;text-align:center;padding:2rem 0">Click Edit Layout to add a gauge.</p>`}
-        <div id="gauge-container" style="display:flex;flex-wrap:wrap;gap:1.5rem;justify-content:center;align-items:flex-start">
-          ${gaugeItems.map(g => {
+        <div id="gauge-pages" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:.6rem">
+          ${pages.map(p => html`
+            <button key=${p.id} class="page-pill ${p.id === activePage ? 'active' : ''}" onclick=${() => setActivePage(p.id)}>${p.name}</button>
+          `)}
+          ${editing && html`<button class="page-pill" title="Add page" onclick=${addPage}>+</button>`}
+        </div>
+        ${items.length === 0 && !editing && html`<p style="color:var(--text3);font-size:.85rem;text-align:center;padding:2rem 0">Click Edit Layout to add a gauge.</p>`}
+        <div class="grid-stack" ref=${gridRef} key=${'page-' + activePage}>
+          ${items.map(g => {
             const sv = state.spotValues && state.spotValues[g.name];
             const unit = (sv && sv.unit && sv.unit.indexOf('=') === -1) ? sv.unit : '';
             const enums = (sv && sv.enums) || null;
             return html`
-            <div class="gauge-wrapper" style="text-align:center" key="${g.id}">
-              <div style="font-weight:600;font-size:.9rem;margin-bottom:4px">${g.name || '—'}</div>
-              ${(g.type === 'line')
-                ? html`<${GaugeLine} key=${g.id + '-' + gaugeSize} name=${g.name} min=${g.min} max=${g.max} value=${lineVals[g.id]} unit=${unit} color=${g.color || ''} enums=${enums}
-                    px=${gaugeSize === 'xs' ? 130 : gaugeSize === 'sm' ? 170 : gaugeSize === 'lg' ? 300 : 230} />`
-                : html`<${SvgGauge} id=${g.id} value=${lineVals[g.id]} unit=${unit} color=${g.color || ''} enums=${enums}
-                    px=${gaugeSize === 'xs' ? 130 : gaugeSize === 'sm' ? 170 : gaugeSize === 'lg' ? 300 : 230}
-                    min=${g.min != null ? g.min : 0} max=${(g.max == null || g.max === 0) ? 4000 : g.max} />`}
-            </div>
-          `; })}
+            <div class="grid-stack-item" key=${g.id} gs-id=${g.id} gs-x=${g.x} gs-y=${g.y} gs-w=${g.w} gs-h=${g.h}>
+              <div class="grid-stack-item-content gauge-tile" title=${g.name || ''}>
+                ${editing && html`<button class="tile-cfg" title="Configure gauge" onclick=${() => setConfigId(g.id)}>⚙</button>`}
+                <${GaugeTileBody} g=${g} title=${g.name || (editing ? 'tap ⚙' : '—')} value=${lineVals[g.id]} unit=${unit} enums=${enums} />
+              </div>
+            </div>`;
+          })}
         </div>
       </div>
+      ${(() => {
+        const cfg = items.find(g => g.id === configId);
+        return cfg && html`
+          <${Modal} id="gauge-config" title="Gauge settings" onClose=${() => setConfigId(null)}>
+            <div style="display:flex;flex-direction:column;gap:10px;font-size:.85rem">
+              <div style="display:flex;gap:8px;align-items:center">
+                <label style="width:4.5em">Value</label>
+                <${FieldPicker} value=${cfg.name} spotNames=${spotNames} onChange=${name => updateGaugeConfig(cfg.id, 'name', name)} />
+              </div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <label style="width:4.5em">Type</label>
+                <select value=${cfg.type || 'radial'} onchange=${e => {
+                  const t = e.target.value;
+                  updateGaugeConfig(cfg.id, 'type', t);
+                  // 0/1 flags are the common indicator case — default to a 0..1 range (switches at 0.5)
+                  if (t === 'indicator' && cfg.min === 0 && cfg.max === 4000) {
+                    updateGaugeConfig(cfg.id, 'max', 1);
+                  }
+                }} style="width:auto;min-width:9.5em;padding:5px 30px 5px 8px">
+                  <option value="radial">Radial</option>
+                  <option value="line">Line</option>
+                  <option value="indicator">Indicator</option>
+                </select>
+                <label style="margin-left:8px">Colour</label>
+                <input type="color" value=${cfg.color || '#4cc9f0'} oninput=${e => updateGaugeConfig(cfg.id, 'color', e.target.value)}
+                  style="width:34px;height:28px;padding:0;border:1px solid var(--border2);border-radius:6px;background:none;cursor:pointer" />
+                ${cfg.color && html`<button onclick=${() => updateGaugeConfig(cfg.id, 'color', '')} style="font-size:.65rem;padding:2px 8px;width:auto" title="Reset to theme gradient"><${Icon} n="undo" size=${11} /></button>`}
+              </div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <label style="width:4.5em">Min</label>
+                <input type="number" value=${cfg.min} oninput=${e => updateGaugeConfig(cfg.id, 'min', parseFloat(e.target.value) || 0)} style="width:6em;padding:5px 6px" step="any" />
+                <label>Max</label>
+                <input type="number" value=${cfg.max} oninput=${e => updateGaugeConfig(cfg.id, 'max', parseFloat(e.target.value) || 0)} style="width:6em;padding:5px 6px" step="any" />
+              </div>
+              ${cfg.type === 'indicator' && html`<p style="font-size:.72rem;color:var(--text3);margin:0">The lamp lights in the chosen colour when the value rises past the midpoint between Min and Max — e.g. Min 0 / Max 1 switches at 0.5.</p>`}
+              <div style="display:flex;gap:8px;margin-top:4px">
+                <button onclick=${() => setConfigId(null)} style="width:auto"><${Icon} n="check" />Done</button>
+                <button onclick=${() => removeGauge(cfg.id)} style="width:auto;color:var(--red)"><${Icon} n="x" />Remove gauge</button>
+              </div>
+            </div>
+          </${Modal}>`;
+      })()}
     </div>
-
   `;
 };
 
@@ -2884,13 +3225,10 @@ const App = () => {
     api.loadFavorites().then(favs => dispatch({ type: 'SET_FAVORITES', payload: favs }));
   }, []);
 
-  // Reset age on data fetch
-  useEffect(() => { if (state.fetchAge === 0) {} }, [state.params]);
-
   const tab = state.activeTab;
 
   return html`
-    <${Store.Provider} value=${{ state, dispatch }}>
+    <${Store.Provider} value=${store}>
       <div id="content">
         <${Navbar} />
         <div id="content-wrapper">

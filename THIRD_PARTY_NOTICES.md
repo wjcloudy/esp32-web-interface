@@ -15,6 +15,7 @@ without an in-file license banner, so their attribution is recorded here.
 | Chart.js (`data/chart.min.js`) | 3.6.1 | MIT | © 2021 Chart.js Contributors | https://www.chartjs.org |
 | chartjs-plugin-annotation (`data/chartjs-annotation.min.js`) | 0.5.7 | MIT | © 2016 Evert Timberg | https://github.com/chartjs/chartjs-plugin-annotation |
 | NoSleep.js (`data/nosleep.js`) | 0.12.0 | MIT | © Rich Tibbett | https://github.com/richtr/NoSleep.js |
+| GridStack.js (`data/gridstack-all.js.gz`, `data/gridstack.min.css.gz`) | 12.6.0 | MIT | © 2019 Alain Dumesny | https://github.com/gridstack/gridstack.js |
 
 NoSleep.js embeds two short, blank video clips (base64 `data:` URIs, generated
 with ffmpeg) used only to keep the screen awake on browsers without the Screen

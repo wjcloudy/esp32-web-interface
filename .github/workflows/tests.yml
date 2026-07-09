@@ -1,0 +1,62 @@
+name: Tests
+
+# Contributor safety net. Everything here is deterministic and secret-free,
+# so it runs on fork PRs too. Firmware compilation is covered separately by
+# build.yml; this workflow gates code quality and app behaviour.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  static-checks:
+    name: Lint + asset sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: ESLint (frontend + tests)
+        run: npm run lint
+
+      - name: JS syntax check
+        run: node --check data/app.js && node --check data/sw.js
+
+      - name: data/*.gz in sync with sources
+        run: python gzip_assets.py --check
+
+  e2e:
+    name: E2E (Playwright vs mock ESP)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Install Playwright browser
+        run: npx playwright install chromium --with-deps
+
+      - name: Run E2E suite
+        run: npx playwright test
+
+      - name: Upload traces on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces
+          path: test-results/
+          retention-days: 7

@@ -5,3 +5,6 @@ platformio-local-override.ini
 /*.gz
 *-0x000.bin
 /memory/
+node_modules/
+test-results/
+playwright-report/
