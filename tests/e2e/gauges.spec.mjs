@@ -131,6 +131,25 @@ test.describe('Gauges grid', () => {
     expect((await savedLayout(mock)).pages[0].items[0].type).toBe('line');
   });
 
+  test('line gauge points and sample rate configure and persist', async ({ page, mock }) => {
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await enterEdit(page);
+    await addGauge(page, 'udc');
+    await page.locator('.tile-cfg').click();
+    const modal = page.locator('.modal-content');
+    await modal.locator('select').first().selectOption('line');
+    // Line-specific history controls appear
+    await modal.locator('input[type="number"]').nth(2).fill('60'); // points (after min/max)
+    await modal.locator('select').nth(1).selectOption('1000'); // sample every 1s
+    await modal.locator('button', { hasText: 'Done' }).click();
+    await page.locator('button', { hasText: 'Save & Done' }).click();
+    await expect.poll(async () => {
+      const item = (await savedLayout(mock)).pages[0].items[0];
+      return { points: item.points, sampleMs: item.sampleMs, type: item.type };
+    }).toEqual({ points: 60, sampleMs: 1000, type: 'line' });
+  });
+
   test('removing a gauge from its config modal deletes the tile', async ({ page, mock }) => {
     await openApp(page, mock);
     await gotoTab(page, 'Gauges');

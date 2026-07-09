@@ -2579,11 +2579,13 @@ const Support = () => html`
 // Mini line chart for gauge line mode — value and unit passed as props
 // Rectangular live line gauge. Sized by w/h (any aspect — tiles can be long
 // and flat); the Chart.js chart is resized in place so live resizing never
-// remounts it (which would drop the accumulated history).
-const GaugeLine = ({ name, min, max, value, unit, color, enums, w = 230, h = 175 }) => {
+// remounts it (which would drop the accumulated history). `points` sets the
+// visible history length and `sampleMs` how often a sample is taken from the
+// ~100ms stream — together they control the scroll rate/time window.
+const GaugeLine = ({ name, min, max, value, unit, color, enums, w = 230, h = 175, points = 20, sampleMs = 100 }) => {
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
-  const MAX_POINTS = 20;
+  const lastSampleRef = useRef(0);
   const valueH = Math.max(22, Math.round(Math.min(w, h) * 0.16)); // value strip below the chart
   const chartW = Math.max(30, w), chartH = Math.max(24, h - valueH);
 
@@ -2634,13 +2636,26 @@ const GaugeLine = ({ name, min, max, value, unit, color, enums, w = 230, h = 175
     chart.update('none');
   }, [min, max, color]);
 
+  // Shrinking the history trims the tail immediately
+  useEffect(() => {
+    const chart = chartRef.current;
+    const ds = chart && chart.data.datasets[0];
+    if (!ds || ds.data.length <= points) return;
+    ds.data.splice(0, ds.data.length - points);
+    ds.data.forEach((pt, i) => { pt.x = i; });
+    chart.update('none');
+  }, [points]);
+
   useEffect(() => {
     if (value == null || isNaN(value) || !chartRef.current) return;
+    const now = performance.now();
+    if (now - lastSampleRef.current < sampleMs) return; // decimate to the sample rate
+    lastSampleRef.current = now;
     const chart = chartRef.current;
     const ds = chart.data.datasets[0];
     if (!ds) return;
     ds.data.push({ x: ds.data.length, y: value });
-    while (ds.data.length > MAX_POINTS) ds.data.shift();
+    while (ds.data.length > points) ds.data.shift();
     // Renumber x values so they remain contiguous from 0
     ds.data.forEach((pt, i) => { pt.x = i; });
     chart.update('none');
@@ -2824,6 +2839,7 @@ const GaugeTileBody = ({ g, title, value, unit, enums }) => {
       ${showName && html`<div class="gauge-tile-name" style=${'font-size:' + Math.min(13, Math.max(9, Math.round(nameH * 0.7))) + 'px;line-height:' + nameH + 'px;margin:0'}>${title}</div>`}
       ${w > 12 && gh > 12 && ((g.type === 'line')
         ? html`<${GaugeLine} key=${g.id} name=${g.name} min=${g.min} max=${g.max} value=${value} unit=${unit} color=${g.color || ''} enums=${enums}
+            points=${g.points || 20} sampleMs=${g.sampleMs || 100}
             w=${w - 4} h=${gh - 2} />`
         : (g.type === 'indicator')
         ? html`<${IndicatorLamp} value=${value} min=${g.min} max=${g.max} color=${g.color || ''} enums=${enums}
@@ -3121,6 +3137,25 @@ const Gauges = () => {
                 <input type="number" value=${cfg.max} oninput=${e => updateGaugeConfig(cfg.id, 'max', parseFloat(e.target.value) || 0)} style="width:6em;padding:5px 6px" step="any" />
               </div>
               ${cfg.type === 'indicator' && html`<p style="font-size:.72rem;color:var(--text3);margin:0">The lamp lights in the chosen colour when the value rises past the midpoint between Min and Max — e.g. Min 0 / Max 1 switches at 0.5.</p>`}
+              ${cfg.type === 'line' && html`
+                <div style="display:flex;gap:8px;align-items:center">
+                  <label style="width:4.5em">Points</label>
+                  <input type="number" min="5" max="500" value=${cfg.points || 20}
+                    oninput=${e => updateGaugeConfig(cfg.id, 'points', Math.max(5, Math.min(500, parseInt(e.target.value) || 20)))}
+                    style="width:6em;padding:5px 6px" />
+                  <label>Sample</label>
+                  <select value=${String(cfg.sampleMs || 100)} onchange=${e => updateGaugeConfig(cfg.id, 'sampleMs', parseInt(e.target.value))}
+                    style="width:auto;min-width:7em;padding:5px 30px 5px 8px">
+                    <option value="100">100 ms</option>
+                    <option value="250">250 ms</option>
+                    <option value="500">500 ms</option>
+                    <option value="1000">1 s</option>
+                    <option value="2000">2 s</option>
+                    <option value="5000">5 s</option>
+                  </select>
+                </div>
+                <p style="font-size:.72rem;color:var(--text3);margin:0">Time window ≈ Points × Sample — e.g. 60 points at 1 s shows the last minute. Faster sampling scrolls faster.</p>
+              `}
               <div style="display:flex;gap:8px;margin-top:4px">
                 <button onclick=${() => setConfigId(null)} style="width:auto"><${Icon} n="check" />Done</button>
                 <button onclick=${() => removeGauge(cfg.id)} style="width:auto;color:var(--red)"><${Icon} n="x" />Remove gauge</button>
