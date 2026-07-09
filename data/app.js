@@ -2712,8 +2712,10 @@ function migrateGauges(data) {
         id: p.id || pi + 1,
         name: p.name || 'Page ' + (pi + 1),
         items: (Array.isArray(p.items) ? p.items : []).map(g => {
-          let w = Math.max(2, g.w || 3), h = Math.max(2, g.h || 3); // 2x2 tile minimum
-          if ((g.type || 'radial') !== 'line') w = h = Math.min(w, h); // radials are square
+          const type = g.type || 'radial';
+          const floor = type === 'indicator' ? 1 : 2; // indicators can be 1x1
+          let w = Math.max(floor, g.w || 3), h = Math.max(floor, g.h || 3);
+          if (type !== 'line') w = h = Math.min(w, h); // dials/lamps are square
           return { type: 'radial', ...g, w, h };
         }),
       }));
@@ -2753,14 +2755,14 @@ const IndicatorLamp = ({ value, min, max, color, enums, px }) => {
         boxShadow: on ? ('0 0 ' + Math.round(px * 0.16) + 'px ' + col) : 'none',
         transition: 'background .15s, box-shadow .15s',
       }}></div>
-      <div class="g-unit" style=${'font-size:' + Math.max(0.7, px / 230 * 1.0).toFixed(2) + 'rem'}>${label}</div>
+      ${px >= 40 && html`<div class="g-unit" style=${'font-size:' + Math.max(0.7, px / 230 * 1.0).toFixed(2) + 'rem'}>${label}</div>`}
     </div>`;
 };
 
 // Fills the tile under the name label and measures itself with a
 // ResizeObserver, so gauges rescale live while a tile is being resized
 // (GridStack changes the DOM size continuously during the drag).
-const GaugeTileBody = ({ g, value, unit, enums }) => {
+const GaugeTileBody = ({ g, title, value, unit, enums }) => {
   const ref = useRef(null);
   const [dim, setDim] = useState({ w: 0, h: 0 });
   useEffect(() => {
@@ -2776,16 +2778,22 @@ const GaugeTileBody = ({ g, value, unit, enums }) => {
     return () => ro.disconnect();
   }, []);
   const { w, h } = dim;
+  // Small tiles (1x1, or 2x2 on a phone) drop the name row so the gauge
+  // itself always gets the space — the tile's title attribute still names it
+  const showName = h >= 48;
+  const nameH = showName ? Math.min(20, Math.round(h * 0.16)) : 0;
+  const gh = h - nameH - 2;
   return html`
-    <div ref=${ref} style="flex:1;width:100%;min-height:0;display:flex;align-items:center;justify-content:center;overflow:hidden">
-      ${w > 24 && h > 24 && ((g.type === 'line')
+    <div ref=${ref} style="flex:1;width:100%;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;overflow:hidden">
+      ${showName && html`<div class="gauge-tile-name" style=${'font-size:' + Math.min(13, Math.max(9, Math.round(nameH * 0.7))) + 'px;line-height:' + nameH + 'px;margin:0'}>${title}</div>`}
+      ${w > 12 && gh > 12 && ((g.type === 'line')
         ? html`<${GaugeLine} key=${g.id} name=${g.name} min=${g.min} max=${g.max} value=${value} unit=${unit} color=${g.color || ''} enums=${enums}
-            w=${w - 4} h=${h - 4} />`
+            w=${w - 4} h=${gh - 2} />`
         : (g.type === 'indicator')
         ? html`<${IndicatorLamp} value=${value} min=${g.min} max=${g.max} color=${g.color || ''} enums=${enums}
-            px=${Math.max(56, Math.min(w, h) - 6)} />`
+            px=${Math.max(14, Math.min(w, gh) - 4)} />`
         : html`<${SvgGauge} id=${g.id} value=${value} unit=${unit} color=${g.color || ''} enums=${enums}
-            px=${Math.max(56, Math.min(w, h) - 6)}
+            px=${Math.max(40, Math.min(w, gh) - 4)}
             min=${g.min != null ? g.min : 0} max=${(g.max == null || g.max === 0) ? 4000 : g.max} />`)}
     </div>`;
 };
@@ -2863,17 +2871,27 @@ const Gauges = () => {
     const ro = new ResizeObserver(squareCells);
     ro.observe(el);
     // gridstack strips gs-min-* attributes on first parse, so re-inits would
-    // lose them — enforce the 2x2 minimum at engine level instead
+    // lose them — enforce minimums at engine level instead (1x1 for
+    // indicator lamps, 2x2 for everything else)
+    const minFor = (id) => {
+      const g = itemsRef.current.find(x => String(x.id) === String(id));
+      return g && g.type === 'indicator' ? 1 : 2;
+    };
     grid.batchUpdate();
-    grid.getGridItems().forEach(el => grid.update(el, { minW: 2, minH: 2 }));
+    grid.getGridItems().forEach(el => {
+      const m = minFor((el.gridstackNode || {}).id);
+      grid.update(el, { minW: m, minH: m });
+    });
     grid.batchUpdate(false);
     const onChange = () => {
       // save() omits default values (x/y 0, w/h 1) — normalise so state (and
-      // the gs- attributes Preact renders) never go undefined or below 2x2
+      // the gs- attributes Preact renders) never go undefined or below min
       const layout = grid.save(false) || [];
       setPageItems(activeRef.current, prev => prev.map(g => {
         const l = layout.find(w => String(w.id) === String(g.id));
-        return l ? { ...g, x: l.x || 0, y: l.y || 0, w: Math.max(2, l.w || 1), h: Math.max(2, l.h || 1) } : g;
+        if (!l) return g;
+        const floor = g.type === 'indicator' ? 1 : 2;
+        return { ...g, x: l.x || 0, y: l.y || 0, w: Math.max(floor, l.w || 1), h: Math.max(floor, l.h || 1) };
       }));
     };
     grid.on('change', onChange);
@@ -2889,7 +2907,8 @@ const Gauges = () => {
       const n = el.gridstackNode;
       if (!n) return;
       const g = itemsRef.current.find(x => String(x.id) === String(n.id));
-      let w = Math.max(2, n.w || 1), h = Math.max(2, n.h || 1);
+      const floor = g && g.type === 'indicator' ? 1 : 2;
+      let w = Math.max(floor, n.w || 1), h = Math.max(floor, n.h || 1);
       if (g && g.type !== 'line') {
         const grew = (n.w || 1) * (n.h || 1) >= prevDim.w * prevDim.h;
         w = h = grew ? Math.max(w, h) : Math.min(w, h);
@@ -2897,7 +2916,9 @@ const Gauges = () => {
       if (n.w !== w || n.h !== h) grid.update(el, { w, h });
     });
     return () => { ro.disconnect(); grid.destroy(false); gridApi.current = null; };
-  }, [activePage, items.length, editing, pages.length]);
+    // types join: a type switch (e.g. radial -> indicator) changes the
+    // engine minimums, so re-init to reapply them
+  }, [activePage, items.length, editing, pages.length, items.map(g => g.type).join()]);
 
   const addGauge = () => {
     const id = nextId.current++;
@@ -3017,10 +3038,9 @@ const Gauges = () => {
             const enums = (sv && sv.enums) || null;
             return html`
             <div class="grid-stack-item" key=${g.id} gs-id=${g.id} gs-x=${g.x} gs-y=${g.y} gs-w=${g.w} gs-h=${g.h}>
-              <div class="grid-stack-item-content gauge-tile">
+              <div class="grid-stack-item-content gauge-tile" title=${g.name || ''}>
                 ${editing && html`<button class="tile-cfg" title="Configure gauge" onclick=${() => setConfigId(g.id)}>⚙</button>`}
-                <div class="gauge-tile-name">${g.name || (editing ? 'tap ⚙' : '—')}</div>
-                <${GaugeTileBody} g=${g} value=${lineVals[g.id]} unit=${unit} enums=${enums} />
+                <${GaugeTileBody} g=${g} title=${g.name || (editing ? 'tap ⚙' : '—')} value=${lineVals[g.id]} unit=${unit} enums=${enums} />
               </div>
             </div>`;
           })}
