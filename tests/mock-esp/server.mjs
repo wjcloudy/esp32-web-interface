@@ -177,6 +177,11 @@ export function createMockEsp({ port = 0 } = {}) {
         files.set((url.searchParams.get('name') || 'file').replace(/^\//, ''), body);
         return text('ok');
       }
+      if (p === '/__test/spot') { // drive a spot value from a test
+        const sv = inverter.spot[url.searchParams.get('name')];
+        if (sv) sv.value = parseFloat(url.searchParams.get('value'));
+        return text(sv ? 'ok' : 'unknown');
+      }
 
       // --- firmware API ---
       if (p === '/cmd') {

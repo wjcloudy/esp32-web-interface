@@ -2544,11 +2544,15 @@ const Support = () => html`
 // ==================== Gauges ====================
 
 // Mini line chart for gauge line mode — value and unit passed as props
-const GaugeLine = ({ name, min, max, value, unit, color, enums, px = 230 }) => {
+// Rectangular live line gauge. Sized by w/h (any aspect — tiles can be long
+// and flat); the Chart.js chart is resized in place so live resizing never
+// remounts it (which would drop the accumulated history).
+const GaugeLine = ({ name, min, max, value, unit, color, enums, w = 230, h = 175 }) => {
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
   const MAX_POINTS = 20;
-  const w = px, h = Math.round(px * 0.76); // chart fills the square; value sits right below
+  const valueH = Math.max(22, Math.round(Math.min(w, h) * 0.16)); // value strip below the chart
+  const chartW = Math.max(30, w), chartH = Math.max(24, h - valueH);
 
   useEffect(() => {
     if (canvasRef.current && !chartRef.current && typeof Chart !== 'undefined') {
@@ -2559,6 +2563,8 @@ const GaugeLine = ({ name, min, max, value, unit, color, enums, px = 230 }) => {
         type: 'line', data: { datasets: [{ label: name, data: [], borderColor: col, backgroundColor: col + '22', fill: true, pointRadius: 0, tension: 0.3 }] },
         options: {
           animation: false, parsing: false,
+          responsive: false, // sized explicitly via chart.resize below
+          maintainAspectRatio: false, // tiles can be any shape — never snap back to 2:1
           plugins: { legend: { display: false } },
           scales: {
             x: { type: 'linear', display: false },
@@ -2567,8 +2573,17 @@ const GaugeLine = ({ name, min, max, value, unit, color, enums, px = 230 }) => {
           }
         }
       });
+      chartRef.current.resize(chartW, chartH); // size to the tile immediately
     }
+    return () => { if (chartRef.current) { chartRef.current.destroy(); chartRef.current = null; } };
   }, []);
+
+  // Track the tile as it is resized — live, without recreating the chart.
+  // Chart.js owns the canvas w/h (it isn't in the vdom), so Preact re-renders
+  // can't fight the DPR-scaled bitmap.
+  useEffect(() => {
+    if (chartRef.current) chartRef.current.resize(chartW, chartH);
+  }, [chartW, chartH]);
 
   useEffect(() => {
     if (!chartRef.current) return;
@@ -2599,9 +2614,9 @@ const GaugeLine = ({ name, min, max, value, unit, color, enums, px = 230 }) => {
   }, [value]);
 
   return html`
-    <div style=${'width:' + w + 'px;height:' + px + 'px;display:flex;flex-direction:column'}>
-      <canvas ref=${canvasRef} width=${w} height=${h} style=${'width:' + w + 'px;height:' + h + 'px'}></canvas>
-      <div class="g-val" style=${'font-size:' + (px / 230 * 1.6).toFixed(2) + 'rem;margin-top:2px'}>
+    <div style=${'width:' + w + 'px;height:' + h + 'px;display:flex;flex-direction:column;align-items:center;overflow:hidden'}>
+      <canvas ref=${canvasRef}></canvas>
+      <div class="g-val" style=${'font-size:' + Math.max(0.8, Math.min(w, h) / 230 * 1.6).toFixed(2) + 'rem;margin-top:2px;line-height:1'}>
         ${value != null ? (enums ? String(Math.round(value)) : value.toFixed(1)) : '—'}
         ${enums
           ? (value != null && html`<span class="g-unit g-enum" style="display:inline;margin-left:6px">${enumLabel(enums, value)}</span>`)
@@ -2696,7 +2711,11 @@ function migrateGauges(data) {
       .map((p, pi) => ({
         id: p.id || pi + 1,
         name: p.name || 'Page ' + (pi + 1),
-        items: (Array.isArray(p.items) ? p.items : []).map(g => ({ type: 'radial', ...g })),
+        items: (Array.isArray(p.items) ? p.items : []).map(g => {
+          let w = Math.max(2, g.w || 3), h = Math.max(2, g.h || 3); // 2x2 tile minimum
+          if ((g.type || 'radial') !== 'line') w = h = Math.min(w, h); // radials are square
+          return { type: 'radial', ...g, w, h };
+        }),
       }));
     return pages.length ? pages : [{ id: 1, name: 'Main', items: [] }];
   }
@@ -2715,13 +2734,69 @@ function migrateGauges(data) {
   return [{ id: 1, name: 'Main', items }];
 }
 
+// Indicator lamp for On/Off and 0/1 values: lit in the gauge colour while the
+// value is inside [min, max] (e.g. 1..1 for a boolean flag), dim otherwise.
+const IndicatorLamp = ({ value, min, max, color, enums, px }) => {
+  const v = (value == null || isNaN(value)) ? null : value;
+  const lo = (min == null) ? 1 : min;
+  const hi = (max == null) ? lo : max;
+  const on = v != null && v >= lo && v <= hi;
+  const col = (color && /^#[0-9a-fA-F]{6}$/.test(color)) ? color : 'var(--accent)';
+  const d = Math.round(px * 0.52);
+  const label = v == null ? '—' : (enums ? enumLabel(enums, v) : (on ? 'ON' : 'OFF'));
+  return html`
+    <div class="ind-wrap" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:${Math.round(px * 0.06)}px">
+      <div class="ind-lamp ${on ? 'on' : ''}" style=${{
+        width: d + 'px', height: d + 'px', borderRadius: '50%',
+        background: on ? col : 'var(--surface)',
+        border: '2px solid ' + (on ? col : 'var(--border2)'),
+        boxShadow: on ? ('0 0 ' + Math.round(px * 0.16) + 'px ' + col) : 'none',
+        transition: 'background .15s, box-shadow .15s',
+      }}></div>
+      <div class="g-unit" style=${'font-size:' + Math.max(0.7, px / 230 * 1.0).toFixed(2) + 'rem'}>${label}</div>
+    </div>`;
+};
+
+// Fills the tile under the name label and measures itself with a
+// ResizeObserver, so gauges rescale live while a tile is being resized
+// (GridStack changes the DOM size continuously during the drag).
+const GaugeTileBody = ({ g, value, unit, enums }) => {
+  const ref = useRef(null);
+  const [dim, setDim] = useState({ w: 0, h: 0 });
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => {
+      const w = el.clientWidth, h = el.clientHeight;
+      setDim(d => (d.w !== w || d.h !== h) ? { w, h } : d);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  const { w, h } = dim;
+  return html`
+    <div ref=${ref} style="flex:1;width:100%;min-height:0;display:flex;align-items:center;justify-content:center;overflow:hidden">
+      ${w > 24 && h > 24 && ((g.type === 'line')
+        ? html`<${GaugeLine} key=${g.id} name=${g.name} min=${g.min} max=${g.max} value=${value} unit=${unit} color=${g.color || ''} enums=${enums}
+            w=${w - 4} h=${h - 4} />`
+        : (g.type === 'indicator')
+        ? html`<${IndicatorLamp} value=${value} min=${g.min} max=${g.max} color=${g.color || ''} enums=${enums}
+            px=${Math.max(56, Math.min(w, h) - 6)} />`
+        : html`<${SvgGauge} id=${g.id} value=${value} unit=${unit} color=${g.color || ''} enums=${enums}
+            px=${Math.max(56, Math.min(w, h) - 6)}
+            min=${g.min != null ? g.min : 0} max=${(g.max == null || g.max === 0) ? 4000 : g.max} />`)}
+    </div>`;
+};
+
 const Gauges = () => {
   const { state, dispatch } = useContext(Store);
   const [pages, setPages] = useState([{ id: 1, name: 'Main', items: [] }]);
   const [activePage, setActivePage] = useState(1);
   const [lineVals, setLineVals] = useState({});
   const [editing, setEditing] = useState(false);
-  const [cellPx, setCellPx] = useState(60); // square cell edge, tracks container width
+  const [configId, setConfigId] = useState(null); // gauge whose settings modal is open
   const fetchRef = useRef(null);
   const nextId = useRef(1);
   const gridRef = useRef(null);  // .grid-stack DOM node
@@ -2731,6 +2806,8 @@ const Gauges = () => {
 
   const page = pages.find(p => p.id === activePage) || pages[0];
   const items = page.items;
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
 
   // Load saved layout (migrating v1 if needed) and fetch spot names for the picker
   useEffect(() => {
@@ -2780,34 +2857,62 @@ const Gauges = () => {
     gridApi.current = grid;
     const squareCells = () => {
       const w = el.clientWidth / GRID_COLS;
-      if (w > 0) { grid.cellHeight(Math.round(w)); setCellPx(w); }
+      if (w > 0) grid.cellHeight(Math.round(w));
     };
     squareCells();
     const ro = new ResizeObserver(squareCells);
     ro.observe(el);
+    // gridstack strips gs-min-* attributes on first parse, so re-inits would
+    // lose them — enforce the 2x2 minimum at engine level instead
+    grid.batchUpdate();
+    grid.getGridItems().forEach(el => grid.update(el, { minW: 2, minH: 2 }));
+    grid.batchUpdate(false);
     const onChange = () => {
+      // save() omits default values (x/y 0, w/h 1) — normalise so state (and
+      // the gs- attributes Preact renders) never go undefined or below 2x2
       const layout = grid.save(false) || [];
       setPageItems(activeRef.current, prev => prev.map(g => {
         const l = layout.find(w => String(w.id) === String(g.id));
-        return l ? { ...g, x: l.x, y: l.y, w: l.w, h: l.h } : g;
+        return l ? { ...g, x: l.x || 0, y: l.y || 0, w: Math.max(2, l.w || 1), h: Math.max(2, l.h || 1) } : g;
       }));
     };
     grid.on('change', onChange);
+    // After a resize: enforce the 2x2 minimum (interactive resizes can slip
+    // past engine minW) and keep dial-type gauges square — snap to the nearer
+    // square, growing if the drag grew the tile, shrinking otherwise
+    const prevDim = { w: 0, h: 0 };
+    grid.on('resizestart', (e, el) => {
+      const n = el.gridstackNode || {};
+      prevDim.w = n.w || 0; prevDim.h = n.h || 0;
+    });
+    grid.on('resizestop', (e, el) => {
+      const n = el.gridstackNode;
+      if (!n) return;
+      const g = itemsRef.current.find(x => String(x.id) === String(n.id));
+      let w = Math.max(2, n.w || 1), h = Math.max(2, n.h || 1);
+      if (g && g.type !== 'line') {
+        const grew = (n.w || 1) * (n.h || 1) >= prevDim.w * prevDim.h;
+        w = h = grew ? Math.max(w, h) : Math.min(w, h);
+      }
+      if (n.w !== w || n.h !== h) grid.update(el, { w, h });
+    });
     return () => { ro.disconnect(); grid.destroy(false); gridApi.current = null; };
   }, [activePage, items.length, editing, pages.length]);
 
   const addGauge = () => {
+    const id = nextId.current++;
     setPageItems(activePage, prev => {
       // Append below current content (float:true keeps y values literal)
       const y = prev.reduce((m, g) => Math.max(m, (g.y || 0) + (g.h || 3)), 0);
-      return [...prev, {
-        id: nextId.current++, name: '', min: 0, max: 4000, type: 'radial',
-        x: 0, y, w: 3, h: 3,
-      }];
+      return [...prev, { id, name: '', min: 0, max: 4000, type: 'radial', x: 0, y, w: 3, h: 3 }];
     });
+    setConfigId(id); // open its settings straight away
   };
 
-  const removeGauge = (id) => setPageItems(activePage, prev => prev.filter(g => g.id !== id));
+  const removeGauge = (id) => {
+    if (configId === id) setConfigId(null);
+    setPageItems(activePage, prev => prev.filter(g => g.id !== id));
+  };
 
   const updateGaugeConfig = (id, field, value) =>
     setPageItems(activePage, prev => prev.map(g => g.id !== id ? g : { ...g, [field]: value }));
@@ -2890,35 +2995,7 @@ const Gauges = () => {
           <button onclick=${renamePage} style="font-size:.75rem;padding:4px 10px"><${Icon} n="edit" />Rename</button>
           <button onclick=${deletePage} style="font-size:.75rem;padding:4px 10px;color:var(--red)"><${Icon} n="x" />Delete</button>
         </div>
-        ${items.length > 0 && html`
-          <h3>Gauges on this page (${items.length})</h3>
-          ${items.map(g => html`
-            <div key=${g.id} style="margin-bottom:10px;padding:6px 8px;background:var(--surface2);border-radius:var(--radius-xs);font-size:.78rem">
-              <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
-                <${FieldPicker} value=${g.name} spotNames=${spotNames} onChange=${name => updateGaugeConfig(g.id, 'name', name)} />
-                <span onclick=${() => removeGauge(g.id)} style="cursor:pointer;color:var(--red);font-weight:700;padding:0 4px" title="Remove">×</span>
-              </div>
-              <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px">
-                <select value=${g.type || 'radial'} onchange=${e => updateGaugeConfig(g.id, 'type', e.target.value)} style="font-size:.78rem;padding:4px 6px;width:6em">
-                  <option value="radial">Radial</option>
-                  <option value="line">Line</option>
-                </select>
-                <input type="color" value=${g.color || '#4cc9f0'} oninput=${e => updateGaugeConfig(g.id, 'color', e.target.value)}
-                  title="Gauge colour"
-                  style="width:30px;height:26px;padding:0;border:1px solid var(--border2);border-radius:6px;background:none;cursor:pointer" />
-                ${g.color && html`<button onclick=${() => updateGaugeConfig(g.id, 'color', '')} style="font-size:.65rem;padding:2px 8px" title="Reset to theme gradient"><${Icon} n="undo" size=${11} /></button>`}
-              </div>
-              <div style="display:flex;gap:6px;align-items:center">
-                <label style="white-space:nowrap;font-size:.72rem">Min</label>
-                <input type="number" value=${g.min} oninput=${e => updateGaugeConfig(g.id, 'min', parseFloat(e.target.value) || 0)}
-                  style="width:4.2em;flex:1;padding:4px 5px;font-size:.78rem" step="any" />
-                <label style="white-space:nowrap;font-size:.72rem">Max</label>
-                <input type="number" value=${g.max} oninput=${e => updateGaugeConfig(g.id, 'max', parseFloat(e.target.value) || 0)}
-                  style="width:4.2em;flex:1;padding:4px 5px;font-size:.78rem" step="any" />
-              </div>
-            </div>
-          `)}
-        `}
+        <p style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">Tap a tile's ⚙ to configure its value, type, colour and range.</p>
       </div>
       `}
       <div class="main-left">
@@ -2938,23 +3015,60 @@ const Gauges = () => {
             const sv = state.spotValues && state.spotValues[g.name];
             const unit = (sv && sv.unit && sv.unit.indexOf('=') === -1) ? sv.unit : '';
             const enums = (sv && sv.enums) || null;
-            const span = Math.min(g.w || 3, g.h || 3);
-            const px = Math.max(56, Math.floor(span * cellPx - 40));
             return html`
             <div class="grid-stack-item" key=${g.id} gs-id=${g.id} gs-x=${g.x} gs-y=${g.y} gs-w=${g.w} gs-h=${g.h}>
               <div class="grid-stack-item-content gauge-tile">
-                <div class="gauge-tile-name">${g.name || '—'}</div>
-                ${(g.type === 'line')
-                  ? html`<${GaugeLine} key=${g.id + '-' + px} name=${g.name} min=${g.min} max=${g.max} value=${lineVals[g.id]} unit=${unit} color=${g.color || ''} enums=${enums}
-                      px=${Math.max(56, Math.floor((g.w || 3) * cellPx - 24))} />`
-                  : html`<${SvgGauge} id=${g.id} value=${lineVals[g.id]} unit=${unit} color=${g.color || ''} enums=${enums}
-                      px=${px}
-                      min=${g.min != null ? g.min : 0} max=${(g.max == null || g.max === 0) ? 4000 : g.max} />`}
+                ${editing && html`<button class="tile-cfg" title="Configure gauge" onclick=${() => setConfigId(g.id)}>⚙</button>`}
+                <div class="gauge-tile-name">${g.name || (editing ? 'tap ⚙' : '—')}</div>
+                <${GaugeTileBody} g=${g} value=${lineVals[g.id]} unit=${unit} enums=${enums} />
               </div>
             </div>`;
           })}
         </div>
       </div>
+      ${(() => {
+        const cfg = items.find(g => g.id === configId);
+        return cfg && html`
+          <${Modal} id="gauge-config" title="Gauge settings" onClose=${() => setConfigId(null)}>
+            <div style="display:flex;flex-direction:column;gap:10px;font-size:.85rem">
+              <div style="display:flex;gap:8px;align-items:center">
+                <label style="width:4.5em">Value</label>
+                <${FieldPicker} value=${cfg.name} spotNames=${spotNames} onChange=${name => updateGaugeConfig(cfg.id, 'name', name)} />
+              </div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <label style="width:4.5em">Type</label>
+                <select value=${cfg.type || 'radial'} onchange=${e => {
+                  const t = e.target.value;
+                  updateGaugeConfig(cfg.id, 'type', t);
+                  // 0/1 flags are the common indicator case — default the on-range to exactly 1
+                  if (t === 'indicator' && cfg.min === 0 && cfg.max === 4000) {
+                    updateGaugeConfig(cfg.id, 'min', 1);
+                    updateGaugeConfig(cfg.id, 'max', 1);
+                  }
+                }} style="width:auto;padding:5px 8px">
+                  <option value="radial">Radial</option>
+                  <option value="line">Line</option>
+                  <option value="indicator">Indicator</option>
+                </select>
+                <label style="margin-left:8px">Colour</label>
+                <input type="color" value=${cfg.color || '#4cc9f0'} oninput=${e => updateGaugeConfig(cfg.id, 'color', e.target.value)}
+                  style="width:34px;height:28px;padding:0;border:1px solid var(--border2);border-radius:6px;background:none;cursor:pointer" />
+                ${cfg.color && html`<button onclick=${() => updateGaugeConfig(cfg.id, 'color', '')} style="font-size:.65rem;padding:2px 8px;width:auto" title="Reset to theme gradient"><${Icon} n="undo" size=${11} /></button>`}
+              </div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <label style="width:4.5em">Min</label>
+                <input type="number" value=${cfg.min} oninput=${e => updateGaugeConfig(cfg.id, 'min', parseFloat(e.target.value) || 0)} style="width:6em;padding:5px 6px" step="any" />
+                <label>Max</label>
+                <input type="number" value=${cfg.max} oninput=${e => updateGaugeConfig(cfg.id, 'max', parseFloat(e.target.value) || 0)} style="width:6em;padding:5px 6px" step="any" />
+              </div>
+              ${cfg.type === 'indicator' && html`<p style="font-size:.72rem;color:var(--text3);margin:0">The lamp lights in the chosen colour while the value is between Min and Max (use 1 and 1 for On/Off flags).</p>`}
+              <div style="display:flex;gap:8px;margin-top:4px">
+                <button onclick=${() => setConfigId(null)} style="width:auto"><${Icon} n="check" />Done</button>
+                <button onclick=${() => removeGauge(cfg.id)} style="width:auto;color:var(--red)"><${Icon} n="x" />Remove gauge</button>
+              </div>
+            </div>
+          </${Modal}>`;
+      })()}
     </div>
   `;
 };

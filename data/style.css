@@ -666,3 +666,11 @@ td { font-variant-numeric: tabular-nums; }
   background: var(--surface); color: var(--text2);
 }
 .page-pill.active { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+/* per-tile config button (edit mode) */
+.tile-cfg {
+  position: absolute; top: 3px; right: 3px; z-index: 5;
+  width: auto; padding: 1px 7px; font-size: .85rem; line-height: 1.4;
+  border-radius: 6px; border: 1px solid var(--border2);
+  background: var(--surface); color: var(--text2); cursor: pointer;
+}
+.tile-cfg:hover { color: var(--accent); border-color: var(--accent); }
