@@ -2,7 +2,7 @@
 // Replaces: ui.js, inverter.js, plot.js, log.js, wifi.js, modal.js, index.js, docstrings.js
 
 const { h, render, createContext } = preact;
-const { useState, useEffect, useReducer, useContext, useRef, useMemo } = preactHooks;
+const { useState, useEffect, useLayoutEffect, useReducer, useContext, useRef, useMemo } = preactHooks;
 const html = htm.bind(h);
 
 // ==================== API ====================
@@ -2161,6 +2161,33 @@ function getAccent() { try { return localStorage.getItem('accentColor') || ''; }
 // Apply saved accent on load
 applyAccent(getAccent());
 
+// Theme + accent also live on the ESP (uiprefs.json) so the look follows the
+// device across browsers, like gauge layouts do. localStorage acts as a
+// fast-start cache (no flash of the wrong theme); the device file wins.
+fetch('/uiprefs.json').then(r => r.ok ? r.json() : null).then(p => {
+  if (!p) return;
+  if (p.theme && p.theme !== getTheme()) setTheme(p.theme);
+  if ('accentColor' in p && (p.accentColor || '') !== getAccent()) {
+    applyAccent(p.accentColor || '');
+    try {
+      if (p.accentColor) localStorage.setItem('accentColor', p.accentColor);
+      else localStorage.removeItem('accentColor');
+    } catch (e) {}
+  }
+}).catch(() => {});
+
+// Debounced (the colour picker fires per mouse-move) write-back to the ESP
+let _uiPrefsTimer;
+function saveUiPrefsToDevice() {
+  clearTimeout(_uiPrefsTimer);
+  _uiPrefsTimer = setTimeout(() => {
+    const blob = new Blob([JSON.stringify({ theme: getTheme(), accentColor: getAccent() || '' })], { type: 'application/json' });
+    const fd = new FormData();
+    fd.append('updatefile', blob, 'uiprefs.json');
+    fetch('/edit', { method: 'POST', body: fd }).catch(() => {});
+  }, 600);
+}
+
 // Keep-awake: stop the screen sleeping while the interface is open. Uses the
 // Screen Wake Lock API where available (secure contexts) and falls back to a
 // hidden looping video, so it also works over plain http on the ESP. (NoSleep.js)
@@ -2194,6 +2221,7 @@ const Settings = () => {
     setAccentState(hex || '');
     applyAccent(hex);
     try { hex ? localStorage.setItem('accentColor', hex) : localStorage.removeItem('accentColor'); } catch (e) {}
+    saveUiPrefsToDevice();
   };
 
   // Dashboard hero metrics: five slots, empty = unused (at least slot 1 kept)
@@ -2231,6 +2259,11 @@ const Settings = () => {
       if (bundle.plots) await up('plots.json', bundle.plots);
       if (bundle.virtualvals) { await up('virtualvals.json', bundle.virtualvals); fetch('/virtual-reload').catch(() => {}); }
       try { for (const k in (bundle.prefs || {})) localStorage.setItem(k, bundle.prefs[k]); } catch (err) {}
+      // Theme/accent also live on the device — restore uiprefs.json so the
+      // imported look applies in every browser, not just this one
+      if (bundle.prefs && (bundle.prefs.theme || bundle.prefs.accentColor)) {
+        await up('uiprefs.json', { theme: bundle.prefs.theme || 'system', accentColor: bundle.prefs.accentColor || '' });
+      }
       alert('Settings imported — reloading');
       location.reload();
     } catch (err) { alert('Import failed: ' + err.message); }
@@ -2319,7 +2352,7 @@ const Settings = () => {
         <div class="dash-box" style="margin-bottom:1rem">
           <h3>Appearance & Display</h3>
           <p style="font-size:.8rem;margin:0 0 .35rem">Choose appearance — System follows your device setting.</p>
-          <select value=${theme} onchange=${e => { const v = e.target.value; setThemeState(v); setTheme(v); }}
+          <select value=${theme} onchange=${e => { const v = e.target.value; setThemeState(v); setTheme(v); saveUiPrefsToDevice(); }}
             class="styled" style="align-self:flex-start;width:auto;min-width:160px">
             <option value="system">System</option>
             <option value="light">Light</option>
@@ -2766,7 +2799,9 @@ const IndicatorLamp = ({ value, min, max, color, enums, px }) => {
 const GaugeTileBody = ({ g, title, value, unit, enums }) => {
   const ref = useRef(null);
   const [dim, setDim] = useState({ w: 0, h: 0 });
-  useEffect(() => {
+  // Layout effect: measure before first paint so a freshly mounted page
+  // renders at full size in one frame instead of zooming in from nothing
+  useLayoutEffect(() => {
     const el = ref.current;
     if (!el) return;
     const measure = () => {
@@ -2852,23 +2887,27 @@ const Gauges = () => {
   // GridStack owns tile geometry while mounted; re-init on page switch,
   // edit toggle or add/remove, and mirror every 'change' back into state so
   // Save & Done persists exactly what's on screen.
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = gridRef.current;
     if (!el || typeof GridStack === 'undefined') return;
+    // Layout effect + correct initial cellHeight + animation off during init:
+    // a page switch paints fully laid out in one frame instead of zooming in.
+    // Animation comes back for the nice drag/drop transitions.
     const grid = GridStack.init({
       column: GRID_COLS,
-      cellHeight: 60, // corrected to square right below
+      cellHeight: Math.max(1, Math.round(el.clientWidth / GRID_COLS)),
       margin: 4,
       float: true,
+      animate: false,
       staticGrid: !editing,
       alwaysShowResizeHandle: 'mobile',
     }, el);
     gridApi.current = grid;
+    requestAnimationFrame(() => { if (gridApi.current === grid) grid.setAnimation(true); });
     const squareCells = () => {
       const w = el.clientWidth / GRID_COLS;
       if (w > 0) grid.cellHeight(Math.round(w));
     };
-    squareCells();
     const ro = new ResizeObserver(squareCells);
     ro.observe(el);
     // gridstack strips gs-min-* attributes on first parse, so re-inits would
@@ -3065,7 +3104,7 @@ const Gauges = () => {
                   if (t === 'indicator' && cfg.min === 0 && cfg.max === 4000) {
                     updateGaugeConfig(cfg.id, 'max', 1);
                   }
-                }} style="width:auto;padding:5px 8px">
+                }} style="width:auto;min-width:9.5em;padding:5px 30px 5px 8px">
                   <option value="radial">Radial</option>
                   <option value="line">Line</option>
                   <option value="indicator">Indicator</option>

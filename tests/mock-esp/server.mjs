@@ -246,7 +246,14 @@ export function createMockEsp({ port = 0 } = {}) {
       if (p === '/virtual-reload') return text('ok');
       if (p === '/baud') return text('921600');
 
-      // --- static frontend (uploaded files shadow nothing; data/ is truth) ---
+      // Uploaded SPIFFS files are served like the real ESP's handleFileRead
+      // (e.g. uiprefs.json written via /edit)
+      const uploaded = files.get(p.replace(/^\//, ''));
+      if (req.method === 'GET' && uploaded !== undefined) {
+        res.writeHead(200, { 'Content-Type': MIME[path.extname(p)] || 'application/octet-stream' });
+        return res.end(uploaded);
+      }
+      // --- static frontend (from data/) ---
       if (req.method === 'GET' && sendStatic(res, p)) return;
       res.writeHead(404, { 'Content-Type': 'text/plain' });
       res.end('FileNotFound');

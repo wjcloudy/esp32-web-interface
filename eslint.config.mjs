@@ -69,7 +69,12 @@ export default [
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'module',
-      globals: { process: 'readonly', console: 'readonly', Buffer: 'readonly', URL: 'readonly', fetch: 'readonly', setTimeout: 'readonly', clearTimeout: 'readonly', setInterval: 'readonly', clearInterval: 'readonly' },
+      globals: {
+        process: 'readonly', console: 'readonly', Buffer: 'readonly', URL: 'readonly', fetch: 'readonly',
+        setTimeout: 'readonly', clearTimeout: 'readonly', setInterval: 'readonly', clearInterval: 'readonly',
+        // page.evaluate(() => ...) callbacks execute in the browser
+        document: 'readonly', window: 'readonly', localStorage: 'readonly', getComputedStyle: 'readonly',
+      },
     },
     rules: {
       ...js.configs.recommended.rules,

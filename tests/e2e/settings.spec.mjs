@@ -39,6 +39,28 @@ test.describe('Settings tab', () => {
     await expect(opmodeMetric.locator('.metric-value')).toContainText('Off');
   });
 
+  test('theme and accent persist to the device (uiprefs.json)', async ({ page, mock }) => {
+    await openApp(page, mock);
+    await gotoTab(page, 'Settings');
+    // Pick a preset accent swatch and switch to dark theme
+    await page.locator('.accent-swatches .swatch').nth(1).click();
+    await page.locator('select.styled').first().selectOption('dark');
+    // Debounced write lands on the ESP
+    await expect.poll(async () => (await mock.state()).files, { timeout: 5000 }).toContain('uiprefs.json');
+    const prefs = await fetch(mock.url + '/uiprefs.json').then(r => r.json());
+    expect(prefs.theme).toBe('dark');
+    expect(prefs.accentColor).toMatch(/^#[0-9a-fA-F]{6}$/);
+  });
+
+  test('device-stored uiprefs apply on load in a fresh browser', async ({ page, mock }) => {
+    // Seed the device file, then open the app with clean localStorage
+    const prefs = { theme: 'dark', accentColor: '#ff6b8b' };
+    await fetch(mock.url + '/__test/put-file?name=uiprefs.json', { method: 'POST', body: JSON.stringify(prefs) });
+    await openApp(page, mock);
+    await expect.poll(async () => page.evaluate(() => document.documentElement.getAttribute('data-theme'))).toBe('dark');
+    expect(await page.evaluate(() => document.documentElement.style.getPropertyValue('--accent'))).toBe('#ff6b8b');
+  });
+
   test('export settings produces a JSON bundle download', async ({ page, mock }) => {
     await openApp(page, mock);
     await gotoTab(page, 'Settings');
