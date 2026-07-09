@@ -10,6 +10,35 @@ test.describe('Settings tab', () => {
     await expect.poll(async () => (await mock.state()).settings.txrx_swapped).toBe(true);
   });
 
+  test('renamed tiles and keep-awake switch styling', async ({ page, mock }) => {
+    await openApp(page, mock);
+    await gotoTab(page, 'Settings');
+    await expect(page.locator('h3', { hasText: 'Appearance & Display' })).toBeVisible();
+    await expect(page.locator('h3', { hasText: 'Data Interface' })).toBeVisible();
+    await expect(page.locator('h3', { hasText: /^Theme$/ })).toHaveCount(0);
+    // Keep-awake renders as a full-size switch next to bold text (same pattern
+    // as Swap TX/RX Pins), not a ToggleRow
+    const wrap = page.locator('div', { has: page.locator('span', { hasText: /^Keep screen awake$/ }) }).last();
+    await expect(wrap.locator('label.switch input[type="checkbox"]')).toHaveCount(1);
+  });
+
+  test('dashboard hero metrics are configurable (up to 5)', async ({ page, mock }) => {
+    await openApp(page, mock);
+    // Defaults show battery voltage + inverter temp
+    await expect(page.locator('.metric-label', { hasText: 'Battery voltage' })).toBeVisible();
+    await gotoTab(page, 'Settings');
+    const selects = page.locator('select[title^="Dashboard value"]');
+    await expect(selects).toHaveCount(5);
+    await selects.nth(2).selectOption('speed');
+    await selects.nth(3).selectOption('opmode');
+    await gotoTab(page, 'Dashboard');
+    await expect(page.locator('.metric-label', { hasText: 'Motor speed' })).toBeVisible();
+    await expect(page.locator('.metric-label', { hasText: /^opmode$/ })).toBeVisible();
+    // Enum metric shows its resolved label, not the raw number
+    const opmodeMetric = page.locator('.metric', { hasText: 'opmode' });
+    await expect(opmodeMetric.locator('.metric-value')).toContainText('Off');
+  });
+
   test('export settings produces a JSON bundle download', async ({ page, mock }) => {
     await openApp(page, mock);
     await gotoTab(page, 'Settings');

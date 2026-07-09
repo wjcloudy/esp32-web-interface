@@ -185,6 +185,21 @@ const initialState = {
   history: {}, // recent numeric samples for dashboard sparklines
 };
 
+// Friendly display names for common spot values on the dashboard hero card
+const DASH_METRIC_LABELS = {
+  udc: 'Battery voltage', idc: 'Battery current', tmphs: 'Inverter temp',
+  tmpm: 'Motor temp', speed: 'Motor speed', pot: 'Throttle',
+};
+
+// Spot values shown as dashboard hero metrics (max 5, configured in Settings)
+function getDashMetrics() {
+  try {
+    const v = JSON.parse(localStorage.getItem('dashMetrics') || 'null');
+    if (Array.isArray(v) && v.length) return v.filter(Boolean).slice(0, 5);
+  } catch (e) {}
+  return ['udc', 'tmphs'];
+}
+
 function reducer(state, action) {
   switch (action.type) {
     case 'SET_PARAMS': {
@@ -242,8 +257,9 @@ function reducer(state, action) {
         if (cat && !(cat in cv)) cv[cat] = true;
       }
       // Sparkline history: keep the last 60 numeric samples of key telemetry
+      // (udc/tmphs feed the hero card fallbacks; dash metrics are configurable)
       const hist = { ...state.history };
-      for (const k of ['udc', 'tmphs']) {
+      for (const k of new Set(['udc', 'tmphs', ...getDashMetrics()])) {
         const raw = p[k] ? parseFloat(p[k].value) : NaN;
         if (!isNaN(raw)) hist[k] = [...(hist[k] || []).slice(-59), raw];
       }
@@ -614,16 +630,18 @@ const Dashboard = () => {
                 <div class="hero-state">${friendly}</div>
                 <p class="hero-sub">Status: ${state.status}</p>
                 <div class="hero-metrics">
-                  <div class="metric">
-                    <span class="metric-label">Battery voltage</span>
-                    <span class="metric-value">${fmtNum(state.udc)}<span class="metric-unit">V</span></span>
-                    <${Sparkline} data=${state.history.udc} />
-                  </div>
-                  <div class="metric tone-active">
-                    <span class="metric-label">Inverter temp</span>
-                    <span class="metric-value">${fmtNum(state.tmphs)}<span class="metric-unit">°C</span></span>
-                    <${Sparkline} data=${state.history.tmphs} />
-                  </div>
+                  ${getDashMetrics().map((name, idx) => {
+                    const sv = state.spotValues && state.spotValues[name];
+                    const unit = (sv && sv.unit && sv.unit.indexOf('=') === -1) ? sv.unit : '';
+                    const label = DASH_METRIC_LABELS[name] || name;
+                    const disp = !sv ? '—' : (sv.enums ? String(sv.display) : fmtNum(sv.value));
+                    return html`
+                    <div class="metric ${idx === 1 ? 'tone-active' : ''}" key=${name}>
+                      <span class="metric-label">${label}</span>
+                      <span class="metric-value">${disp}${unit && html`<span class="metric-unit">${unit}</span>`}</span>
+                      <${Sparkline} data=${state.history[name]} />
+                    </div>`;
+                  })}
                   ${state.firmwareVersion && html`
                     <div class="metric">
                       <span class="metric-label">Firmware</span>
@@ -1120,7 +1138,7 @@ const exportUiSettings = async () => {
   const [favorites, gauges, plots, virtualvals] = await Promise.all([grab('/favorites.json'), grab('/gauges.json'), grab('/plots.json'), grab('/virtualvals.json')]);
   const prefs = {};
   try {
-    ['theme', 'accentColor', 'spotSparks', 'keepAwake'].forEach(k => {
+    ['theme', 'accentColor', 'spotSparks', 'keepAwake', 'dashMetrics'].forEach(k => {
       const v = localStorage.getItem(k);
       if (v != null) prefs[k] = v;
     });
@@ -2178,6 +2196,23 @@ const Settings = () => {
     try { hex ? localStorage.setItem('accentColor', hex) : localStorage.removeItem('accentColor'); } catch (e) {}
   };
 
+  // Dashboard hero metrics: five slots, empty = unused (at least slot 1 kept)
+  const [dashMetrics, setDashMetrics] = useState(() => {
+    const m = getDashMetrics();
+    while (m.length < 5) m.push('');
+    return m;
+  });
+  const updateDashMetric = (i, name) => {
+    const next = [...dashMetrics];
+    next[i] = name;
+    setDashMetrics(next);
+    const chosen = next.filter(Boolean).slice(0, 5);
+    try {
+      if (chosen.length) localStorage.setItem('dashMetrics', JSON.stringify(chosen));
+      else localStorage.removeItem('dashMetrics'); // back to the udc/tmphs default
+    } catch (e) {}
+  };
+
   // Import a previously exported web interface configuration bundle
   const importUiSettings = async (e) => {
     const file = e.target.files && e.target.files[0];
@@ -2282,7 +2317,7 @@ const Settings = () => {
         <h2>Settings</h2>
 
         <div class="dash-box" style="margin-bottom:1rem">
-          <h3>Theme</h3>
+          <h3>Appearance & Display</h3>
           <p style="font-size:.8rem;margin:0 0 .35rem">Choose appearance — System follows your device setting.</p>
           <select value=${theme} onchange=${e => { const v = e.target.value; setThemeState(v); setTheme(v); }}
             class="styled" style="align-self:flex-start;width:auto;min-width:160px">
@@ -2299,9 +2334,29 @@ const Settings = () => {
             <input type="color" value=${accent || '#4cc9f0'} oninput=${e => pickAccent(e.target.value)} title="Custom colour" />
           </div>
           <p style="font-size:.8rem;margin:1rem 0 .35rem">Display</p>
-          <${ToggleRow} label="Keep screen awake" checked=${keepAwake}
-            onChange=${on => { setKeepAwakeState(on); setKeepAwake(on); }} />
+          <div style="display:flex;align-items:center;gap:12px;margin-bottom:.25rem">
+            <label class="switch">
+              <input type="checkbox" checked=${keepAwake} onchange=${e => { setKeepAwakeState(e.target.checked); setKeepAwake(e.target.checked); }} />
+              <span class="slider"></span>
+            </label>
+            <span style="font-weight:600">Keep screen awake</span>
+          </div>
           <p style="font-size:.72rem;color:var(--text3);margin:.35rem 0 0">Stops the screen sleeping while this page is open.</p>
+        </div>
+
+        <div class="dash-box" style="margin-bottom:1rem">
+          <h3>Dashboard</h3>
+          <p style="font-size:.8rem;margin:0 0 .5rem">Choose up to 5 spot values to show on the dashboard hero card. Leave a slot empty to hide it.</p>
+          <div style="display:flex;flex-wrap:wrap;gap:8px">
+            ${dashMetrics.map((name, i) => html`
+              <select class="styled" value=${name} onchange=${e => updateDashMetric(i, e.target.value)}
+                style="width:auto;min-width:130px;font-size:.8rem" title=${'Dashboard value ' + (i + 1)}>
+                <option value="">— none —</option>
+                ${Object.keys(state.spotValues || {}).sort().map(n => html`<option value=${n}>${n}${DASH_METRIC_LABELS[n] ? ' (' + DASH_METRIC_LABELS[n] + ')' : ''}</option>`)}
+              </select>
+            `)}
+          </div>
+          ${!dashMetrics.filter(Boolean).length && html`<p style="font-size:.72rem;color:var(--text3);margin:.35rem 0 0">Nothing selected — the default (udc, tmphs) is shown.</p>`}
         </div>
 
         <div class="dash-box compact" style="margin-bottom:1rem">
@@ -2315,7 +2370,7 @@ const Settings = () => {
         </div>
 
         <div class="dash-box" style="margin-bottom:1rem">
-          <h3>Interface</h3>
+          <h3>Data Interface</h3>
           <div style="display:flex;align-items:center;gap:12px;margin-bottom:.5rem">
             <label class="switch">
               <input type="checkbox" checked=${canMode} onchange=${e => setCanMode(e.target.checked)} />
@@ -2621,12 +2676,14 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px }) => 
     </div>`;
 };
 
+const GAUGE_PX = { xs: 130, sm: 170, md: 230, lg: 300 };
+
 const Gauges = () => {
   const { state, dispatch } = useContext(Store);
   const [gaugeItems, setGaugeItems] = useState([]);
   const [lineVals, setLineVals] = useState({});
   const [editing, setEditing] = useState(false);
-  const [gaugeSize, setGaugeSize] = useState('md'); // sm | md | lg
+  const [gaugeSize, setGaugeSize] = useState('md'); // default size: xs | sm | md | lg (per-gauge g.size overrides)
   const fetchRef = useRef(null);
   const nextId = useRef(1);
 
@@ -2768,6 +2825,13 @@ const Gauges = () => {
                   <option value="radial">Radial</option>
                   <option value="line">Line</option>
                 </select>
+                <select value=${g.size || ''} title="Size for this gauge" onchange=${e => updateGaugeConfig(g.id, 'size', e.target.value)} style="font-size:.78rem;padding:4px 6px;flex:1;min-width:0">
+                  <option value="">Size: default</option>
+                  <option value="xs">Very small</option>
+                  <option value="sm">Small</option>
+                  <option value="md">Medium</option>
+                  <option value="lg">Large</option>
+                </select>
                 <input type="color" value=${g.color || '#4cc9f0'} oninput=${e => updateGaugeConfig(g.id, 'color', e.target.value)}
                   title="Gauge colour"
                   style="width:30px;height:26px;padding:0;border:1px solid var(--border2);border-radius:6px;background:none;cursor:pointer" />
@@ -2790,7 +2854,7 @@ const Gauges = () => {
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem">
           <h2 style="margin:0">Gauges</h2>
           <div style="display:flex;gap:6px;align-items:center">
-            <select value=${gaugeSize} title="Gauge size"
+            <select value=${gaugeSize} title="Default gauge size (each gauge can override in Edit Layout)"
               onchange=${e => { const v = e.target.value; setGaugeSize(v); saveLayout(gaugeItems, v); }}
               style="font-size:.72rem;padding:4px 26px 4px 8px">
               <option value="xs">Very small</option>
@@ -2802,19 +2866,23 @@ const Gauges = () => {
           </div>
         </div>
         ${gaugeItems.length === 0 && !editing && html`<p style="color:var(--text3);font-size:.85rem;text-align:center;padding:2rem 0">Click Edit Layout to add a gauge.</p>`}
-        <div id="gauge-container" style="display:flex;flex-wrap:wrap;gap:1.5rem;justify-content:center;align-items:flex-start">
+        ${/* Mixed sizes flow like a wrapping grid; bottom-aligned so dials in a
+            row share a baseline like an instrument panel. Flex (not CSS grid
+            spans) so an oversized gauge can never overflow a narrow screen. */ ''}
+        <div id="gauge-container" style="display:flex;flex-wrap:wrap;column-gap:1.5rem;row-gap:1.25rem;justify-content:center;align-items:flex-end">
           ${gaugeItems.map(g => {
             const sv = state.spotValues && state.spotValues[g.name];
             const unit = (sv && sv.unit && sv.unit.indexOf('=') === -1) ? sv.unit : '';
             const enums = (sv && sv.enums) || null;
+            const px = GAUGE_PX[g.size] || GAUGE_PX[gaugeSize] || 230;
             return html`
             <div class="gauge-wrapper" style="text-align:center" key="${g.id}">
               <div style="font-weight:600;font-size:.9rem;margin-bottom:4px">${g.name || '—'}</div>
               ${(g.type === 'line')
-                ? html`<${GaugeLine} key=${g.id + '-' + gaugeSize} name=${g.name} min=${g.min} max=${g.max} value=${lineVals[g.id]} unit=${unit} color=${g.color || ''} enums=${enums}
-                    px=${gaugeSize === 'xs' ? 130 : gaugeSize === 'sm' ? 170 : gaugeSize === 'lg' ? 300 : 230} />`
+                ? html`<${GaugeLine} key=${g.id + '-' + px} name=${g.name} min=${g.min} max=${g.max} value=${lineVals[g.id]} unit=${unit} color=${g.color || ''} enums=${enums}
+                    px=${px} />`
                 : html`<${SvgGauge} id=${g.id} value=${lineVals[g.id]} unit=${unit} color=${g.color || ''} enums=${enums}
-                    px=${gaugeSize === 'xs' ? 130 : gaugeSize === 'sm' ? 170 : gaugeSize === 'lg' ? 300 : 230}
+                    px=${px}
                     min=${g.min != null ? g.min : 0} max=${(g.max == null || g.max === 0) ? 4000 : g.max} />`}
             </div>
           `; })}
