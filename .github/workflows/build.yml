@@ -15,7 +15,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0   # full history + tags so git describe versions the build
 
@@ -25,12 +25,12 @@ jobs:
           echo "VER=$VER" >> $GITHUB_ENV
           echo "Version: $VER"
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
       - name: Cache PlatformIO
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.platformio
@@ -105,28 +105,28 @@ jobs:
       # Note: Actions artifacts always download as zips (GitHub limitation) —
       # raw .bin downloads come from release assets on v* tags
       - name: Upload Wemos OTA image
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: esp32_wemos_${{ env.VER }}-ota
           path: esp32_wemos_${{ env.VER }}-ota.bin
           retention-days: 30
 
       - name: Upload T-2Can OTA image
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: esp32_t2can_${{ env.VER }}-ota
           path: esp32_t2can_${{ env.VER }}-ota.bin
           retention-days: 30
 
       - name: Upload Wemos image
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: esp32_wemos_${{ env.VER }}-0x000
           path: esp32_wemos_${{ env.VER }}-0x000.bin
           retention-days: 30
 
       - name: Upload T-2Can image
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: esp32_t2can_${{ env.VER }}-0x000
           path: esp32_t2can_${{ env.VER }}-0x000.bin
@@ -134,7 +134,7 @@ jobs:
 
       - name: Attach images to release
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             esp32_wemos_${{ env.VER }}-0x000.bin
