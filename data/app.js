@@ -702,6 +702,9 @@ const Parameters = () => {
   const [showSubscribe, setShowSubscribe] = useState(false);
   const [search, setSearch] = useState('');
   const [actionsOpen, setActionsOpen] = useState(false); // responsive-only expander
+  const [applying, setApplying] = useState(false); // loading a parameter set from file
+  const [applyPct, setApplyPct] = useState(0);
+  const [applyMsg, setApplyMsg] = useState('');
 
   if (!state.params) return html`<div class="tabdiv main-content" style="display:flex"><p>Loading...</p></div>`;
 
@@ -776,6 +779,53 @@ const Parameters = () => {
     } catch (e) { alert('Failed to stop subscription'); }
   };
 
+  // Load a parameter set from a JSON file and push each value to the inverter.
+  // Nothing is stored on the ESP — the values are applied live (same as a
+  // database subscription), so the user should Save to flash afterwards to
+  // keep them across a reboot. Accepts both the exported nested format
+  // ({name:{value,...}}) and a flat name->value map.
+  const loadParamsFromFile = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = ''; // allow re-selecting the same file later
+    if (!file || applying) return;
+    let parsed;
+    try {
+      parsed = JSON.parse(await file.text());
+    } catch (err) { alert('Could not read parameter file: ' + err.message); return; }
+    const entries = [];
+    for (const name in parsed) {
+      const v = parsed[name];
+      const value = (v !== null && typeof v === 'object') ? v.value : v;
+      if (value === undefined || value === null || value === '') continue;
+      entries.push([name, value]);
+    }
+    if (!entries.length) { alert('No parameters found in that file'); return; }
+    const total = entries.length;
+    if (!confirm('Apply ' + total + ' parameter' + (total === 1 ? '' : 's') + ' to the inverter?')) return;
+    // Each 'set' is a serial round-trip, so applying a full set takes a while —
+    // drive the same progress bar the firmware upload uses so it isn't a
+    // silent wait.
+    setApplying(true); setApplyPct(0); setApplyMsg('Applying parameters...');
+    let ok = 0; const failed = [];
+    try {
+      for (let i = 0; i < total; i++) {
+        const [name, value] = entries[i];
+        setApplyMsg('Setting ' + name + ' (' + (i + 1) + ' / ' + total + ')');
+        try { await api.getText('set ' + name + ' ' + value); ok++; }
+        catch (err) { failed.push(name); }
+        setApplyPct(Math.round(100 * (i + 1) / total));
+      }
+      setApplyMsg('Refreshing...');
+      try { dispatch({ type: 'SET_PARAMS', payload: await api.getJSON('json') }); } catch (err) {}
+      setApplyMsg('Applied ' + ok + ' of ' + total);
+    } finally {
+      setApplying(false);
+    }
+    alert('Applied ' + ok + ' of ' + total + ' parameters.' +
+      (failed.length ? '\nFailed: ' + failed.join(', ') : '') +
+      '\n\nUse "Save parameters to flash" to keep these after a reboot.');
+  };
+
   return html`
     <div id="parameters" class="tabdiv main-content" style="display:flex">
       <div class="main-right">
@@ -797,10 +847,16 @@ const Parameters = () => {
         <button onclick=${() => api.getText('save').then(r => alert(r || 'Parameters saved'))}><${Icon} n="save" />Save parameters to flash</button>
         <button onclick=${() => api.getText('load')}><${Icon} n="undo" />Restore parameters from flash</button>
         <a download="params.json" href=${'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(state.params, null, 2))}><button><${Icon} n="download" />Download parameters file</button></a>
-        <form id="paramform" enctype="multipart/form-data" action="edit" method="POST" onsubmit=${async e => { e.preventDefault(); await api.uploadFile(new FormData(e.target)); }}>
-          <input id="paramfile" name="paramfile" type="file" hidden onchange=${e => e.target.form.requestSubmit()} />
-          <label class="butt" for="paramfile"><${Icon} n="upload" />Load parameters from file</label>
-        </form>
+        ${/* No accept filter: Android pickers report .json as octet-stream/plain and grey it out; we validate JSON in loadParamsFromFile instead. */ ''}
+        <input id="paramfile" type="file" hidden onchange=${loadParamsFromFile} />
+        <label class="butt" for="paramfile"><${Icon} n="upload" />Load parameters from file</label>
+        ${applying && html`
+          <div id="progress" class="graph">
+            <div id="bar" style=${{ width: applyPct + '%' }}></div>
+            <p id="progress-label">${applyPct}%</p>
+          </div>
+          <p id="progress-msg">${applyMsg}</p>
+        `}
         <h3 class="underline">Parameter Database</h3>
         <button onclick=${submitToDatabase}><${Icon} n="cloud" />Submit parameters</button>
         <button onclick=${() => setShowSubscribe(true)}><${Icon} n="rss" />Subscribe to parameter set</button>
@@ -2275,7 +2331,7 @@ const Settings = () => {
           <p style="font-size:.8rem;margin:0 0 .5rem">Back up or restore favourites, gauge and plot layouts, and UI preferences as a single file.</p>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             <button onclick=${exportUiSettings} style="width:auto"><${Icon} n="download" />Export settings</button>
-            <input id="ui-settings-import" type="file" accept=".json" hidden onchange=${importUiSettings} />
+            <input id="ui-settings-import" type="file" hidden onchange=${importUiSettings} />
             <label class="butt" for="ui-settings-import" style="width:auto"><${Icon} n="upload" />Import settings</label>
           </div>
         </div>
