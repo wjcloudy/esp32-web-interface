@@ -2493,8 +2493,8 @@ const Settings = () => {
                   Scan for devices`}
               </button>
               <button onclick=${() => {
-                const id = parseInt(prompt('Enter node ID (1-32):', '1'));
-                if (id >= 1 && id <= 32) dispatch({ type: 'ADD_CAN_NODE', payload: { nodeId: id, name: '' } });
+                const id = parseInt(prompt('Enter node ID (1-127):', '1'));
+                if (id >= 1 && id <= 127) dispatch({ type: 'ADD_CAN_NODE', payload: { nodeId: id, name: '' } });
               }} style="font-size:.75rem;padding:4px 12px"><${Icon} n="plus" />Add node</button>
             </div>
             ${state.canNodes.length > 0 && html`
