@@ -45,8 +45,11 @@ test.describe('Settings tab', () => {
     // Pick a preset accent swatch and switch to dark theme
     await page.locator('.accent-swatches .swatch').nth(1).click();
     await page.locator('select.styled').first().selectOption('dark');
+    // Dashboard metric choices ride along in the same device file
+    await page.locator('select[title^="Dashboard value"]').nth(2).selectOption('speed');
     // Debounced write lands on the ESP
     await expect.poll(async () => (await mock.state()).files, { timeout: 5000 }).toContain('uiprefs.json');
+    await expect.poll(async () => (await fetch(mock.url + '/uiprefs.json').then(r => r.json())).dashMetrics).toContain('speed');
     const prefs = await fetch(mock.url + '/uiprefs.json').then(r => r.json());
     expect(prefs.theme).toBe('dark');
     expect(prefs.accentColor).toMatch(/^#[0-9a-fA-F]{6}$/);
@@ -54,11 +57,13 @@ test.describe('Settings tab', () => {
 
   test('device-stored uiprefs apply on load in a fresh browser', async ({ page, mock }) => {
     // Seed the device file, then open the app with clean localStorage
-    const prefs = { theme: 'dark', accentColor: '#ff6b8b' };
+    const prefs = { theme: 'dark', accentColor: '#ff6b8b', dashMetrics: ['speed', 'udc'] };
     await fetch(mock.url + '/__test/put-file?name=uiprefs.json', { method: 'POST', body: JSON.stringify(prefs) });
     await openApp(page, mock);
     await expect.poll(async () => page.evaluate(() => document.documentElement.getAttribute('data-theme'))).toBe('dark');
     expect(await page.evaluate(() => document.documentElement.style.getPropertyValue('--accent'))).toBe('#ff6b8b');
+    // Device-stored dashboard metrics apply too (speed shows on the hero card)
+    await expect(page.locator('.metric-label', { hasText: 'Motor speed' })).toBeVisible({ timeout: 10000 });
   });
 
   test('export settings produces a JSON bundle download', async ({ page, mock }) => {

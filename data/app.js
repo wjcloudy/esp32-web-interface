@@ -2174,6 +2174,12 @@ fetch('/uiprefs.json').then(r => r.ok ? r.json() : null).then(p => {
       else localStorage.removeItem('accentColor');
     } catch (e) {}
   }
+  if (Array.isArray(p.dashMetrics)) {
+    try {
+      if (p.dashMetrics.length) localStorage.setItem('dashMetrics', JSON.stringify(p.dashMetrics.slice(0, 5)));
+      else localStorage.removeItem('dashMetrics');
+    } catch (e) {}
+  }
 }).catch(() => {});
 
 // Debounced (the colour picker fires per mouse-move) write-back to the ESP
@@ -2181,7 +2187,7 @@ let _uiPrefsTimer;
 function saveUiPrefsToDevice() {
   clearTimeout(_uiPrefsTimer);
   _uiPrefsTimer = setTimeout(() => {
-    const blob = new Blob([JSON.stringify({ theme: getTheme(), accentColor: getAccent() || '' })], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify({ theme: getTheme(), accentColor: getAccent() || '', dashMetrics: getDashMetrics() })], { type: 'application/json' });
     const fd = new FormData();
     fd.append('updatefile', blob, 'uiprefs.json');
     fetch('/edit', { method: 'POST', body: fd }).catch(() => {});
@@ -2239,6 +2245,7 @@ const Settings = () => {
       if (chosen.length) localStorage.setItem('dashMetrics', JSON.stringify(chosen));
       else localStorage.removeItem('dashMetrics'); // back to the udc/tmphs default
     } catch (e) {}
+    saveUiPrefsToDevice();
   };
 
   // Import a previously exported web interface configuration bundle
@@ -2259,10 +2266,12 @@ const Settings = () => {
       if (bundle.plots) await up('plots.json', bundle.plots);
       if (bundle.virtualvals) { await up('virtualvals.json', bundle.virtualvals); fetch('/virtual-reload').catch(() => {}); }
       try { for (const k in (bundle.prefs || {})) localStorage.setItem(k, bundle.prefs[k]); } catch (err) {}
-      // Theme/accent also live on the device — restore uiprefs.json so the
-      // imported look applies in every browser, not just this one
-      if (bundle.prefs && (bundle.prefs.theme || bundle.prefs.accentColor)) {
-        await up('uiprefs.json', { theme: bundle.prefs.theme || 'system', accentColor: bundle.prefs.accentColor || '' });
+      // Theme/accent/dashboard metrics also live on the device — restore
+      // uiprefs.json so the imported look applies in every browser
+      if (bundle.prefs && (bundle.prefs.theme || bundle.prefs.accentColor || bundle.prefs.dashMetrics)) {
+        let dm = [];
+        try { dm = JSON.parse(bundle.prefs.dashMetrics || '[]'); } catch (err) {}
+        await up('uiprefs.json', { theme: bundle.prefs.theme || 'system', accentColor: bundle.prefs.accentColor || '', dashMetrics: dm });
       }
       alert('Settings imported — reloading');
       location.reload();
