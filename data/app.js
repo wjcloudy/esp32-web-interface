@@ -2,7 +2,7 @@
 // Replaces: ui.js, inverter.js, plot.js, log.js, wifi.js, modal.js, index.js, docstrings.js
 
 const { h, render, createContext } = preact;
-const { useState, useEffect, useReducer, useContext, useRef, useCallback, useMemo } = preactHooks;
+const { useState, useEffect, useReducer, useContext, useRef, useMemo } = preactHooks;
 const html = htm.bind(h);
 
 // ==================== API ====================
@@ -1600,7 +1600,7 @@ const Plot = () => {
   const [editing, setEditing] = useState(false);
   const [maxValues, setMaxValues] = useState(500);
   const [burstLength, setBurstLength] = useState(5);
-  const [tick, setTick] = useState(0);
+  const [, setTick] = useState(0); // force re-render tick
   const valsRef = useRef({});
   const nextId = useRef(1);
   const fetchRef = useRef(null);
@@ -1647,9 +1647,6 @@ const Plot = () => {
   };
   const removePlot = (id) => {
     setPlots(plots.filter(p => p.id !== id));
-  };
-  const updatePlot = (id, field, value) => {
-    setPlots(plots.map(p => p.id === id ? { ...p, [field]: value } : p));
   };
   const addItem = (id) => {
     setPlots(plots.map(p => p.id === id ? { ...p, items: [...p.items, { name: '', axis: 'left' }] } : p));
@@ -1790,7 +1787,6 @@ const Logger = () => {
     if (names.length === 0) return;
 
     loggingRef.current = true;
-    let count = 0;
     (async function loop() {
       while (loggingRef.current) {
         try {
@@ -1799,7 +1795,6 @@ const Logger = () => {
           if (!loggingRef.current) break;
           const vals = text.match(/[\-\d\.]+/g) || [];
           const line = vals.join('\t');
-          count++;
           setLogText(prev => {
             const next = prev + line + '\n';
             // Limit to ~500 lines to avoid memory issues
@@ -2265,23 +2260,6 @@ const Settings = () => {
   const defaultNodeId = () => {
     const def = state.canNodes.find(n => n.default);
     return def ? def.nodeId : canNodeId;
-  };
-
-  const saveCanSettings = async () => {
-    setSaving(true);
-    try {
-      const bootNode = defaultNodeId();
-      const params = new URLSearchParams();
-      params.set('can_mode', canMode ? '1' : '0');
-      params.set('can_node_id', bootNode);
-      params.set('can_speed', canSpeed);
-      params.set('can_rx_pin', canRxPin);
-      params.set('can_tx_pin', canTxPin);
-      await fetch('/settings?' + params.toString(), { method: 'POST' });
-      dispatch({ type: 'SET_CAN_CONFIG', payload: { canMode, canNodeId: bootNode } });
-      if (canMode) dispatch({ type: 'SET_CAN_NODE', payload: bootNode });
-      setTimeout(() => setSaving(false), 2000);
-    } catch (e) { setSaving(false); }
   };
 
   const saveWiFi = async (type) => {
@@ -2940,13 +2918,10 @@ const App = () => {
     api.loadFavorites().then(favs => dispatch({ type: 'SET_FAVORITES', payload: favs }));
   }, []);
 
-  // Reset age on data fetch
-  useEffect(() => { if (state.fetchAge === 0) {} }, [state.params]);
-
   const tab = state.activeTab;
 
   return html`
-    <${Store.Provider} value=${{ state, dispatch }}>
+    <${Store.Provider} value=${store}>
       <div id="content">
         <${Navbar} />
         <div id="content-wrapper">

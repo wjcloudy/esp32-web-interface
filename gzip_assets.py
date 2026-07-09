@@ -8,14 +8,25 @@
 # source. That means: no spurious git diffs when everything is already in sync,
 # automatic regeneration when a source was edited without refreshing its .gz,
 # and gz-only assets (e.g. chart.min.js.gz, with no raw source) are left alone.
+#
+# Also runs standalone (no PlatformIO):
+#   python gzip_assets.py            regenerate stale .gz twins in place
+#   python gzip_assets.py --check    verify only; exit 1 if any .gz is stale
+#                                    (used as a CI gate so commits can't ship
+#                                    a data/ edit without its .gz twin)
 import os
 import gzip
+import sys
 
-Import("env")  # noqa: F821 - provided by PlatformIO
-
-data_dir = env.subst("$PROJECT_DATA_DIR") or os.path.join(  # noqa: F821
-    env.subst("$PROJECT_DIR"), "data"  # noqa: F821
-)
+try:
+    Import("env")  # noqa: F821 - provided by PlatformIO
+    IS_PIO = True
+    data_dir = env.subst("$PROJECT_DATA_DIR") or os.path.join(  # noqa: F821
+        env.subst("$PROJECT_DIR"), "data"  # noqa: F821
+    )
+except NameError:  # standalone invocation
+    IS_PIO = False
+    data_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
 
 def canonical(path):
@@ -36,9 +47,9 @@ def stale(src_path, gz_path):
     return current != target, target
 
 
-def main():
+def main(check_only=False):
     if not os.path.isdir(data_dir):
-        return
+        return 0
     updated = []
     for name in sorted(os.listdir(data_dir)):
         if name.endswith(".gz"):
@@ -49,14 +60,26 @@ def main():
             continue  # only manage files that already have a .gz twin
         needs_rewrite, src_bytes = stale(src_path, gz_path)
         if needs_rewrite:
-            with open(gz_path, "wb") as f:
-                with gzip.GzipFile(fileobj=f, mode="wb", compresslevel=9, mtime=0) as gz:
-                    gz.write(src_bytes)
+            if not check_only:
+                with open(gz_path, "wb") as f:
+                    with gzip.GzipFile(fileobj=f, mode="wb", compresslevel=9, mtime=0) as gz:
+                        gz.write(src_bytes)
             updated.append(name + ".gz")
+    if check_only:
+        if updated:
+            print("gzip_assets: STALE ->", ", ".join(updated))
+            print("Run `python gzip_assets.py` (or any pio build) to regenerate, then commit the .gz files.")
+            return 1
+        print("gzip_assets: all .gz up to date")
+        return 0
     if updated:
         print("gzip_assets: regenerated stale ->", ", ".join(updated))
     else:
         print("gzip_assets: all .gz up to date")
+    return 0
 
 
-main()
+if IS_PIO:
+    main()  # always regenerate as part of a build, exactly as before
+else:
+    sys.exit(main(check_only="--check" in sys.argv))
