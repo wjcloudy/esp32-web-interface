@@ -155,13 +155,36 @@ test.describe('Gauges grid', () => {
     await expect.poll(async () => (await tile.boundingBox()).width).toBeLessThan(gridBox.width / 12 * 1.5);
     const lamp = page.locator('.ind-lamp');
     await expect(lamp).toBeVisible();
-    // pot is 0 -> outside [1, 4095] -> off
+    // Switching point is the midpoint of min/max: (1 + 4095) / 2 = 2048
+    // pot is 0 -> below the midpoint -> off
     await expect(lamp).not.toHaveClass(/on/);
     await expect(page.locator('.ind-wrap .g-unit')).toHaveText('OFF');
-    // Drive the value into range; the streaming loop picks it up
+    // Below the midpoint stays off; the streaming loop picks changes up
     await fetch(mock.url + '/__test/spot?name=pot&value=1000');
+    await page.waitForTimeout(600);
+    await expect(lamp).not.toHaveClass(/on/);
+    // Past the midpoint -> on
+    await fetch(mock.url + '/__test/spot?name=pot&value=3000');
     await expect(lamp).toHaveClass(/on/, { timeout: 5000 });
     await expect(page.locator('.ind-wrap .g-unit')).toHaveText('ON');
+  });
+
+  test('indicator works with enum (Off/On style) spot values', async ({ page, mock }) => {
+    // opmode has an enum unit (0=Off, 1=Run, ...): values arrive numerically,
+    // the midpoint of 0..1 switches at 0.5, and the caption shows the label
+    const layout = { v: 2, pages: [{ id: 1, name: 'Main', items: [
+      { id: 1, name: 'opmode', type: 'indicator', min: 0, max: 1, x: 0, y: 0, w: 3, h: 3 },
+    ] }] };
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(layout) });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    const lamp = page.locator('.ind-lamp');
+    await expect(lamp).toBeVisible();
+    await expect(lamp).not.toHaveClass(/on/);
+    await expect(page.locator('.ind-wrap .g-unit')).toHaveText('Off'); // enum label, not OFF
+    await fetch(mock.url + '/__test/spot?name=opmode&value=1');
+    await expect(lamp).toHaveClass(/on/, { timeout: 5000 });
+    await expect(page.locator('.ind-wrap .g-unit')).toHaveText('Run');
   });
 
   test('indicator lamp stays visible in a 2x2 tile at a phone viewport', async ({ page, mock }) => {

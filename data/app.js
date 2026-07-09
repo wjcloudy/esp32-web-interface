@@ -2736,13 +2736,14 @@ function migrateGauges(data) {
   return [{ id: 1, name: 'Main', items }];
 }
 
-// Indicator lamp for On/Off and 0/1 values: lit in the gauge colour while the
-// value is inside [min, max] (e.g. 1..1 for a boolean flag), dim otherwise.
+// Indicator lamp for On/Off and 0/1 values: min/max describe the value's
+// range (like every other gauge type) and the lamp switches at the midpoint —
+// lit in the gauge colour above it, dim below. Min 0 / Max 1 switches at 0.5.
 const IndicatorLamp = ({ value, min, max, color, enums, px }) => {
   const v = (value == null || isNaN(value)) ? null : value;
-  const lo = (min == null) ? 1 : min;
+  const lo = (min == null) ? 0 : min;
   const hi = (max == null) ? lo : max;
-  const on = v != null && v >= lo && v <= hi;
+  const on = v != null && v >= (lo + hi) / 2;
   const col = (color && /^#[0-9a-fA-F]{6}$/.test(color)) ? color : 'var(--accent)';
   const d = Math.round(px * 0.52);
   const label = v == null ? '—' : (enums ? enumLabel(enums, v) : (on ? 'ON' : 'OFF'));
@@ -3060,9 +3061,8 @@ const Gauges = () => {
                 <select value=${cfg.type || 'radial'} onchange=${e => {
                   const t = e.target.value;
                   updateGaugeConfig(cfg.id, 'type', t);
-                  // 0/1 flags are the common indicator case — default the on-range to exactly 1
+                  // 0/1 flags are the common indicator case — default to a 0..1 range (switches at 0.5)
                   if (t === 'indicator' && cfg.min === 0 && cfg.max === 4000) {
-                    updateGaugeConfig(cfg.id, 'min', 1);
                     updateGaugeConfig(cfg.id, 'max', 1);
                   }
                 }} style="width:auto;padding:5px 8px">
@@ -3081,7 +3081,7 @@ const Gauges = () => {
                 <label>Max</label>
                 <input type="number" value=${cfg.max} oninput=${e => updateGaugeConfig(cfg.id, 'max', parseFloat(e.target.value) || 0)} style="width:6em;padding:5px 6px" step="any" />
               </div>
-              ${cfg.type === 'indicator' && html`<p style="font-size:.72rem;color:var(--text3);margin:0">The lamp lights in the chosen colour while the value is between Min and Max (use 1 and 1 for On/Off flags).</p>`}
+              ${cfg.type === 'indicator' && html`<p style="font-size:.72rem;color:var(--text3);margin:0">The lamp lights in the chosen colour when the value rises past the midpoint between Min and Max — e.g. Min 0 / Max 1 switches at 0.5.</p>`}
               <div style="display:flex;gap:8px;margin-top:4px">
                 <button onclick=${() => setConfigId(null)} style="width:auto"><${Icon} n="check" />Done</button>
                 <button onclick=${() => removeGauge(cfg.id)} style="width:auto;color:var(--red)"><${Icon} n="x" />Remove gauge</button>
