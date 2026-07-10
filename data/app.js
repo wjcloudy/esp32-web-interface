@@ -3111,10 +3111,12 @@ const IndicatorLamp = ({ value, min, max, color, enums, invert, px }) => {
   const rawOn = v != null && v >= (lo + hi) / 2;
   const on = invert ? (v != null && !rawOn) : rawOn;
   const col = (color && /^#[0-9a-fA-F]{6}$/.test(color)) ? color : 'var(--accent)';
-  const d = Math.round(px * 0.52);
+  // Lamp fills ~42% of the tile: enough presence to read at a glance while
+  // keeping clear air between it and the title above / state caption below
+  const d = Math.round(px * 0.42);
   const label = v == null ? '—' : (enums ? enumLabel(enums, v) : (rawOn ? 'ON' : 'OFF'));
   return html`
-    <div class="ind-wrap" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:${Math.round(px * 0.06)}px">
+    <div class="ind-wrap" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:${Math.round(px * 0.09)}px">
       <div class="ind-lamp ${on ? 'on' : ''}" style=${{
         width: d + 'px', height: d + 'px', borderRadius: '50%',
         background: on ? col : 'var(--surface)',
