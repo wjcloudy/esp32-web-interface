@@ -1233,28 +1233,26 @@ const Update = () => {
   const fileRef = useRef(null);
   const webFileRef = useRef(null);
   const espOtaRef = useRef(null);
-  // Daily new-release check: master switch + manual bypass of its cache
+  // Daily new-release check master switch ("Get releases" IS the manual check)
   const [autoChk, setAutoChk] = useState(getUpdateCheckAuto);
-  const [chkMsg, setChkMsg] = useState('');
-  const checkNow = async () => {
-    setChkMsg('Checking GitHub…');
-    const tag = await checkLatestRelease(true);
-    if (!tag) { setChkMsg('Could not reach GitHub (offline, blocked or rate-limited).'); return; }
-    const cur = parseVer(state.webVersion), latest = parseVer(tag);
-    if (cur && latest && verNewer(latest, cur)) {
-      setChkMsg('Newer release available: ' + tag + ' — install it below.');
-      try { localStorage.removeItem('updateDismissedTag'); } catch (e) {}
-      dispatch({ type: 'SET_UPDATE_TAG', payload: tag });
-    } else {
-      setChkMsg('Up to date — ' + tag + ' is the latest release.');
-    }
-  };
+  // The daily check flagged a release newer than the running version
+  const updateNewer = (() => {
+    const latest = parseVer(state.updateTag), cur = parseVer(state.webVersion);
+    return !!(latest && cur && verNewer(latest, cur));
+  })();
 
-  // Default the GitHub URL to the repo this firmware was built from.
+  // Default the GitHub URL to the repo this firmware was built from. When a
+  // newer release is known (the navbar badge brought the user here), load
+  // its release list straight away — once per page load, not per tab visit.
   useEffect(() => {
     api.getOtaInfo().then(info => {
       setOtaTarget(info.target || 'esp32_wemos');
-      setGhUrl(info.repo || 'https://github.com/wjcloudy/esp32-web-interface');
+      const repo = info.repo || 'https://github.com/wjcloudy/esp32-web-interface';
+      setGhUrl(repo);
+      if (updateNewer && !Update._autoLoaded) {
+        Update._autoLoaded = true;
+        getGhReleases(repo);
+      }
     });
   }, []);
 
@@ -1270,8 +1268,8 @@ const Update = () => {
     setGhMsg(match ? '' : 'No image matches this board (' + otaTarget + ') — choose a target manually below');
   };
 
-  const getGhReleases = async () => {
-    const m = ghUrl.match(/github\.com[/:]([^/]+)\/([^/.\s]+)/);
+  const getGhReleases = async (urlArg) => {
+    const m = (typeof urlArg === 'string' ? urlArg : ghUrl).match(/github\.com[/:]([^/]+)\/([^/.\s]+)/);
     if (!m) { setGhMsg('Enter a github.com repository URL'); return; }
     setGhMsg('Loading releases...');
     setGhReleases([]); setGhTag(''); setGhAssetUrl('');
@@ -1536,6 +1534,10 @@ const Update = () => {
           <p>${otaMsg}</p>
         </div>
         <h3 class="underline">Web Interface</h3>
+        ${updateNewer && html`
+          <p id="update-newer-note" style="color:var(--accent);font-size:.78rem;font-weight:600;margin:0 0 .25rem">▲ Newer release available: ${state.updateTag}</p>
+          <div class="flex-break"></div>
+        `}
         <button onclick=${exportUiSettings} title="Updating erases saved settings — back them up first"><${Icon} n="download" />Export settings (backup)</button>
         <div class="flex-break"></div>
         <input type="text" value=${ghUrl} oninput=${e => setGhUrl(e.target.value)}
@@ -1561,11 +1563,9 @@ const Update = () => {
           <input id="updatefile" name="updatefile" type="file" ref=${webFileRef} hidden onchange=${uploadWebFile} />
           <label class="butt" for="updatefile"><${Icon} n="upload" />Upload single file</label>
         </form>
-        <h3 class="underline">Update Check</h3>
+        <div class="flex-break"></div>
         <${ToggleRow} label="Daily update check" checked=${autoChk}
           onChange=${v => { setAutoChk(v); setUpdateCheckAuto(v); }} />
-        <button onclick=${checkNow} title="Ask GitHub for the latest release now"><${Icon} n="refresh" />Check now</button>
-        ${chkMsg && html`<p style="font-size:.78rem;margin:.25rem 0 0">${chkMsg}</p>`}
         ${updating && html`
           <div id="progress" class="graph">
             <div id="upload-firmware-bar" style=${{ width: progress + '%' }}></div>

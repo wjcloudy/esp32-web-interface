@@ -8,14 +8,24 @@ const fulfillLatest = (page, body) =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) }));
 
 test.describe('Update availability badge', () => {
-  test('a newer release shows the navbar badge; clicking opens the Update tab', async ({ page, mock }) => {
+  test('a newer release shows the navbar badge; clicking opens the Update tab pre-loaded', async ({ page, mock }) => {
     await fulfillLatest(page, { tag_name: 'v99.1' });
+    // The Update tab auto-loads the release LIST when a newer release is known
+    await page.route(/api\.github\.com\/repos\/[^/]+\/[^/]+\/releases$/, route =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([
+        { tag_name: 'v99.1', assets: [{ name: 'esp32_wemos_v99.1-ota.bin', browser_download_url: 'http://example.invalid/ota.bin' }] },
+      ]) }));
     await openApp(page, mock);
     const badge = page.locator('#update-badge');
     await expect(badge).toBeVisible();
     await expect(badge).toContainText('v99.1');
     await badge.locator('span').click();
     await expect(page.locator('#update')).toBeVisible();
+    // The newer-release note sits with the install controls, which are
+    // already populated — no separate "check" step to repeat
+    await expect(page.locator('#update-newer-note')).toContainText('v99.1');
+    await expect(page.locator('#update select', { hasText: 'v99.1' }).first()).toBeVisible();
+    await expect(page.locator('button', { hasText: 'Download & install' })).toBeVisible();
   });
 
   test('a non-version tag from the API is discarded (XSS guard)', async ({ page, mock }) => {
@@ -52,25 +62,22 @@ test.describe('Update availability badge', () => {
     await expect(page.locator('#update-badge')).toHaveCount(0);
   });
 
-  test('manual check reports up-to-date; disabling the auto check stops requests', async ({ page, mock }) => {
+  test('disabling the daily check stops all requests', async ({ page, mock }) => {
     let calls = 0;
     await page.route('https://api.github.com/repos/**/releases/latest', route => {
       calls++;
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ tag_name: 'v0.1' }) });
     });
     await openApp(page, mock);
+    await expect.poll(() => calls).toBe(1); // the on-load daily check
     await gotoTab(page, 'Update');
-    // Check now bypasses the daily cache; v0.1 equals the running version
-    await page.locator('button', { hasText: 'Check now' }).click();
-    await expect(page.locator('#update')).toContainText('Up to date');
     // Toggle the daily check off, clear the cache so a fresh load WOULD
     // check if it were still enabled, and reload: no request may fire
     await page.locator('.toggle-row', { hasText: 'Daily update check' }).locator('.slider').click();
     await page.evaluate(() => localStorage.removeItem('updateCheck'));
-    const before = calls;
     await page.reload();
     await expect(page.locator('#version')).toContainText('Web: v0.1-mock');
     await page.waitForTimeout(800);
-    expect(calls).toBe(before);
+    expect(calls).toBe(1);
   });
 });
