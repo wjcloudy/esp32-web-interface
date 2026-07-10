@@ -3123,7 +3123,7 @@ const IndicatorLamp = ({ value, min, max, color, enums, invert, px }) => {
         width: d + 'px', height: d + 'px', borderRadius: '50%',
         background: on ? col : 'var(--surface)',
         border: '2px solid ' + (on ? col : 'var(--border2)'),
-        boxShadow: on ? ('0 0 ' + Math.round(px * 0.16) + 'px ' + col) : 'none',
+        boxShadow: on ? ('0 0 ' + Math.round(px * 0.12) + 'px ' + col) : 'none',
         transition: 'background .15s, box-shadow .15s',
       }}></div>
       ${px >= 40 && html`<div class="g-unit" style=${'font-size:' + Math.max(0.7, px / 230 * 1.0).toFixed(2) + 'rem'}>${label}</div>`}
@@ -3183,7 +3183,9 @@ const GaugeTileBody = ({ g, title, value, unit, enums }) => {
   // itself always gets the space — the tile's title attribute still names it.
   // Unnamed tiles (static text captions) don't render the placeholder dash.
   const showName = h >= 48 && title !== '—';
-  const nameH = showName ? Math.min(20, Math.round(h * 0.16)) : 0;
+  // 12px floor: on small tiles a cramped line box let title ascenders sit
+  // right on the gauge below (worst on indicator lamps, whose glow reaches up)
+  const nameH = showName ? Math.max(12, Math.min(20, Math.round(h * 0.16))) : 0;
   const gh = h - nameH - 2;
   return html`
     <div ref=${ref} style="flex:1;width:100%;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;overflow:hidden">
