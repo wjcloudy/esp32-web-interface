@@ -446,6 +446,23 @@ test.describe('Gauges grid', () => {
     await expect(page.locator('.ind-wrap .g-unit')).toHaveText('ON');
   });
 
+  test('indicator with Min = Max lights only on the exact value', async ({ page, mock }) => {
+    const layout = { v: 3, pages: [{ id: 1, name: 'Main', items: [
+      { id: 1, name: 'opmode', type: 'indicator', min: 3, max: 3, x: 0, y: 0, w: 3, h: 3 },
+    ] }] };
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(layout) });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    const lamp = page.locator('.ind-lamp');
+    await expect(lamp).toBeVisible();
+    await expect(lamp).not.toHaveClass(/on/); // opmode 0
+    await fetch(mock.url + '/__test/spot?name=opmode&value=3');
+    await expect(lamp).toHaveClass(/on/, { timeout: 5000 });
+    // 4 is past the old midpoint but NOT the exact value — stays dark
+    await fetch(mock.url + '/__test/spot?name=opmode&value=4');
+    await expect(lamp).not.toHaveClass(/on/, { timeout: 5000 });
+  });
+
   test('indicator invert checkbox round-trips through the settings modal', async ({ page, mock }) => {
     const layout = { v: 3, pages: [{ id: 1, name: 'Main', items: [
       { id: 1, name: 'pot', type: 'indicator', min: 0, max: 1, x: 0, y: 0, w: 3, h: 3 },

@@ -3104,13 +3104,14 @@ function migrateGauges(data) {
 // Indicator lamp for On/Off and 0/1 values: min/max describe the value's
 // range (like every other gauge type) and the lamp switches at the midpoint —
 // lit in the gauge colour above it, dim below. Min 0 / Max 1 switches at 0.5.
-// invert flips the lamp (lit while the value is OFF/below the midpoint) —
-// the caption still names the value's real state.
+// Min = Max gates on EXACTLY that value (like page conditions): Min 3 / Max 3
+// lights only on 3, not 4. invert flips the lamp (lit while the value is
+// OFF/unlit) — the caption still names the value's real state.
 const IndicatorLamp = ({ value, min, max, color, enums, invert, px }) => {
   const v = (value == null || isNaN(value)) ? null : value;
   const lo = (min == null) ? 0 : min;
   const hi = (max == null) ? lo : max;
-  const rawOn = v != null && v >= (lo + hi) / 2;
+  const rawOn = v != null && (lo === hi ? v === lo : v >= (lo + hi) / 2);
   const on = invert ? (v != null && !rawOn) : rawOn;
   const col = (color && /^#[0-9a-fA-F]{6}$/.test(color)) ? color : 'var(--accent)';
   // Lamp fills ~42% of the tile: enough presence to read at a glance while
@@ -3188,8 +3189,12 @@ const GaugeTileBody = ({ g, title, value, unit, enums }) => {
   const nameH = showName ? Math.max(12, Math.min(20, Math.round(h * 0.16))) : 0;
   const gh = h - nameH - 2;
   return html`
-    <div ref=${ref} style="flex:1;width:100%;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;overflow:hidden">
+    ${/* Title pinned to the top, gauge centered in the space below — with
+        both centered as one block, short content (indicator lamps) let the
+        title ride lower than on neighbouring full-height dials */ ''}
+    <div ref=${ref} style="flex:1;width:100%;min-height:0;display:flex;flex-direction:column;align-items:center;overflow:hidden">
       ${showName && html`<div class="gauge-tile-name" style=${'font-size:' + Math.min(13, Math.max(9, Math.round(nameH * 0.7))) + 'px;line-height:' + nameH + 'px;margin:0'}>${title}</div>`}
+      <div style="flex:1;width:100%;min-height:0;display:flex;align-items:center;justify-content:center;overflow:hidden">
       ${w > 12 && gh > 12 && ((g.type === 'line')
         ? html`<${GaugeLine} key=${g.id} name=${g.name} min=${g.min} max=${g.max} value=${value} unit=${unit} color=${g.color || ''} enums=${enums}
             points=${g.points || 20} sampleMs=${g.sampleMs || 100} decimals=${g.decimals != null ? g.decimals : 1}
@@ -3203,6 +3208,7 @@ const GaugeTileBody = ({ g, title, value, unit, enums }) => {
         : html`<${SvgGauge} id=${g.id} value=${value} unit=${unit} color=${g.color || ''} enums=${enums}
             px=${Math.max(40, Math.min(w, gh) - 4)} decimals=${g.decimals != null ? g.decimals : 1}
             min=${g.min != null ? g.min : 0} max=${(g.max == null || g.max === 0) ? 4000 : g.max} />`)}
+      </div>
     </div>`;
 };
 
@@ -3681,7 +3687,7 @@ const Gauges = () => {
                   <input type="checkbox" checked=${!!cfg.invert} onchange=${e => updateGaugeConfig(cfg.id, 'invert', e.target.checked)} style="width:auto" />
                   <span style="font-size:.72rem;color:var(--text3)">lamp lit while the value is OFF</span>
                 </label>
-                <p style="font-size:.72rem;color:var(--text3);margin:0">The lamp lights in the chosen colour when the value rises past the midpoint between Min and Max — e.g. Min 0 / Max 1 switches at 0.5.</p>`}
+                <p style="font-size:.72rem;color:var(--text3);margin:0">The lamp lights in the chosen colour when the value rises past the midpoint between Min and Max — e.g. Min 0 / Max 1 switches at 0.5. Set Min = Max to light only on exactly that value (e.g. 3 and 3 for opmode 3).</p>`}
               <div style="display:flex;gap:8px;align-items:center">
                 <label style="width:4.5em">Size</label>
                 ${tileFreeform(cfg.type) ? html`
