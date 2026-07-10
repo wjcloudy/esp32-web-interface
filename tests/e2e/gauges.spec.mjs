@@ -18,7 +18,7 @@ async function savedLayout(mock) {
 }
 
 test.describe('Gauges grid', () => {
-  test('adds a gauge, streams its value, persists a v2 layout with geometry', async ({ page, mock }) => {
+  test('adds a gauge, streams its value, persists a v3 layout with geometry', async ({ page, mock }) => {
     await openApp(page, mock);
     await gotoTab(page, 'Gauges');
     await enterEdit(page);
@@ -26,7 +26,7 @@ test.describe('Gauges grid', () => {
     await page.locator('button', { hasText: 'Save & Done' }).click();
     await expect.poll(async () => (await mock.state()).files).toContain('gauges.json');
     const layout = await savedLayout(mock);
-    expect(layout.v).toBe(2);
+    expect(layout.v).toBe(3);
     expect(layout.pages).toHaveLength(1);
     expect(layout.pages[0].name).toBe('Main');
     const item = layout.pages[0].items[0];
@@ -51,6 +51,10 @@ test.describe('Gauges grid', () => {
     await page.waitForTimeout(150);
     await page.mouse.up();
     await expect.poll(async () => parseInt(await tile.getAttribute('gs-x') || '0')).toBeGreaterThan(0);
+    // The click fired on mouseup after the drag must NOT open the settings
+    // modal (tap-vs-drag guard)
+    await page.waitForTimeout(250);
+    await expect(page.locator('.modal-content')).toHaveCount(0);
     await page.locator('button', { hasText: 'Save & Done' }).click();
     await expect.poll(async () => (await savedLayout(mock)).pages[0].items[0].x).toBeGreaterThan(0);
   });
@@ -120,11 +124,11 @@ test.describe('Gauges grid', () => {
     await enterEdit(page);
     await addGauge(page, 'udc');
     // Reopen settings from the tile's gear button
-    await page.locator('.tile-cfg').click();
+    await page.locator('.gauge-tile').click();
     const modal = page.locator('.modal-content');
     await expect(modal).toBeVisible();
     await modal.locator('input[type="number"]').nth(1).fill('500'); // max
-    await modal.locator('select').selectOption('line');
+    await modal.locator('select').first().selectOption('line'); // Type is the first select
     await modal.locator('button', { hasText: 'Done' }).click();
     await page.locator('button', { hasText: 'Save & Done' }).click();
     await expect.poll(async () => (await savedLayout(mock)).pages[0].items[0].max).toBe(500);
@@ -136,12 +140,12 @@ test.describe('Gauges grid', () => {
     await gotoTab(page, 'Gauges');
     await enterEdit(page);
     await addGauge(page, 'udc');
-    await page.locator('.tile-cfg').click();
+    await page.locator('.gauge-tile').click();
     const modal = page.locator('.modal-content');
     await modal.locator('select').first().selectOption('line');
-    // Line-specific history controls appear
-    await modal.locator('input[type="number"]').nth(2).fill('60'); // points (after min/max)
-    await modal.locator('select').nth(1).selectOption('1000'); // sample every 1s
+    // Line-specific history controls appear; points input is labelled
+    await modal.locator('input[min="5"]').fill('60'); // points (min=5 is unique to it)
+    await modal.locator('select').last().selectOption('1000'); // Sample is the last select (Type, Decimals, Sample)
     await modal.locator('button', { hasText: 'Done' }).click();
     await page.locator('button', { hasText: 'Save & Done' }).click();
     await expect.poll(async () => {
@@ -150,13 +154,84 @@ test.describe('Gauges grid', () => {
     }).toEqual({ points: 60, sampleMs: 1000, type: 'line' });
   });
 
+  test('text tiles: live value with decimals, static caption, custom label', async ({ page, mock }) => {
+    const layout = { v: 3, pages: [{ id: 1, name: 'Main', items: [
+      { id: 1, name: 'udc', type: 'text', decimals: 2, label: 'Battery V', x: 0, y: 0, w: 3, h: 2 },
+      { id: 2, name: '', type: 'text', text: 'DRIVE READY', x: 3, y: 0, w: 4, h: 2 },
+    ] }] };
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(layout) });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    // Live value rendered as text with 2 decimals + unit
+    await expect(page.locator('.gauge-tile').first()).toContainText('398.50');
+    await expect(page.locator('.gauge-tile').first()).toContainText('V');
+    // Custom label replaces the value name on the tile
+    await expect(page.locator('.gauge-tile-name', { hasText: 'Battery V' })).toBeVisible();
+    // Static caption tile needs no value at all
+    await expect(page.locator('.gauge-tile', { hasText: 'DRIVE READY' })).toBeVisible();
+    // ...and counts as configured in edit mode: no 'tap to set up' nag and
+    // no name row above the caption
+    await enterEdit(page);
+    await expect(page.locator('.gauge-tile', { hasText: 'DRIVE READY' })).not.toContainText('tap to set up');
+    await expect(page.locator('.gauge-tile', { hasText: 'DRIVE READY' }).locator('.gauge-tile-name')).toHaveCount(0);
+  });
+
+  test('decimals setting applies to radial dials', async ({ page, mock }) => {
+    const layout = { v: 3, pages: [{ id: 1, name: 'Main', items: [
+      { id: 1, name: 'udc', type: 'radial', min: 0, max: 500, decimals: 0, x: 0, y: 0, w: 3, h: 3 },
+    ] }] };
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(layout) });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await expect(page.locator('.gauge-tile .g-val')).toHaveText('399'); // 398.5 @ 0 decimals
+  });
+
+  test('label and decimals configure from the settings modal and persist', async ({ page, mock }) => {
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await enterEdit(page);
+    await addGauge(page, 'udc');
+    await page.locator('.gauge-tile').click();
+    const modal = page.locator('.modal-content');
+    await modal.locator('input[maxlength="24"]').fill('Pack Volts'); // Label
+    await modal.locator('select').nth(1).selectOption('2'); // Decimals (select #2: type is first)
+    await modal.locator('button', { hasText: 'Done' }).click();
+    await expect(page.locator('.gauge-tile-name', { hasText: 'Pack Volts' })).toBeVisible();
+    await expect(page.locator('.gauge-tile .g-val')).toContainText('398.50');
+    await page.locator('button', { hasText: 'Save & Done' }).click();
+    await expect.poll(async () => {
+      const item = (await savedLayout(mock)).pages[0].items[0];
+      return { label: item.label, decimals: item.decimals };
+    }).toEqual({ label: 'Pack Volts', decimals: 2 });
+  });
+
+  test('duplicate button clones a tile with its full config', async ({ page, mock }) => {
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await enterEdit(page);
+    await addGauge(page, 'udc');
+    // Give the original a custom range so the copy proves config carries over
+    await page.locator('.gauge-tile').click();
+    const modal = page.locator('.modal-content');
+    await modal.locator('input[type="number"]').nth(1).fill('500'); // max
+    await modal.locator('button', { hasText: 'Duplicate' }).click();
+    await expect(page.locator('.grid-stack-item')).toHaveCount(2);
+    await expect(page.locator('.gauge-tile-name', { hasText: 'udc' })).toHaveCount(2);
+    await page.locator('button', { hasText: 'Save & Done' }).click();
+    await expect.poll(async () => (await savedLayout(mock)).pages[0].items.length).toBe(2);
+    const items = (await savedLayout(mock)).pages[0].items;
+    expect(items[1].name).toBe('udc');
+    expect(items[1].max).toBe(500); // config copied
+    expect(items[1].id).not.toBe(items[0].id); // but a distinct tile
+  });
+
   test('removing a gauge from its config modal deletes the tile', async ({ page, mock }) => {
     await openApp(page, mock);
     await gotoTab(page, 'Gauges');
     await enterEdit(page);
     await addGauge(page, 'udc');
-    await page.locator('.tile-cfg').click();
-    await page.locator('.modal-content button', { hasText: 'Remove gauge' }).click();
+    await page.locator('.gauge-tile').click();
+    await page.locator('.modal-content button', { hasText: 'Remove' }).click();
     await expect(page.locator('.grid-stack-item')).toHaveCount(0);
   });
 
@@ -171,7 +246,7 @@ test.describe('Gauges grid', () => {
     // Indicators are exempt from the 2x2 minimum — the tile renders one cell
     // wide (attribute checks are racy: gridstack strips default w=1 at init)
     const gridBox = await page.locator('.grid-stack').boundingBox();
-    await expect.poll(async () => (await tile.boundingBox()).width).toBeLessThan(gridBox.width / 12 * 1.5);
+    await expect.poll(async () => (await tile.boundingBox()).width).toBeLessThan(gridBox.width / 10 * 1.5);
     const lamp = page.locator('.ind-lamp');
     await expect(lamp).toBeVisible();
     // Switching point is the midpoint of min/max: (1 + 4095) / 2 = 2048
@@ -240,7 +315,7 @@ test.describe('Gauges grid', () => {
     await page.mouse.up();
     // Shrunk to a single cell (attribute checks are racy for default w=1)
     const gridBox = await page.locator('.grid-stack').boundingBox();
-    await expect.poll(async () => (await tile.boundingBox()).width).toBeLessThan(gridBox.width / 12 * 1.5);
+    await expect.poll(async () => (await tile.boundingBox()).width).toBeLessThan(gridBox.width / 10 * 1.5);
     await page.locator('button', { hasText: 'Save & Done' }).click();
     // save() omits default w/h of 1 — our sync normalises them back to 1
     await expect.poll(async () => (await savedLayout(mock)).pages[0].items[0].w).toBe(1);
@@ -289,10 +364,57 @@ test.describe('Gauges grid', () => {
     await expect(page.locator('.page-pill.active')).toHaveText('Main');
     await enterEdit(page);
     await page.locator('button', { hasText: 'Save & Done' }).click();
-    await expect.poll(async () => (await savedLayout(mock)).v).toBe(2);
+    await expect.poll(async () => (await savedLayout(mock)).v).toBe(3);
     const item = (await savedLayout(mock)).pages[0].items[0];
     expect(item.w).toBe(4); // legacy 'lg' size maps to a 4-cell span
     expect(item.max).toBe(500);
+  });
+
+  test('v2 (12-column) layouts rescale onto the 10-column grid', async ({ page, mock }) => {
+    const v2 = { v: 2, pages: [{ id: 1, name: 'Main', items: [
+      { id: 1, name: 'speed', type: 'radial', min: 0, max: 8000, x: 6, y: 0, w: 6, h: 6 },
+    ] }] };
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(v2) });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await expect(page.locator('.gauge-tile-name', { hasText: 'speed' })).toBeVisible();
+    await enterEdit(page);
+    await page.locator('button', { hasText: 'Save & Done' }).click();
+    await expect.poll(async () => (await savedLayout(mock)).v).toBe(3);
+    const item = (await savedLayout(mock)).pages[0].items[0];
+    // 6/12 of the grid stays half the grid: 6 -> 5 of 10 columns, still square
+    expect(item.w).toBe(5);
+    expect(item.h).toBe(5);
+    expect(item.x).toBe(5);
+  });
+
+  test('tiny tiles: no resize grip, tap opens settings, size set from modal', async ({ page, mock }) => {
+    const layout = { v: 3, pages: [{ id: 1, name: 'Main', items: [
+      { id: 1, name: 'opmode', type: 'indicator', min: 0, max: 1, x: 0, y: 0, w: 1, h: 1 },
+    ] }] };
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(layout) });
+    await page.setViewportSize({ width: 390, height: 800 });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await enterEdit(page);
+    // The grip would cover the whole ~23px tile and swallow every tap
+    await expect(page.locator('.ui-resizable-se')).toBeHidden();
+    await page.locator('.gauge-tile').click();
+    await expect(page.locator('.modal-content')).toBeVisible();
+    // Grow it from the modal instead: 1 -> 3 cells
+    const tile = page.locator('.grid-stack-item');
+    const before = (await tile.boundingBox()).width;
+    const size = page.locator('.modal-content input[title^="Size"]');
+    await size.fill('3');
+    await size.dispatchEvent('change');
+    // Assert on the observable geometry, not gs-w (gridstack strips that
+    // attribute after parsing, so it's racy): the tile visibly grows and
+    // loses the tiny class, and the new size persists.
+    await expect.poll(async () => (await tile.boundingBox()).width, { timeout: 10000 }).toBeGreaterThan(before + 20);
+    await expect(tile).not.toHaveClass(/tile-tiny/);
+    await page.locator('.modal-content button', { hasText: 'Done' }).click();
+    await page.locator('button', { hasText: 'Save & Done' }).click();
+    await expect.poll(async () => (await savedLayout(mock)).pages[0].items[0].w).toBe(3);
   });
 
   test('editing works at a mobile viewport', async ({ page, mock }) => {
@@ -304,5 +426,106 @@ test.describe('Gauges grid', () => {
     await expect(page.locator('.grid-stack-item')).toBeVisible();
     await page.locator('button', { hasText: 'Save & Done' }).click();
     await expect.poll(async () => (await mock.state()).files).toContain('gauges.json');
+  });
+
+  test('inverted indicator lights while the value is OFF', async ({ page, mock }) => {
+    const layout = { v: 3, pages: [{ id: 1, name: 'Main', items: [
+      { id: 1, name: 'pot', type: 'indicator', min: 0, max: 4095, invert: true, color: '#ff6b6b', x: 0, y: 0, w: 3, h: 3 },
+    ] }] };
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(layout) });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    const lamp = page.locator('.ind-lamp');
+    // pot is 0 — below the midpoint, so the value is OFF and the inverted
+    // lamp is LIT; the caption still names the value's real state
+    await expect(lamp).toHaveClass(/on/, { timeout: 5000 });
+    await expect(page.locator('.ind-wrap .g-unit')).toHaveText('OFF');
+    // Value comes ON -> inverted lamp goes dark
+    await fetch(mock.url + '/__test/spot?name=pot&value=3000');
+    await expect(lamp).not.toHaveClass(/on/, { timeout: 5000 });
+    await expect(page.locator('.ind-wrap .g-unit')).toHaveText('ON');
+  });
+
+  test('indicator invert checkbox round-trips through the settings modal', async ({ page, mock }) => {
+    const layout = { v: 3, pages: [{ id: 1, name: 'Main', items: [
+      { id: 1, name: 'pot', type: 'indicator', min: 0, max: 1, x: 0, y: 0, w: 3, h: 3 },
+    ] }] };
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(layout) });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await enterEdit(page);
+    await page.locator('.gauge-tile').click();
+    const modal = page.locator('.modal-content');
+    await modal.locator('label', { hasText: 'Invert' }).locator('input[type="checkbox"]').check();
+    await modal.locator('button', { hasText: 'Done' }).click();
+    await page.locator('button', { hasText: 'Save & Done' }).click();
+    await expect.poll(async () => (await savedLayout(mock)).pages[0].items[0].invert).toBe(true);
+  });
+
+  test('conditional page display switches to the page whose condition matches', async ({ page, mock }) => {
+    // Fast shows above speed's midpoint (500); Idle is INVERTED on pot 0..100
+    // (midpoint 50), so it matches right from load while pot is 0
+    const layout = { v: 3, pages: [
+      { id: 1, name: 'Main', items: [{ id: 1, name: 'udc', type: 'text', x: 0, y: 0, w: 2, h: 1 }] },
+      { id: 2, name: 'Fast', cond: { name: 'speed', min: 0, max: 1000 }, items: [] },
+      { id: 3, name: 'Idle', cond: { name: 'pot', min: 0, max: 100, invert: true }, items: [] },
+    ] };
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(layout) });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await expect(page.locator('.page-pill.active')).toHaveText('Idle', { timeout: 5000 });
+    // An earlier page's condition coming true wins (first match in page order)
+    await fetch(mock.url + '/__test/spot?name=speed&value=900');
+    await expect(page.locator('.page-pill.active')).toHaveText('Fast', { timeout: 5000 });
+    // ...and dropping again hands back to the still-matching Idle
+    await fetch(mock.url + '/__test/spot?name=speed&value=0');
+    await expect(page.locator('.page-pill.active')).toHaveText('Idle', { timeout: 5000 });
+    // No condition matching -> stays where it is, and the user can browse
+    // freely (a persisting match must not yank the page back)
+    await fetch(mock.url + '/__test/spot?name=pot&value=200');
+    await page.waitForTimeout(500);
+    await expect(page.locator('.page-pill.active')).toHaveText('Idle');
+    await page.locator('.page-pill', { hasText: 'Main' }).click();
+    await page.waitForTimeout(500);
+    await expect(page.locator('.page-pill.active')).toHaveText('Main');
+    // A fresh match still fires
+    await fetch(mock.url + '/__test/spot?name=pot&value=0');
+    await expect(page.locator('.page-pill.active')).toHaveText('Idle', { timeout: 5000 });
+  });
+
+  test('Auto pages toggle disarms conditional display and persists', async ({ page, mock }) => {
+    const layout = { v: 3, pages: [
+      { id: 1, name: 'Main', items: [{ id: 1, name: 'udc', type: 'text', x: 0, y: 0, w: 2, h: 1 }] },
+      { id: 2, name: 'Fast', cond: { name: 'speed', min: 0, max: 1000 }, items: [] },
+    ] };
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(layout) });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await expect(page.locator('#auto-pages')).toBeVisible();
+    await page.locator('#auto-pages .slider').click(); // off
+    await expect.poll(async () => (await savedLayout(mock)).autoPage).toBe(false);
+    await fetch(mock.url + '/__test/spot?name=speed&value=900');
+    await page.waitForTimeout(700);
+    await expect(page.locator('.page-pill.active')).toHaveText('Main');
+    // The saved off state survives a reload
+    await page.reload();
+    await expect(page.locator('#version')).toContainText('Web: vMOCK');
+    await page.waitForTimeout(700);
+    await expect(page.locator('.page-pill.active')).toHaveText('Main');
+  });
+
+  test('page condition editor round-trips through Save & Done', async ({ page, mock }) => {
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await enterEdit(page);
+    await page.locator('button', { hasText: 'Add condition' }).click();
+    await page.locator('#page-cond div', { hasText: /^Select\.\.\.$/ }).last().click();
+    await page.locator('.hover-row', { hasText: 'speed' }).last().click();
+    await page.locator('#page-cond input[type="number"]').nth(1).fill('3000'); // max
+    await page.locator('button', { hasText: 'Save & Done' }).click();
+    await expect.poll(async () => (await savedLayout(mock)).pages[0].cond)
+      .toEqual({ name: 'speed', min: 0, max: 3000 });
+    // The Auto pages toggle appears once any page carries a condition
+    await expect(page.locator('#auto-pages')).toBeVisible();
   });
 });

@@ -19,20 +19,6 @@ const api = {
     return this._pending[cmd];
   },
 
-  async getSpotValues(names) {
-    if (!names || names.length === 0) return {};
-    const cmd = 'get ' + names.join(',');
-    const text = await this.getText(cmd);
-    // Parse float values using exact regex from original codebase
-    const re = /(\-{0,1}[0-9]+\.[0-9]*)/g;
-    const vals = [];
-    let m;
-    while ((m = re.exec(text)) !== null) vals.push(parseFloat(m[1]));
-    const result = {};
-    names.forEach((name, i) => { result[name] = vals[i] !== undefined ? vals[i] : 0; });
-    return result;
-  },
-
   async getText(cmd, repeat, timeoutMs) {
     let url = '/cmd?cmd=' + encodeURIComponent(cmd);
     if (repeat) url += '&repeat=' + repeat;
@@ -50,6 +36,37 @@ const api = {
     } finally {
       if (timer) clearTimeout(timer);
     }
+  },
+
+  // Fetch many spot values with the command split into <=120-char chunks —
+  // the inverter's UART terminal buffer truncates commands beyond 128 chars,
+  // which would silently mis-map values onto the wrong names.
+  async getValuesChunked(names) {
+    const chunks = [];
+    let cur = [], len = 4; // 'get '
+    for (const n of names) {
+      if (cur.length && len + n.length + 1 > 120) { chunks.push(cur); cur = []; len = 4; }
+      cur.push(n); len += n.length + 1;
+    }
+    if (cur.length) chunks.push(cur);
+    const out = {};
+    for (const c of chunks) {
+      const text = await this.getText('get ' + c.join(','));
+      const vals = text.match(/[\-\d\.]+/g) || [];
+      if (vals.length !== c.length) throw new Error('count mismatch');
+      c.forEach((n, i) => { out[n] = parseFloat(vals[i]); });
+    }
+    return out;
+  },
+
+  // Set a parameter and interpret the inverter's free-text reply: returns
+  // { ok, reply }. Both backends reply with recognisable failure text
+  // ("Value out of range", "Unknown parameter", CAN-mode "Set failed") that
+  // callers previously ignored, showing rejected values as applied.
+  async setParam(name, value) {
+    const reply = (await this.getText('set ' + name + ' ' + value)).trim();
+    const ok = !/out of range|unknown param|set failed|error/i.test(reply);
+    return { ok, reply };
   },
 
   async uploadFile(formData) {
@@ -103,14 +120,19 @@ const api = {
     const start = await fetch('/fwupdate?step=-1&file=' + encodeURIComponent(file));
     const sj = await start.json().catch(() => ({}));
     if (!start.ok) throw new Error(sj.message || 'Could not start update');
+    let failures = 0; // consecutive status-poll failures — bail instead of looping forever
     while (true) {
       await new Promise(res => setTimeout(res, 400));
       let st;
       try {
         const r = await fetch('/fwupdate-status');
-        if (!r.ok) continue;
+        if (!r.ok) throw new Error('HTTP ' + r.status);
         st = await r.json();
-      } catch (e) { continue; }
+        failures = 0;
+      } catch (e) {
+        if (++failures >= 25) throw new Error('Lost contact with the device during the update'); // ~10s
+        continue;
+      }
       if (st.state === 1) onProgress(0, 'Waiting for bootloader — power-cycle the device if this hangs');
       else if (st.state === 2) onProgress(Math.round(100 * st.page / (st.pages || 1)), 'Flashing page ' + st.page + ' / ' + st.pages);
       else if (st.state === 3) { onProgress(100, 'Update complete'); return; }
@@ -128,14 +150,20 @@ const api = {
     } catch (e) { return { params: [], spots: [] }; }
   },
 
-  async saveFavorites(paramFavs, spotFavs) {
-    try {
-      const json = JSON.stringify({ p: paramFavs || [], s: spotFavs || [] });
-      const blob = new Blob([json], { type: 'application/json' });
-      const fd = new FormData();
-      fd.append('updatefile', blob, 'favorites.json');
-      await fetch('/edit', { method: 'POST', body: fd });
-    } catch(e) { console.log('Save favorites failed', e); }
+  // Debounced: rapid toggles collapse into one write of the LATEST lists —
+  // two overlapping uploads could otherwise finish out of order and persist
+  // the stale one
+  saveFavorites(paramFavs, spotFavs) {
+    this._favData = { p: paramFavs || [], s: spotFavs || [] };
+    clearTimeout(this._favTimer);
+    this._favTimer = setTimeout(async () => {
+      try {
+        const blob = new Blob([JSON.stringify(this._favData)], { type: 'application/json' });
+        const fd = new FormData();
+        fd.append('updatefile', blob, 'favorites.json');
+        await fetch('/edit', { method: 'POST', body: fd });
+      } catch(e) { console.log('Save favorites failed', e); }
+    }, 400);
   }
 };
 
@@ -154,6 +182,19 @@ function parseEnums(unit) {
   return Object.keys(enums).length > 0 ? enums : null;
 }
 
+// URL breadcrumbs: every tab is bookmarkable as #tab, and the gauges tab
+// nests its page as #gauges/<page name> — so a browser favourite can open a
+// particular inverter view directly. (Must match the navbar tabs list, which
+// is declared later in the file.)
+const VALID_TABS = ['dashboard', 'parameters', 'spotvalues', 'plot', 'gauges', 'logger', 'canmapping', 'files', 'update', 'settings', 'support'];
+function parseHash() {
+  const parts = location.hash.replace(/^#\/?/, '').split('/');
+  const tab = decodeURIComponent(parts[0] || '');
+  let sub = '';
+  try { sub = decodeURIComponent(parts.slice(1).join('/')); } catch (e) {}
+  return { tab: VALID_TABS.includes(tab) ? tab : null, sub };
+}
+
 const initialState = {
   params: null,
   spotValues: null,
@@ -161,7 +202,7 @@ const initialState = {
   status: null, opmode: null, lasterr: null, udc: null, tmphs: null,
   firmwareVersion: '',
   fetchAge: 0,
-  activeTab: 'dashboard',
+  activeTab: parseHash().tab || 'dashboard',
   refreshRate: 3000, // -1 = off, else ms interval
   paramFavorites: [],
   spotFavorites: [],
@@ -536,7 +577,7 @@ const Navbar = () => {
       </div>
       ${state.refreshRate === -1 && !state.logging && html`
         <div style="text-align:center;padding:4px 0 0">
-          <button onclick=${() => { dispatch({ type: 'SET_FETCHING' }); api.getJSON('json').then(json => dispatch({ type: 'SET_PARAMS', payload: json })).catch(() => {}); }} style="font-size:.7rem;padding:4px 12px"><${Icon} n="refresh" />Refresh now</button>
+          <button onclick=${() => { dispatch({ type: 'SET_FETCHING' }); api.getJSON('json').then(json => dispatch({ type: 'SET_PARAMS', payload: json })).catch(() => dispatch({ type: 'FETCH_ERROR' })); }} style="font-size:.7rem;padding:4px 12px"><${Icon} n="refresh" />Refresh now</button>
         </div>
       `}
       ${state.canMode && html`
@@ -741,8 +782,10 @@ const Parameters = () => {
   }
 
   const saveParam = async (name, value) => {
-    await api.getText('set ' + name + ' ' + value);
-    dispatch({ type: 'SET_PARAM_VALUE', name, value });
+    const { ok, reply } = await api.setParam(name, value);
+    if (!ok) { alert(name + ': ' + reply); setEditing(null); return; } // rejected — keep the old value
+    const num = parseFloat(value);
+    dispatch({ type: 'SET_PARAM_VALUE', name, value: isNaN(num) ? value : num });
     setEditing(null);
   };
 
@@ -775,13 +818,15 @@ const Parameters = () => {
       const fd = new FormData();
       fd.append('updatefile', blob, 'subscription.js');
       await fetch('/edit', { method: 'POST', body: fd });
-      // Apply parameters
+      // Apply parameters, reporting any the inverter rejects
+      const rejected = [];
       for (const name in params) {
         if (params[name] && params[name].value !== undefined) {
-          await api.getText('set ' + name + ' ' + params[name].value);
+          const res = await api.setParam(name, params[name].value);
+          if (!res.ok) rejected.push(name);
         }
       }
-      alert('Subscribed and parameters applied!');
+      alert('Subscribed and parameters applied!' + (rejected.length ? '\nRejected: ' + rejected.join(', ') : ''));
       setShowSubscribe(false);
       // Refresh
       const json = await api.getJSON('json');
@@ -829,8 +874,11 @@ const Parameters = () => {
       for (let i = 0; i < total; i++) {
         const [name, value] = entries[i];
         setApplyMsg('Setting ' + name + ' (' + (i + 1) + ' / ' + total + ')');
-        try { await api.getText('set ' + name + ' ' + value); ok++; }
-        catch (err) { failed.push(name); }
+        try {
+          const res = await api.setParam(name, value);
+          if (res.ok) ok++;
+          else failed.push(name + ' (' + res.reply + ')');
+        } catch (err) { failed.push(name); }
         setApplyPct(Math.round(100 * (i + 1) / total));
       }
       setApplyMsg('Refreshing...');
@@ -1232,20 +1280,25 @@ const Update = () => {
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j.ok) throw new Error(j.message || ('HTTP ' + r.status));
       // The download/flash runs in the background on the device; poll for progress.
-      let fails = 0;
+      let fails = 0, lastPct = 0;
       while (true) {
         await new Promise(res => setTimeout(res, 500));
         let st;
         try { st = await (await fetch('/espupdate-status')).json(); fails = 0; }
         catch (e) {
-          // device likely rebooting after a successful flash
-          if (++fails > 4) { setProgress(100); setUpdateMsg('Flashed — rebooting, reloading shortly...'); setTimeout(() => location.reload(), 7000); return; }
+          if (++fails > 4) {
+            // Silence only means "rebooting after success" if the flash was
+            // essentially done — losing WiFi at 3% is a failure, not a reboot
+            if (lastPct >= 95) { setProgress(100); setUpdateMsg('Flashed — rebooting, reloading shortly...'); setTimeout(() => location.reload(), 7000); return; }
+            throw new Error('Lost contact with the device at ' + lastPct + '% — check it and retry');
+          }
           continue;
         }
         if (st.state === 2) { setProgress(100); setUpdateMsg('Flashed — rebooting, reloading shortly...'); setTimeout(() => location.reload(), 7000); return; }
         if (st.state === 3) throw new Error(st.message || 'Update failed');
-        setProgress(st.pct || 0);
-        setUpdateMsg('Downloading & flashing... ' + (st.pct || 0) + '%');
+        lastPct = st.pct || 0;
+        setProgress(lastPct);
+        setUpdateMsg('Downloading & flashing... ' + lastPct + '%');
       }
     } catch (e) {
       setUpdateMsg('Error: ' + e.message);
@@ -1261,9 +1314,17 @@ const Update = () => {
     setUpdating(true); setProgress(0); setUpdateMsg('Uploading...');
     // Pause json polling — its UART/CAN traffic would corrupt the bootloader transfer
     dispatch({ type: 'SET_LOGGING', payload: true });
-    const fd = new FormData();
-    fd.append('update-firmware-file', file);
-    await api.uploadFile(fd);
+    try {
+      const fd = new FormData();
+      fd.append('update-firmware-file', file);
+      await api.uploadFile(fd);
+    } catch (e) {
+      // Failed upload must release the polling pause or the whole app stalls
+      setUpdateMsg('Error: upload failed — ' + e.message);
+      dispatch({ type: 'SET_LOGGING', payload: false });
+      setTimeout(() => setUpdating(false), 4000);
+      return;
+    }
     if (fileRef.current) fileRef.current.value = ''; // allow re-selecting the same file
     setUpdateMsg('Installing firmware...');
 
@@ -1273,10 +1334,10 @@ const Update = () => {
         await api.runCanUpdate('/' + file.name, (pct, msg) => { setProgress(pct); setUpdateMsg(msg); });
         setUpdateMsg('Update Done!');
         api.deleteFile('/' + file.name);
-        setTimeout(() => setUpdating(false), 3000);
       } catch (e) {
         setUpdateMsg('Error: ' + e.message);
       }
+      setTimeout(() => setUpdating(false), 3000);
       dispatch({ type: 'SET_LOGGING', payload: false });
       return;
     }
@@ -1318,7 +1379,10 @@ const Update = () => {
   const installOTA = async (url) => {
     setOtaMsg('Downloading...');
     try {
-      const blob = await fetch(url).then(r => r.blob());
+      // Guard against an error page being flashed as firmware
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error('Download failed (HTTP ' + resp.status + ')');
+      const blob = await resp.blob();
       setOtaMsg('Uploading...');
       const fd = new FormData();
       fd.append('updatefile', blob, 'stm32.bin');
@@ -1333,10 +1397,10 @@ const Update = () => {
           await api.runCanUpdate('/stm32.bin', (pct, msg) => { setProgress(pct); setUpdateMsg(msg); });
           setUpdateMsg('Done!');
           api.deleteFile('/stm32.bin');
-          setTimeout(() => setUpdating(false), 3000);
         } catch (e) {
           setUpdateMsg('Error: ' + e.message);
         }
+        setTimeout(() => setUpdating(false), 3000);
         dispatch({ type: 'SET_LOGGING', payload: false });
         return;
       }
@@ -1365,12 +1429,14 @@ const Update = () => {
   const uploadWebFile = async () => {
     const file = webFileRef.current?.files?.[0];
     if (!file) return;
-    const fd = new FormData();
-    fd.append('updatefile', file);
-    await api.uploadFile(fd);
-    if (webFileRef.current) webFileRef.current.value = '';
-    alert('File uploaded');
-    dispatch({ type: 'SET_FILE_LIST', payload: await api.getFileList() });
+    try {
+      const fd = new FormData();
+      fd.append('updatefile', file);
+      await api.uploadFile(fd);
+      if (webFileRef.current) webFileRef.current.value = '';
+      alert('File uploaded');
+      dispatch({ type: 'SET_FILE_LIST', payload: await api.getFileList() });
+    } catch (e) { alert('Upload failed: ' + e.message); }
   };
 
   // OTA-flash the web interface from a combined image (firmware + filesystem in
@@ -1519,7 +1585,11 @@ if (typeof Chart !== 'undefined') {
 }
 
 // Simple chart renderer — just a canvas, no controls
-const PlotChart = ({ plot, pushValue, maxValues }) => {
+// Renders one plot. Samples arrive via `queueRef` (an array of name->value
+// maps) and `sampleTick` bumps once per fetch — pushing is driven by actual
+// data arrival, not render identity, so unrelated app re-renders (e.g. the
+// 1 Hz age ticker) can no longer inject duplicate points.
+const PlotChart = ({ plot, queueRef, sampleTick, maxValues }) => {
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
   const timeRef = useRef(0);
@@ -1540,6 +1610,9 @@ const PlotChart = ({ plot, pushValue, maxValues }) => {
         }
       });
     }
+    // Destroy on unmount — Chart.js keeps a registry entry + ResizeObserver
+    // per instance, so tab switches leaked charts before
+    return () => { if (chartRef.current) { chartRef.current.destroy(); chartRef.current = null; } };
   }, []);
 
   useEffect(() => {
@@ -1557,20 +1630,23 @@ const PlotChart = ({ plot, pushValue, maxValues }) => {
   }, [items]);
 
   useEffect(() => {
-    if (!pushValue || !chartRef.current) return;
+    if (!queueRef || !chartRef.current) return;
     const chart = chartRef.current;
     const active = items.filter(p => p.name);
     if (active.length === 0 || chart.data.datasets.length !== active.length) return;
-    const t = timeRef.current++;
-    active.forEach((p, si) => {
-      const val = pushValue(p.name);
-      if (val !== null && !isNaN(val) && chart.data.datasets[si]) {
-        chart.data.datasets[si].data.push({ x: t, y: val });
-        while (chart.data.datasets[si].data.length > maxValues) chart.data.datasets[si].data.shift();
-      }
-    });
+    // Drain every queued sample — with Burst > 1 several arrive per fetch
+    for (const sample of queueRef.current) {
+      const t = timeRef.current++;
+      active.forEach((p, si) => {
+        const val = sample[p.name];
+        if (val != null && !isNaN(val) && chart.data.datasets[si]) {
+          chart.data.datasets[si].data.push({ x: t, y: val });
+          while (chart.data.datasets[si].data.length > maxValues) chart.data.datasets[si].data.shift();
+        }
+      });
+    }
     chart.update('none');
-  }, [pushValue]);
+  }, [sampleTick]);
 
   return html`<div style="margin-bottom:1.5rem"><canvas ref=${canvasRef} width="100%" height="40" style="width:100%;max-height:300px"></canvas></div>`;
 };
@@ -1618,8 +1694,9 @@ const Plot = () => {
   const [editing, setEditing] = useState(false);
   const [maxValues, setMaxValues] = useState(500);
   const [burstLength, setBurstLength] = useState(5);
-  const [, setTick] = useState(0); // force re-render tick
+  const [sampleTick, setSampleTick] = useState(0); // bumps once per fetch of new samples
   const valsRef = useRef({});
+  const queueRef = useRef([]); // samples pending chart draw (several per fetch with Burst)
   const nextId = useRef(1);
   const fetchRef = useRef(null);
 
@@ -1638,18 +1715,37 @@ const Plot = () => {
     let running = true;
     const combined = allNames.join(',');
 
+    // Long name lists overflow the inverter's 128-char UART command buffer —
+    // fall back to chunked single samples (no burst) rather than truncating
+    const chunked = !state.canMode && ('get ' + combined).length > 128;
+
     const loop = async () => {
       if (!running) return;
       try {
-        const text = await api.getText('get ' + combined, burstLength);
-        if (!running) return;
-        const vals = text.match(/[\-\d\.]+/g) || [];
-        const startIdx = Math.max(0, vals.length - allNames.length);
-        allNames.forEach((name, i) => {
-          const vi = startIdx + i;
-          if (vi < vals.length) valsRef.current[name] = parseFloat(vals[vi]);
-        });
-        setTick(t => t + 1);
+        if (chunked) {
+          const sample = await api.getValuesChunked(allNames);
+          if (!running) return;
+          queueRef.current = [sample];
+          valsRef.current = sample;
+          setSampleTick(t => t + 1);
+        } else {
+          const text = await api.getText('get ' + combined, burstLength);
+          if (!running) return;
+          const vals = text.match(/[\-\d\.]+/g) || [];
+          // Only accept whole sample groups: an error reply (or a truncated
+          // one) would otherwise shift values onto the wrong series
+          const groups = Math.floor(vals.length / allNames.length);
+          if (groups > 0 && vals.length === groups * allNames.length) {
+            queueRef.current = [];
+            for (let gIdx = 0; gIdx < groups; gIdx++) {
+              const sample = {};
+              allNames.forEach((name, i) => { sample[name] = parseFloat(vals[gIdx * allNames.length + i]); });
+              queueRef.current.push(sample);
+            }
+            valsRef.current = queueRef.current[groups - 1]; // latest, for live readouts
+            setSampleTick(t => t + 1);
+          }
+        }
       } catch (e) { /* ignore */ }
       if (running) fetchRef.current = setTimeout(loop, 100);
     };
@@ -1658,7 +1754,6 @@ const Plot = () => {
     return () => { running = false; if (fetchRef.current) clearTimeout(fetchRef.current); };
   }, [plotting, plots]);
 
-  const getValue = (name) => valsRef.current[name] ?? null;
 
   const addPlot = () => {
     setPlots([...plots, { id: nextId.current++, items: [] }]);
@@ -1773,7 +1868,7 @@ const Plot = () => {
           </div>
         </div>
         ${plots.map(p => html`
-          <${PlotChart} key=${p.id} plot=${p} pushValue=${plotting ? getValue : null} maxValues=${maxValues} />
+          <${PlotChart} key=${p.id} plot=${p} queueRef=${plotting ? queueRef : null} sampleTick=${sampleTick} maxValues=${maxValues} />
         `)}
         ${plots.length === 0 && !editing && html`<p style="color:var(--text3);text-align:center;padding:2rem 0">Click Edit Layout to add a plot.</p>`}
       </div>
@@ -1805,19 +1900,22 @@ const Logger = () => {
     if (names.length === 0) return;
 
     loggingRef.current = true;
+    const maxLines = Math.min(5000, Math.max(50, parseInt(samples) || 500));
+    let errs = 0; // consecutive failures — tolerate blips, stop when persistent
     (async function loop() {
       while (loggingRef.current) {
         try {
-          const cmd = 'get ' + names.join(',');
-          const text = await api.getText(cmd);
+          // Chunked: long field lists exceed the inverter's 128-char UART
+          // command buffer; garbled/mismatched replies throw instead of
+          // silently shifting columns
+          const out = await api.getValuesChunked(names);
           if (!loggingRef.current) break;
-          const vals = text.match(/[\-\d\.]+/g) || [];
-          const line = vals.join('\t');
+          errs = 0;
+          const line = names.map(n => out[n]).join('\t');
           setLogText(prev => {
             const next = prev + line + '\n';
-            // Limit to ~500 lines to avoid memory issues
             const lines = next.split('\n');
-            if (lines.length > 500) lines.splice(0, lines.length - 500);
+            if (lines.length > maxLines) lines.splice(0, lines.length - maxLines);
             return lines.join('\n');
           });
           // Auto-scroll
@@ -1825,7 +1923,11 @@ const Logger = () => {
             textRef.current.scrollTop = textRef.current.scrollHeight;
           }
         } catch (e) {
-          if (loggingRef.current) setLogText(p => p + 'Error: ' + e.message + '\n');
+          if (++errs < 5) continue; // transient blip — keep logging
+          if (loggingRef.current) setLogText(p => p + 'Error: ' + e.message + ' — logging stopped\n');
+          // Release the app-wide polling pause, or the whole UI stays stale
+          // while the Recording pill misleadingly stays lit
+          dispatch({ type: 'SET_LOGGING', payload: false });
           break;
         }
       }
@@ -1856,7 +1958,7 @@ const Logger = () => {
           a.click();
         }}><${Icon} n="download" />Save as...</button>
         <h3 class="underline">Configure Logger</h3>
-        <label>Samples per line: <input type="number" value=${samples} oninput=${e => setSamples(e.target.value)} style="width:5em" /></label>
+        <label>Max lines kept: <input type="number" min="50" max="5000" value=${samples} oninput=${e => setSamples(e.target.value)} style="width:5em" /></label>
         ${logItems.map((item, i) => html`
           <div class="logger-field" key=${i} style="display:flex;gap:4px;align-items:center;margin-bottom:4px">
             <${FieldPicker} value=${item.name || ''} spotNames=${spotNames} onChange=${name => updateItem(i, 'name', name)} />
@@ -2124,10 +2226,11 @@ const Files = () => {
 
 // ==================== Settings ====================
 
-// Theme helper
-function getTheme() { return localStorage.getItem('theme') || 'system'; }
+// Theme helper (guarded: blocked site-data makes localStorage THROW, and this
+// runs at module scope — an unguarded call would blank the whole app)
+function getTheme() { try { return localStorage.getItem('theme') || 'system'; } catch (e) { return 'system'; } }
 function setTheme(theme) {
-  localStorage.setItem('theme', theme);
+  try { localStorage.setItem('theme', theme); } catch (e) {}
   if (theme === 'system') document.documentElement.removeAttribute('data-theme');
   else document.documentElement.setAttribute('data-theme', theme);
 }
@@ -2591,7 +2694,7 @@ const Support = () => html`
 // remounts it (which would drop the accumulated history). `points` sets the
 // visible history length and `sampleMs` how often a sample is taken from the
 // ~100ms stream — together they control the scroll rate/time window.
-const GaugeLine = ({ name, min, max, value, unit, color, enums, w = 230, h = 175, points = 20, sampleMs = 100 }) => {
+const GaugeLine = ({ name, min, max, value, unit, color, enums, w = 230, h = 175, points = 20, sampleMs = 100, decimals = 1 }) => {
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
   const lastSampleRef = useRef(0);
@@ -2674,7 +2777,7 @@ const GaugeLine = ({ name, min, max, value, unit, color, enums, w = 230, h = 175
     <div style=${'width:' + w + 'px;height:' + h + 'px;display:flex;flex-direction:column;align-items:center;overflow:hidden'}>
       <canvas ref=${canvasRef}></canvas>
       <div class="g-val" style=${'font-size:' + Math.max(0.8, Math.min(w, h) / 230 * 1.6).toFixed(2) + 'rem;margin-top:2px;line-height:1'}>
-        ${value != null ? (enums ? String(Math.round(value)) : value.toFixed(1)) : '—'}
+        ${value != null ? (enums ? String(Math.round(value)) : value.toFixed(decimals)) : '—'}
         ${enums
           ? (value != null && html`<span class="g-unit g-enum" style="display:inline;margin-left:6px">${enumLabel(enums, value)}</span>`)
           : (unit && html`<span class="g-unit" style="display:inline;margin-left:4px">${unit}</span>`)}
@@ -2703,7 +2806,7 @@ const hueShift = (hex, deg) => {
 // Modern SVG arc gauge — 270° sweep, gradient stroke, mono numerals.
 // Pure render: value changes animate via CSS transition on the dash array.
 // A custom colour keeps the gradient look, centered on the chosen colour.
-const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px }) => {
+const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decimals = 1 }) => {
   const size = px || 230, c = size / 2, r = Math.round(size * 0.4);
   const sw = Math.max(8, Math.round(size * 0.057));
   const SWEEP = 270; // degrees, gap centered at the bottom
@@ -2738,7 +2841,7 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px }) => 
         </g>
       </svg>
       <div class="g-center">
-        <div class="g-val" style=${'font-size:' + (size / 230 * 2.1).toFixed(2) + 'rem'}>${v == null ? '—' : (enums ? String(Math.round(v)) : v.toFixed(1))}</div>
+        <div class="g-val" style=${'font-size:' + (size / 230 * 2.1).toFixed(2) + 'rem'}>${v == null ? '—' : (enums ? String(Math.round(v)) : v.toFixed(decimals))}</div>
         ${enums
           ? (v != null && html`<div class="g-unit g-enum">${enumLabel(enums, v)}</div>`)
           : (unit && html`<div class="g-unit">${unit}</div>`)}
@@ -2752,28 +2855,54 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px }) => 
 
 // ==================== Gauges (grid dashboard) ====================
 // Named pages of freely draggable/resizable tiles on a GridStack grid
-// (vendored, MIT). The column count is fixed at 12 so a layout is one
+// (vendored, MIT). The column count is fixed at 10 so a layout is one
 // coordinate space on every device — it scales rather than reflows, and a
-// page laid out on the desktop looks the same on a phone.
-// gauges.json v2: { v: 2, pages: [{ id, name, items: [{ id, name, type,
-// color, min, max, x, y, w, h }] }] }. v1 ({ items, size }) migrates
-// transparently; the settings export bundle carries the file wholesale.
+// page laid out on the desktop looks the same on a phone. 10 columns (not
+// 12) keeps cells big enough that a phone-width grid stays readable.
+// gauges.json v3: { v: 3, autoPage, pages: [{ id, name, cond?, items:
+// [{ id, name, type, color, min, max, invert?, x, y, w, h }] }] }. cond
+// ({ name, min, max, invert }) drives conditional page display; autoPage is
+// its master switch. v2 (same shape, 12-column coordinates) is rescaled;
+// v1 ({ items, size }) migrates transparently; the settings export bundle
+// carries the file wholesale.
 
-const GRID_COLS = 12;
-const V1_SPAN = { xs: 2, sm: 3, md: 3, lg: 4 }; // legacy fixed sizes -> tile span
+const GRID_COLS = 10;
+const V1_SPAN = { xs: 2, sm: 2, md: 3, lg: 4 }; // legacy fixed sizes -> tile span (10-col)
+
+// Per-type tile rules: indicators and text tiles can go down to 1 cell;
+// dials/lamps stay square, line charts and text strips can be any shape
+const tileFloor = (type) => (type === 'indicator' || type === 'text') ? 1 : 2;
+const tileFreeform = (type) => type === 'line' || type === 'text';
+
+// A page condition ({ name, min, max, invert }) matches exactly like an
+// indicator lamp lights: value at/above the midpoint of min..max — or below
+// it when inverted. Used by conditional page display.
+const condMatch = (cond, val) => {
+  if (val == null || isNaN(val)) return false;
+  const lo = cond.min == null ? 0 : cond.min;
+  const hi = cond.max == null ? lo : cond.max;
+  const on = val >= (lo + hi) / 2;
+  return cond.invert ? !on : on;
+};
 
 function migrateGauges(data) {
   if (data && Array.isArray(data.pages)) {
+    // v2 layouts were authored on a 12-column grid — rescale to 8 columns
+    const scale = (data.v >= 3) ? 1 : GRID_COLS / 12;
     const pages = data.pages
       .map((p, pi) => ({
         id: p.id || pi + 1,
         name: p.name || 'Page ' + (pi + 1),
+        cond: (p.cond && p.cond.name) ? p.cond : undefined,
         items: (Array.isArray(p.items) ? p.items : []).map(g => {
           const type = g.type || 'radial';
-          const floor = type === 'indicator' ? 1 : 2; // indicators can be 1x1
-          let w = Math.max(floor, g.w || 3), h = Math.max(floor, g.h || 3);
-          if (type !== 'line') w = h = Math.min(w, h); // dials/lamps are square
-          return { type: 'radial', ...g, w, h };
+          const floor = tileFloor(type);
+          let w = Math.max(floor, Math.round((g.w || 3) * scale));
+          let h = Math.max(floor, Math.round((g.h || 3) * scale));
+          if (!tileFreeform(type)) w = h = Math.min(w, h); // dials/lamps are square
+          let x = Math.round((g.x || 0) * scale), y = Math.round((g.y || 0) * scale);
+          x = Math.max(0, Math.min(x, GRID_COLS - w)); // keep on the grid
+          return { type: 'radial', ...g, x, y, w, h };
         }),
       }));
     return pages.length ? pages : [{ id: 1, name: 'Main', items: [] }];
@@ -2782,7 +2911,7 @@ function migrateGauges(data) {
   const v1 = (data && Array.isArray(data.items)) ? data.items : [];
   const items = v1.map((g, i) => {
     const base = typeof g === 'string' ? { name: g, min: 0, max: 100 } : g;
-    const span = V1_SPAN[base.size || (data && data.size)] || 3;
+    const span = V1_SPAN[base.size || (data && data.size)] || 2;
     const perRow = Math.max(1, Math.floor(GRID_COLS / span));
     const { size, ...rest } = base;
     return {
@@ -2796,14 +2925,17 @@ function migrateGauges(data) {
 // Indicator lamp for On/Off and 0/1 values: min/max describe the value's
 // range (like every other gauge type) and the lamp switches at the midpoint —
 // lit in the gauge colour above it, dim below. Min 0 / Max 1 switches at 0.5.
-const IndicatorLamp = ({ value, min, max, color, enums, px }) => {
+// invert flips the lamp (lit while the value is OFF/below the midpoint) —
+// the caption still names the value's real state.
+const IndicatorLamp = ({ value, min, max, color, enums, invert, px }) => {
   const v = (value == null || isNaN(value)) ? null : value;
   const lo = (min == null) ? 0 : min;
   const hi = (max == null) ? lo : max;
-  const on = v != null && v >= (lo + hi) / 2;
+  const rawOn = v != null && v >= (lo + hi) / 2;
+  const on = invert ? (v != null && !rawOn) : rawOn;
   const col = (color && /^#[0-9a-fA-F]{6}$/.test(color)) ? color : 'var(--accent)';
   const d = Math.round(px * 0.52);
-  const label = v == null ? '—' : (enums ? enumLabel(enums, v) : (on ? 'ON' : 'OFF'));
+  const label = v == null ? '—' : (enums ? enumLabel(enums, v) : (rawOn ? 'ON' : 'OFF'));
   return html`
     <div class="ind-wrap" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:${Math.round(px * 0.06)}px">
       <div class="ind-lamp ${on ? 'on' : ''}" style=${{
@@ -2814,6 +2946,26 @@ const IndicatorLamp = ({ value, min, max, color, enums, px }) => {
         transition: 'background .15s, box-shadow .15s',
       }}></div>
       ${px >= 40 && html`<div class="g-unit" style=${'font-size:' + Math.max(0.7, px / 230 * 1.0).toFixed(2) + 'rem'}>${label}</div>`}
+    </div>`;
+};
+
+// Plain text tile: the live value as large text (with unit / enum label),
+// or fixed caption text when "Static text" is set — handy for labelling
+// dashboard sections.
+const TextTile = ({ value, unit, enums, text, decimals, w, h }) => {
+  const isStatic = !!(text && String(text).trim());
+  let disp;
+  if (isStatic) disp = String(text).trim();
+  else {
+    const v = (value == null || isNaN(value)) ? null : value;
+    disp = v == null ? '—' : (enums ? String(enumLabel(enums, v)) : v.toFixed(decimals));
+  }
+  // Fit by height, shrinking for long strings so they stay on the tile
+  const fs = Math.max(11, Math.min(Math.round(h * 0.5), Math.round((w * 1.5) / Math.max(2, disp.length))));
+  return html`
+    <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;max-width:100%;overflow:hidden">
+      <div class="g-val" style=${'font-size:' + fs + 'px;line-height:1.15;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%'}>${disp}</div>
+      ${!isStatic && unit && html`<div class="g-unit" style=${'font-size:' + Math.max(10, Math.round(fs * 0.38)) + 'px'}>${unit}</div>`}
     </div>`;
 };
 
@@ -2831,6 +2983,14 @@ const GaugeTileBody = ({ g, title, value, unit, enums }) => {
     const measure = () => {
       const w = el.clientWidth, h = el.clientHeight;
       setDim(d => (d.w !== w || d.h !== h) ? { w, h } : d);
+      // Tiny tiles (1x1 on a phone) hide the resize grip — it would cover
+      // the whole tile and swallow the tap-to-configure gesture. Their size
+      // is set from the settings modal instead.
+      const item = el.closest('.grid-stack-item');
+      if (item) {
+        const r = item.getBoundingClientRect();
+        item.classList.toggle('tile-tiny', Math.min(r.width, r.height) < 48);
+      }
     };
     measure();
     const ro = new ResizeObserver(measure);
@@ -2839,8 +2999,9 @@ const GaugeTileBody = ({ g, title, value, unit, enums }) => {
   }, []);
   const { w, h } = dim;
   // Small tiles (1x1, or 2x2 on a phone) drop the name row so the gauge
-  // itself always gets the space — the tile's title attribute still names it
-  const showName = h >= 48;
+  // itself always gets the space — the tile's title attribute still names it.
+  // Unnamed tiles (static text captions) don't render the placeholder dash.
+  const showName = h >= 48 && title !== '—';
   const nameH = showName ? Math.min(20, Math.round(h * 0.16)) : 0;
   const gh = h - nameH - 2;
   return html`
@@ -2848,13 +3009,16 @@ const GaugeTileBody = ({ g, title, value, unit, enums }) => {
       ${showName && html`<div class="gauge-tile-name" style=${'font-size:' + Math.min(13, Math.max(9, Math.round(nameH * 0.7))) + 'px;line-height:' + nameH + 'px;margin:0'}>${title}</div>`}
       ${w > 12 && gh > 12 && ((g.type === 'line')
         ? html`<${GaugeLine} key=${g.id} name=${g.name} min=${g.min} max=${g.max} value=${value} unit=${unit} color=${g.color || ''} enums=${enums}
-            points=${g.points || 20} sampleMs=${g.sampleMs || 100}
+            points=${g.points || 20} sampleMs=${g.sampleMs || 100} decimals=${g.decimals != null ? g.decimals : 1}
             w=${w - 4} h=${gh - 2} />`
         : (g.type === 'indicator')
         ? html`<${IndicatorLamp} value=${value} min=${g.min} max=${g.max} color=${g.color || ''} enums=${enums}
-            px=${Math.max(14, Math.min(w, gh) - 4)} />`
+            invert=${!!g.invert} px=${Math.max(14, Math.min(w, gh) - 4)} />`
+        : (g.type === 'text')
+        ? html`<${TextTile} value=${value} unit=${unit} enums=${enums} text=${g.text || ''}
+            decimals=${g.decimals != null ? g.decimals : 1} w=${w - 6} h=${gh - 4} />`
         : html`<${SvgGauge} id=${g.id} value=${value} unit=${unit} color=${g.color || ''} enums=${enums}
-            px=${Math.max(40, Math.min(w, gh) - 4)}
+            px=${Math.max(40, Math.min(w, gh) - 4)} decimals=${g.decimals != null ? g.decimals : 1}
             min=${g.min != null ? g.min : 0} max=${(g.max == null || g.max === 0) ? 4000 : g.max} />`)}
     </div>`;
 };
@@ -2866,10 +3030,17 @@ const Gauges = () => {
   const [lineVals, setLineVals] = useState({});
   const [editing, setEditing] = useState(false);
   const [configId, setConfigId] = useState(null); // gauge whose settings modal is open
+  const [autoPage, setAutoPage] = useState(true); // conditional page display armed
+  const [loaded, setLoaded] = useState(false); // gauges.json fetch settled
+  // Deep-link target, captured at first render — effects rewrite the hash
+  // before the async layout fetch reads it
+  const initialSubRef = useRef(parseHash().sub);
   const fetchRef = useRef(null);
   const nextId = useRef(1);
   const gridRef = useRef(null);  // .grid-stack DOM node
   const gridApi = useRef(null);  // GridStack instance
+  const dragBusyRef = useRef(false); // true during (and briefly after) a drag/resize
+  const lastHitRef = useRef(null); // page whose condition matched last tick
   const activeRef = useRef(activePage);
   activeRef.current = activePage;
 
@@ -2877,6 +3048,32 @@ const Gauges = () => {
   const items = page.items;
   const itemsRef = useRef(items);
   itemsRef.current = items;
+  const pagesRef = useRef(pages);
+  pagesRef.current = pages;
+  const editingRef = useRef(editing);
+  editingRef.current = editing;
+
+  // Keep the URL in step with the visible page (#gauges/<name>) so it can be
+  // bookmarked; replaceState so flipping pages doesn't spam browser history.
+  // Waits for the layout fetch so it can't clobber a deep link with the
+  // placeholder page, and so it runs again once the real pages are in.
+  useEffect(() => {
+    if (!loaded) return;
+    if (!/^#gauges(\/|$)/.test(location.hash)) return;
+    history.replaceState(null, '', '#gauges/' + encodeURIComponent(page.name));
+  }, [loaded, activePage, page.name]);
+  useEffect(() => {
+    const onHash = () => {
+      const { tab, sub } = parseHash();
+      if (tab !== 'gauges' || !sub) return;
+      const want = sub.trim().toLowerCase();
+      const p = pagesRef.current.find(x =>
+        String(x.id) === want || String(x.name).trim().toLowerCase() === want);
+      if (p && p.id !== activeRef.current) setActivePage(p.id);
+    };
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
 
   // Load saved layout (migrating v1 if needed) and fetch spot names for the picker
   useEffect(() => {
@@ -2884,22 +3081,30 @@ const Gauges = () => {
       try {
         const r = await fetch('/gauges.json');
         if (r.ok) {
-          const migrated = migrateGauges(await r.json());
+          const data = await r.json();
+          const migrated = migrateGauges(data);
           let maxId = 0;
           migrated.forEach(p => p.items.forEach(g => { if (typeof g.id === 'number' && g.id > maxId) maxId = g.id; }));
           migrated.forEach(p => p.items.forEach(g => { if (!g.id) g.id = ++maxId; }));
           nextId.current = maxId + 1;
           setPages(migrated);
-          setActivePage(migrated[0].id);
+          // Deep link: #gauges/<page name> (or page id) opens that page —
+          // lets a browser favourite target e.g. the Driving layout directly
+          const want = initialSubRef.current.trim().toLowerCase();
+          const linked = want && migrated.find(p =>
+            String(p.id) === want || String(p.name).trim().toLowerCase() === want);
+          setActivePage((linked || migrated[0]).id);
+          if (data && data.autoPage === false) setAutoPage(false);
         }
       } catch (e) { /* no saved layout */ }
+      setLoaded(true);
       api.getJSON('json').then(json => dispatch({ type: 'SET_PARAMS', payload: json })).catch(() => {});
     })();
   }, []);
 
-  const persist = async (nextPages) => {
+  const persist = async (nextPages, auto = autoPage) => {
     try {
-      const blob = new Blob([JSON.stringify({ v: 2, pages: nextPages })], { type: 'application/json' });
+      const blob = new Blob([JSON.stringify({ v: 3, autoPage: auto, pages: nextPages })], { type: 'application/json' });
       const fd = new FormData();
       fd.append('updatefile', blob, 'gauges.json');
       await fetch('/edit', { method: 'POST', body: fd });
@@ -2940,7 +3145,7 @@ const Gauges = () => {
     // indicator lamps, 2x2 for everything else)
     const minFor = (id) => {
       const g = itemsRef.current.find(x => String(x.id) === String(id));
-      return g && g.type === 'indicator' ? 1 : 2;
+      return g ? tileFloor(g.type) : 2;
     };
     grid.batchUpdate();
     grid.getGridItems().forEach(el => {
@@ -2955,26 +3160,32 @@ const Gauges = () => {
       setPageItems(activeRef.current, prev => prev.map(g => {
         const l = layout.find(w => String(w.id) === String(g.id));
         if (!l) return g;
-        const floor = g.type === 'indicator' ? 1 : 2;
+        const floor = tileFloor(g.type);
         return { ...g, x: l.x || 0, y: l.y || 0, w: Math.max(floor, l.w || 1), h: Math.max(floor, l.h || 1) };
       }));
     };
     grid.on('change', onChange);
+    // Tap-vs-drag: a drag or resize still fires a click on mouseup, which
+    // would pop the config modal right after every move — suppress it briefly
+    grid.on('dragstart', () => { dragBusyRef.current = true; });
+    grid.on('dragstop', () => { setTimeout(() => { dragBusyRef.current = false; }, 150); });
     // After a resize: enforce the 2x2 minimum (interactive resizes can slip
     // past engine minW) and keep dial-type gauges square — snap to the nearer
     // square, growing if the drag grew the tile, shrinking otherwise
     const prevDim = { w: 0, h: 0 };
     grid.on('resizestart', (e, el) => {
+      dragBusyRef.current = true;
       const n = el.gridstackNode || {};
       prevDim.w = n.w || 0; prevDim.h = n.h || 0;
     });
     grid.on('resizestop', (e, el) => {
+      setTimeout(() => { dragBusyRef.current = false; }, 150);
       const n = el.gridstackNode;
       if (!n) return;
       const g = itemsRef.current.find(x => String(x.id) === String(n.id));
-      const floor = g && g.type === 'indicator' ? 1 : 2;
+      const floor = g ? tileFloor(g.type) : 2;
       let w = Math.max(floor, n.w || 1), h = Math.max(floor, n.h || 1);
-      if (g && g.type !== 'line') {
+      if (g && !tileFreeform(g.type)) {
         const grew = (n.w || 1) * (n.h || 1) >= prevDim.w * prevDim.h;
         w = h = grew ? Math.max(w, h) : Math.min(w, h);
       }
@@ -3000,6 +3211,40 @@ const Gauges = () => {
     setPageItems(activePage, prev => prev.filter(g => g.id !== id));
   };
 
+  // Resize a tile from its settings modal — the only way to grow/shrink
+  // tiny tiles on a phone, where the corner grip is hidden. The rendered
+  // size is driven by gridstack's inline style, so the ENGINE update is what
+  // actually resizes the tile; its 'change' event then syncs state. The
+  // element is found via gridstack's own node list (it strips gs-* attrs
+  // after parsing, so a DOM attribute query is unreliable).
+  const setGaugeSize = (id, wIn, hIn) => {
+    const g = items.find(x => x.id === id);
+    if (!g) return;
+    const floor = tileFloor(g.type);
+    let w = Math.max(floor, Math.min(GRID_COLS, Math.round(wIn) || floor));
+    let h = Math.max(floor, Math.min(GRID_COLS, Math.round(hIn) || floor));
+    if (!tileFreeform(g.type)) h = w;
+    const engine = gridApi.current;
+    const node = engine && engine.engine && engine.engine.nodes.find(n => String(n.id) === String(id));
+    if (node && node.el) {
+      engine.update(node.el, { w, h }); // fires 'change' -> onChange persists
+    } else {
+      // No live grid (shouldn't happen in edit mode) — persist directly
+      setPageItems(activePage, prev => prev.map(x => x.id !== id ? x : { ...x, w, h }));
+    }
+  };
+
+  // Copy a gauge's full config (value, type, colour, range, size) into a new
+  // tile appended below the current content
+  const duplicateGauge = (id) => {
+    setPageItems(activePage, prev => {
+      const src = prev.find(g => g.id === id);
+      if (!src) return prev;
+      const y = prev.reduce((m, g) => Math.max(m, (g.y || 0) + (g.h || 3)), 0);
+      return [...prev, { ...src, id: nextId.current++, x: 0, y }];
+    });
+  };
+
   const updateGaugeConfig = (id, field, value) =>
     setPageItems(activePage, prev => prev.map(g => g.id !== id ? g : { ...g, [field]: value }));
 
@@ -3023,10 +3268,25 @@ const Gauges = () => {
     setPages(next);
     setActivePage(next[0].id);
   };
+  // Conditional page display config: each page may carry one condition
+  const updatePageCond = (field, value) =>
+    setPages(ps => ps.map(p => p.id !== activePage ? p : {
+      ...p, cond: { name: '', min: 0, max: 1, ...(p.cond || {}), [field]: value },
+    }));
+  const clearPageCond = () =>
+    setPages(ps => ps.map(p => p.id !== activePage ? p : { ...p, cond: undefined }));
 
   // High-rate spot value fetching for the active page (pauses main json refresh)
   useEffect(() => {
-    const names = items.map(g => g.name).filter(Boolean);
+    // Pause streaming while the settings modal is open: its constant
+    // re-renders otherwise revert an in-progress edit of a controlled input
+    // (type a value, a stream tick lands, the field snaps back).
+    // Page-condition values ride along in the same fetch (deduplicated) so
+    // conditional page display sees them even from a page with no gauges.
+    const condNames = (autoPage && !configId)
+      ? pages.map(p => p.cond && p.cond.name).filter(Boolean) : [];
+    const names = configId ? []
+      : [...new Set([...items.map(g => g.name).filter(Boolean), ...condNames])];
     if (names.length === 0) {
       dispatch({ type: 'SET_LOGGING', payload: false });
       return;
@@ -3041,14 +3301,27 @@ const Gauges = () => {
         const text = await api.getText('get ' + names.join(','));
         if (!active) return;
         const vals = text.match(/[\-\d\.]+/g) || [];
+        // Positional mapping is only safe when counts line up — an error reply
+        // (e.g. one bad name) would shift every gauge onto its neighbour's value
+        if (vals.length !== names.length) return;
+        const byName = {};
+        names.forEach((n, i) => { byName[n] = parseFloat(vals[i]); });
         const next = {};
-        let vi = 0;
         items.forEach(g => {
-          if (!g.name) return;
-          const val = parseFloat(vals[vi++]);
-          if (!isNaN(val)) next[g.id] = val;
+          if (g.name && !isNaN(byName[g.name])) next[g.id] = byName[g.name];
         });
         setLineVals(prev => ({ ...prev, ...next }));
+        // Conditional page display: when a page's condition STARTS matching,
+        // switch to it. A persisting match doesn't re-trigger, so the user can
+        // still browse away; when nothing matches the current page stays.
+        if (autoPage && !editingRef.current) {
+          const hit = pagesRef.current.find(p => p.cond && p.cond.name && condMatch(p.cond, byName[p.cond.name]));
+          const hitId = hit ? hit.id : null;
+          if (hitId !== lastHitRef.current) {
+            lastHitRef.current = hitId;
+            if (hitId != null && hitId !== activeRef.current) setActivePage(hitId);
+          }
+        }
       } catch (e) { /* ignore */ }
       if (active) {
         const elapsed = performance.now() - t0;
@@ -3061,7 +3334,7 @@ const Gauges = () => {
       dispatch({ type: 'SET_LOGGING', payload: false });
       if (fetchRef.current) { clearTimeout(fetchRef.current); fetchRef.current = null; }
     };
-  }, [items]);
+  }, [items, configId, autoPage, pages.map(p => (p.cond && p.cond.name) || '').join()]);
 
   const spotNames = state.spotValues ? Object.keys(state.spotValues) : [];
 
@@ -3081,13 +3354,55 @@ const Gauges = () => {
           <button onclick=${renamePage} style="font-size:.75rem;padding:4px 10px"><${Icon} n="edit" />Rename</button>
           <button onclick=${deletePage} style="font-size:.75rem;padding:4px 10px;color:var(--red)"><${Icon} n="x" />Delete</button>
         </div>
-        <p style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">Tap a tile's ⚙ to configure its value, type, colour and range.</p>
+        <h3 class="underline">Page condition</h3>
+        ${page.cond ? html`
+          <div id="page-cond" style="display:flex;flex-direction:column;gap:6px;font-size:.8rem">
+            <div style="display:flex;gap:8px;align-items:center">
+              <label style="width:3.5em">Value</label>
+              <${FieldPicker} value=${page.cond.name || ''} spotNames=${spotNames} onChange=${n => updatePageCond('name', n)} />
+            </div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <label style="width:3.5em">Min</label>
+              <input type="number" value=${page.cond.min} step="any" style="width:5em;padding:4px 6px"
+                oninput=${e => updatePageCond('min', parseFloat(e.target.value) || 0)} />
+              <label>Max</label>
+              <input type="number" value=${page.cond.max} step="any" style="width:5em;padding:4px 6px"
+                oninput=${e => updatePageCond('max', parseFloat(e.target.value) || 0)} />
+            </div>
+            <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+              <span style="width:3.5em">Invert</span>
+              <input type="checkbox" checked=${!!page.cond.invert} onchange=${e => updatePageCond('invert', e.target.checked)} style="width:auto" />
+              <span style="font-size:.72rem;color:var(--text3)">show while below the switching point</span>
+            </label>
+            <button onclick=${clearPageCond} style="font-size:.72rem;padding:3px 10px;width:auto;align-self:flex-start;color:var(--red)"><${Icon} n="x" size=${11} />Remove condition</button>
+            <p style="font-size:.72rem;color:var(--text3);margin:0">Like an indicator: the app switches to this page when the value crosses the midpoint of Min/Max. The Auto toggle above the grid arms it.</p>
+          </div>
+        ` : html`
+          <button onclick=${() => updatePageCond('name', '')} style="font-size:.75rem;padding:4px 10px;width:auto"><${Icon} n="plus" />Add condition</button>
+          <p style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">A condition switches to this page automatically when a value matches — e.g. show Debug while lasterr is non-zero.</p>
+        `}
+        <p style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">Tap a tile to configure its value, type, colour and range — or to duplicate or remove it.</p>
       </div>
       `}
       <div class="main-left">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem;gap:8px;flex-wrap:wrap">
           <h2 style="margin:0">Gauges</h2>
-          ${!editing && html`<button onclick=${() => setEditing(true)} style="font-size:.75rem;padding:4px 12px"><${Icon} n="edit" />Edit Layout</button>`}
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            ${pages.some(p => p.cond && p.cond.name) && html`
+              <label class="toggle-row" id="auto-pages" style="width:auto;padding:4px 10px;font-size:.72rem" title="Conditional page display: switch pages automatically when a page condition matches">
+                <span class="toggle-label">Auto pages</span>
+                <span class="switch sm">
+                  <input type="checkbox" checked=${autoPage} onchange=${e => {
+                    const v = e.target.checked;
+                    setAutoPage(v);
+                    lastHitRef.current = null; // re-arm: a live match fires immediately
+                    persist(pages, v);
+                  }} />
+                  <span class="slider"></span>
+                </span>
+              </label>`}
+            ${!editing && html`<button onclick=${() => setEditing(true)} style="font-size:.75rem;padding:4px 12px"><${Icon} n="edit" />Edit Layout</button>`}
+          </div>
         </div>
         <div id="gauge-pages" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:.6rem">
           ${pages.map(p => html`
@@ -3103,9 +3418,15 @@ const Gauges = () => {
             const enums = (sv && sv.enums) || null;
             return html`
             <div class="grid-stack-item" key=${g.id} gs-id=${g.id} gs-x=${g.x} gs-y=${g.y} gs-w=${g.w} gs-h=${g.h}>
-              <div class="grid-stack-item-content gauge-tile" title=${g.name || ''}>
-                ${editing && html`<button class="tile-cfg" title="Configure gauge" onclick=${() => setConfigId(g.id)}>⚙</button>`}
-                <${GaugeTileBody} g=${g} title=${g.name || (editing ? 'tap ⚙' : '—')} value=${lineVals[g.id]} unit=${unit} enums=${enums} />
+              ${/* In edit mode a tap opens the tile's settings (no overlay
+                  buttons — on a 1x1 mobile tile they'd all overlap the
+                  resize handle); drags are filtered by dragBusyRef */ ''}
+              <div class="grid-stack-item-content gauge-tile" title=${g.label || g.name || ''}
+                onclick=${editing ? (() => { if (!dragBusyRef.current) setConfigId(g.id); }) : undefined}>
+                ${/* 'tap to set up' only for truly unconfigured tiles — a
+                    static-text tile is fully configured without a value or
+                    label (its body IS the text, no name row needed) */ ''}
+                <${GaugeTileBody} g=${g} title=${g.label || g.name || (editing && !(g.type === 'text' && g.text && String(g.text).trim()) ? 'tap to set up' : '—')} value=${lineVals[g.id]} unit=${unit} enums=${enums} />
               </div>
             </div>`;
           })}
@@ -3121,6 +3442,11 @@ const Gauges = () => {
                 <${FieldPicker} value=${cfg.name} spotNames=${spotNames} onChange=${name => updateGaugeConfig(cfg.id, 'name', name)} />
               </div>
               <div style="display:flex;gap:8px;align-items:center">
+                <label style="width:4.5em">Label</label>
+                <input type="text" value=${cfg.label || ''} placeholder="(shows the value name)" maxlength="24"
+                  oninput=${e => updateGaugeConfig(cfg.id, 'label', e.target.value)} style="flex:1;padding:5px 8px" />
+              </div>
+              <div style="display:flex;gap:8px;align-items:center">
                 <label style="width:4.5em">Type</label>
                 <select value=${cfg.type || 'radial'} onchange=${e => {
                   const t = e.target.value;
@@ -3133,19 +3459,58 @@ const Gauges = () => {
                   <option value="radial">Radial</option>
                   <option value="line">Line</option>
                   <option value="indicator">Indicator</option>
+                  <option value="text">Text</option>
                 </select>
                 <label style="margin-left:8px">Colour</label>
                 <input type="color" value=${cfg.color || '#4cc9f0'} oninput=${e => updateGaugeConfig(cfg.id, 'color', e.target.value)}
                   style="width:34px;height:28px;padding:0;border:1px solid var(--border2);border-radius:6px;background:none;cursor:pointer" />
                 ${cfg.color && html`<button onclick=${() => updateGaugeConfig(cfg.id, 'color', '')} style="font-size:.65rem;padding:2px 8px;width:auto" title="Reset to theme gradient"><${Icon} n="undo" size=${11} /></button>`}
               </div>
-              <div style="display:flex;gap:8px;align-items:center">
+              ${cfg.type !== 'text' && html`<div style="display:flex;gap:8px;align-items:center">
                 <label style="width:4.5em">Min</label>
                 <input type="number" value=${cfg.min} oninput=${e => updateGaugeConfig(cfg.id, 'min', parseFloat(e.target.value) || 0)} style="width:6em;padding:5px 6px" step="any" />
                 <label>Max</label>
                 <input type="number" value=${cfg.max} oninput=${e => updateGaugeConfig(cfg.id, 'max', parseFloat(e.target.value) || 0)} style="width:6em;padding:5px 6px" step="any" />
+              </div>`}
+              ${cfg.type === 'text' && html`
+                <div style="display:flex;gap:8px;align-items:center">
+                  <label style="width:4.5em">Text</label>
+                  <input type="text" value=${cfg.text || ''} placeholder="(empty = show the live value)" maxlength="40"
+                    oninput=${e => updateGaugeConfig(cfg.id, 'text', e.target.value)} style="flex:1;padding:5px 8px" />
+                </div>
+                <p style="font-size:.72rem;color:var(--text3);margin:0">Leave Text empty to show the selected value as large text; set it for a static caption (section headers etc.).</p>
+              `}
+              ${cfg.type !== 'indicator' && html`<div style="display:flex;gap:8px;align-items:center">
+                <label style="width:4.5em">Decimals</label>
+                <select value=${String(cfg.decimals != null ? cfg.decimals : 1)} onchange=${e => updateGaugeConfig(cfg.id, 'decimals', parseInt(e.target.value))}
+                  style="width:auto;min-width:5em;padding:5px 30px 5px 8px">
+                  <option value="0">0</option>
+                  <option value="1">1</option>
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                </select>
+              </div>`}
+              ${cfg.type === 'indicator' && html`
+                <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+                  <span style="width:4.5em">Invert</span>
+                  <input type="checkbox" checked=${!!cfg.invert} onchange=${e => updateGaugeConfig(cfg.id, 'invert', e.target.checked)} style="width:auto" />
+                  <span style="font-size:.72rem;color:var(--text3)">lamp lit while the value is OFF</span>
+                </label>
+                <p style="font-size:.72rem;color:var(--text3);margin:0">The lamp lights in the chosen colour when the value rises past the midpoint between Min and Max — e.g. Min 0 / Max 1 switches at 0.5.</p>`}
+              <div style="display:flex;gap:8px;align-items:center">
+                <label style="width:4.5em">Size</label>
+                ${tileFreeform(cfg.type) ? html`
+                  <input type="number" min=${tileFloor(cfg.type)} max=${GRID_COLS} value=${cfg.w} title="Width (cells)"
+                    onchange=${e => setGaugeSize(cfg.id, parseInt(e.target.value), cfg.h)} style="width:5em;padding:5px 6px" />
+                  <label>×</label>
+                  <input type="number" min=${tileFloor(cfg.type)} max=${GRID_COLS} value=${cfg.h} title="Height (cells)"
+                    onchange=${e => setGaugeSize(cfg.id, cfg.w, parseInt(e.target.value))} style="width:5em;padding:5px 6px" />
+                ` : html`
+                  <input type="number" min=${tileFloor(cfg.type)} max=${GRID_COLS} value=${cfg.w} title="Size (cells, square)"
+                    onchange=${e => setGaugeSize(cfg.id, parseInt(e.target.value), parseInt(e.target.value))} style="width:5em;padding:5px 6px" />
+                  <span style="font-size:.72rem;color:var(--text3)">cells (of ${GRID_COLS})</span>
+                `}
               </div>
-              ${cfg.type === 'indicator' && html`<p style="font-size:.72rem;color:var(--text3);margin:0">The lamp lights in the chosen colour when the value rises past the midpoint between Min and Max — e.g. Min 0 / Max 1 switches at 0.5.</p>`}
               ${cfg.type === 'line' && html`
                 <div style="display:flex;gap:8px;align-items:center">
                   <label style="width:4.5em">Points</label>
@@ -3165,9 +3530,10 @@ const Gauges = () => {
                 </div>
                 <p style="font-size:.72rem;color:var(--text3);margin:0">Time window ≈ Points × Sample — e.g. 60 points at 1 s shows the last minute. Faster sampling scrolls faster.</p>
               `}
-              <div style="display:flex;gap:8px;margin-top:4px">
+              <div style="display:flex;gap:8px;margin-top:4px;flex-wrap:wrap">
                 <button onclick=${() => setConfigId(null)} style="width:auto"><${Icon} n="check" />Done</button>
-                <button onclick=${() => removeGauge(cfg.id)} style="width:auto;color:var(--red)"><${Icon} n="x" />Remove gauge</button>
+                <button onclick=${() => { duplicateGauge(cfg.id); setConfigId(null); }} style="width:auto">⧉ Duplicate</button>
+                <button onclick=${() => removeGauge(cfg.id)} style="width:auto;color:var(--red)"><${Icon} n="x" />Remove</button>
               </div>
             </div>
           </${Modal}>`;
@@ -3181,6 +3547,33 @@ const Gauges = () => {
 const App = () => {
   const [state, dispatch] = useReducer(reducer, initialState);
   const store = useMemo(() => ({ state, dispatch }), [state]);
+  // The poll effect below only re-runs on rate/logging changes, so it must
+  // read the current tab through a ref — a closure would go stale and keep
+  // fetching (or stop fetching) 'errors' for whichever tab was active when
+  // the effect last ran
+  const activeTabRef = useRef(state.activeTab);
+  activeTabRef.current = state.activeTab;
+
+  // URL breadcrumbs: reflect the active tab into the hash (so the current
+  // view can be bookmarked) and follow hash changes (back/forward buttons,
+  // or opening a bookmark while the app is already loaded)
+  useEffect(() => {
+    const onHash = () => {
+      const { tab } = parseHash();
+      if (tab && tab !== activeTabRef.current) dispatch({ type: 'SET_ACTIVE_TAB', payload: tab });
+    };
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+  useEffect(() => {
+    const cur = parseHash();
+    if (cur.tab !== state.activeTab) {
+      // Tab switches make history entries (back button walks tabs); the very
+      // first paint just normalises the empty hash without adding one
+      if (cur.tab) location.hash = '#' + state.activeTab;
+      else history.replaceState(null, '', '#' + state.activeTab);
+    }
+  }, [state.activeTab]);
 
   // Load CAN settings on mount
   useEffect(() => {
@@ -3209,8 +3602,8 @@ const App = () => {
         const json = await api.getJSON('json');
         if (!running) return true;
         dispatch({ type: 'SET_PARAMS', payload: json });
-        if (state.activeTab === 'dashboard') {
-          api.getText('errors').then(r => dispatch({ type: 'SET_MESSAGES', payload: r }));
+        if (activeTabRef.current === 'dashboard') {
+          api.getText('errors').then(r => dispatch({ type: 'SET_MESSAGES', payload: r })).catch(() => {});
         }
       } catch (e) {
         if (running) dispatch({ type: 'FETCH_ERROR' });

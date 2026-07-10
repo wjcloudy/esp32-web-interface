@@ -36,7 +36,8 @@ test.describe('Parameters tab', () => {
     await gotoTab(page, 'Parameters');
     const row = page.locator('#params tr', { hasText: 'dirmode' });
     await row.locator('select').selectOption({ label: 'DefaultForward' });
-    expect(await mock.commands()).toContain('set dirmode 4');
+    // selectOption -> onchange -> async set; poll rather than check immediately
+    await expect.poll(async () => await mock.commands()).toContain('set dirmode 4');
   });
 
   test('search filters the table', async ({ page, mock }) => {
@@ -54,7 +55,7 @@ test.describe('Parameters tab', () => {
     await page.locator('button', { hasText: 'Save parameters to flash' }).click();
     await page.locator('button', { hasText: 'Restore parameters from flash' }).click();
     await expect.poll(async () => await mock.commands()).toContain('save');
-    expect(await mock.commands()).toContain('load');
+    await expect.poll(async () => await mock.commands()).toContain('load');
   });
 
   test('download link exports the full parameter set as JSON', async ({ page, mock }) => {
@@ -90,7 +91,7 @@ test.describe('Parameters tab', () => {
     await expect(page.locator('#params tr', { hasText: 'fweak' })).toContainText('72.5');
   });
 
-  test('load parameters accepts a flat name->value map and reports failures', async ({ page, mock }) => {
+  test('load parameters accepts a flat name->value map and reports rejections', async ({ page, mock }) => {
     await openApp(page, mock);
     await gotoTab(page, 'Parameters');
     const dialogs = [];
@@ -100,9 +101,28 @@ test.describe('Parameters tab', () => {
       buffer: Buffer.from(JSON.stringify({ fweak: 80, doesnotexist: 5 })),
     });
     await expect.poll(() => dialogs.length, { timeout: 15000 }).toBeGreaterThanOrEqual(2);
-    // Unknown parameter still gets attempted; the summary reports totals
-    expect(dialogs[1]).toContain('Applied 2 of 2');
+    // The inverter rejected the unknown name — the summary must say so
+    // instead of counting every non-throw as applied
+    expect(dialogs[1]).toContain('Applied 1 of 2');
+    expect(dialogs[1]).toContain('doesnotexist');
     expect(await mock.commands()).toContain('set fweak 80');
+  });
+
+  test('an out-of-range edit is rejected and the old value kept', async ({ page, mock }) => {
+    await openApp(page, mock);
+    await gotoTab(page, 'Parameters');
+    const dialogs = [];
+    page.on('dialog', d => { dialogs.push(d.message()); d.accept(); });
+    const row = page.locator('#params tr', { hasText: 'fweak' });
+    await row.locator('td').nth(3).locator('span').click();
+    const input = row.locator('input[type="number"]');
+    await input.fill('900'); // fweak max is 400
+    await input.press('Enter');
+    // Reply "Value out of range" surfaces as an alert; the table keeps 67
+    await expect.poll(() => dialogs.length).toBeGreaterThanOrEqual(1);
+    expect(dialogs[0]).toContain('out of range');
+    await expect(row).toContainText('67');
+    expect((await mock.state()).inverter.params.fweak.value).toBe(67);
   });
 
   test('invalid file shows an error and applies nothing', async ({ page, mock }) => {

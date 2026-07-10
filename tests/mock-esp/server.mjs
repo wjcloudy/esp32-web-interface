@@ -140,14 +140,19 @@ export function createMockEsp({ port = 0 } = {}) {
     if (rel.includes('..')) { res.writeHead(400); res.end(); return true; }
     const abs = path.join(DATA_DIR, rel);
     const type = MIME[path.extname(rel)] || 'application/octet-stream';
+    // Explicit Content-Length (not chunked) so many concurrent keep-alive
+    // requests for the vendor scripts can't misframe under parallel test load
+    // — a truncated preact-hooks.umd.js would leave `preactHooks` undefined.
     if (fs.existsSync(abs) && fs.statSync(abs).isFile()) {
-      res.writeHead(200, { 'Content-Type': type });
-      res.end(fs.readFileSync(abs));
+      const buf = fs.readFileSync(abs);
+      res.writeHead(200, { 'Content-Type': type, 'Content-Length': buf.length });
+      res.end(buf);
       return true;
     }
     if (fs.existsSync(abs + '.gz')) { // gz-only assets, served like the ESP does
-      res.writeHead(200, { 'Content-Type': type, 'Content-Encoding': 'gzip' });
-      res.end(fs.readFileSync(abs + '.gz'));
+      const buf = fs.readFileSync(abs + '.gz');
+      res.writeHead(200, { 'Content-Type': type, 'Content-Encoding': 'gzip', 'Content-Length': buf.length });
+      res.end(buf);
       return true;
     }
     return false;

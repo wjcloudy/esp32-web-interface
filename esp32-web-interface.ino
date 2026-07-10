@@ -86,6 +86,7 @@
 const char* host = "inverter";
 bool fastUart = false;
 bool fastUartAvailable = true;
+uint8_t fastUartAttempts = 0; // negotiation storms per boot are bounded — wrong-baud bytes can upset some inverter consoles
 bool txrxSwapped = true; // default: swapped for Wemos/OI/Zombie boards
 bool canMode = false; // true = CAN bus mode, false = UART mode
 int canNodeId = CAN_NODE_ID_MIN;
@@ -205,6 +206,10 @@ static bool canVirtualFind(const String& name, float* out) {
 // CAN firmware update background task state
 enum CanFwState { CANFW_IDLE = 0, CANFW_WAITBOOT = 1, CANFW_FLASHING = 2, CANFW_DONE = 3, CANFW_ERROR = 4 };
 static volatile uint8_t canFwState = CANFW_IDLE;
+// True while the CAN firmware-update task owns the TWAI driver. Every handler
+// that reinits the driver or injects frames must refuse while this holds —
+// tearing the driver down under the task kills the transfer mid-flash.
+static bool canFwBusy() { return canFwState == CANFW_WAITBOOT || canFwState == CANFW_FLASHING; }
 static volatile uint16_t canFwPage = 0;
 static volatile uint16_t canFwPages = 0;
 static String canFwMsg = "";
@@ -695,15 +700,26 @@ static void espOtaFeed(const uint8_t* data, size_t len){
   }
 }
 
+static bool espOtaUploadRejected = false; // upload arrived while the URL-download task owned Update
+
 void handleEspUpdateUpload(){
   if(server.uri() != "/espupdate") return;
   HTTPUpload& upload = server.upload();
   if(upload.status == UPLOAD_FILE_START){
+    // A URL-download OTA task may be mid-flash: two writers on the same
+    // Update partition corrupt the image. Reject this upload entirely.
+    espOtaUploadRejected = (espOtaDlState == 1);
+    if(espOtaUploadRejected){
+      DBG_OUTPUT_PORT.println("ESP OTA upload rejected: URL update in progress");
+      return;
+    }
     espOtaReset();
     DBG_OUTPUT_PORT.println("ESP OTA start: " + upload.filename);
   } else if(upload.status == UPLOAD_FILE_WRITE){
+    if(espOtaUploadRejected) return;
     espOtaFeed(upload.buf, upload.currentSize);
   } else if(upload.status == UPLOAD_FILE_END){
+    if(espOtaUploadRejected) return;
     espOtaDone = true;
     espOtaOk = (espOtaPhase == 3);
     if(!espOtaOk && espOtaErr.length() == 0) espOtaErr = "Incomplete OTA image";
@@ -740,13 +756,15 @@ static void espOtaDownloadTask(void* param){
   WiFiClient* stream = http.getStreamPtr();
   uint8_t buf[1024];
   uint32_t got = 0;
+  uint32_t idleMs = 0; // a live-but-silent peer must not stall the task forever
   while(http.connected() && espOtaPhase < 3){
     size_t avail = stream->available();
     if(avail){
       int n = stream->readBytes(buf, avail > sizeof(buf) ? sizeof(buf) : avail);
-      if(n > 0){ espOtaFeed(buf, n); got += n; if(total > 0) espOtaDlPct = (int)((uint64_t)got * 100 / (uint32_t)total); }
+      if(n > 0){ espOtaFeed(buf, n); got += n; if(total > 0) espOtaDlPct = (int)((uint64_t)got * 100 / (uint32_t)total); idleMs = 0; }
     } else {
       delay(1);
+      if(++idleMs > 30000){ espOtaErr = "Download stalled (no data for 30s)"; break; }
     }
   }
   http.end();
@@ -771,7 +789,12 @@ void handleEspUpdateFromUrl(){
   DBG_OUTPUT_PORT.println("ESP OTA from URL: " + url);
   espOtaDlUrl = url;
   espOtaErr = ""; espOtaDlPct = 0; espOtaDlState = 1;
-  xTaskCreate(espOtaDownloadTask, "espota_dl", 16384, NULL, 1, NULL);
+  if (xTaskCreate(espOtaDownloadTask, "espota_dl", 16384, NULL, 1, NULL) != pdPASS) {
+    // Roll the state back or every future attempt 409s until reboot
+    espOtaDlState = 3; espOtaErr = "Could not start download task (out of memory?)";
+    server.send(500, "application/json", "{\"ok\":false,\"message\":\"Could not start download task\"}");
+    return;
+  }
   server.send(200, "application/json", "{\"ok\":true,\"started\":true}");
 }
 
@@ -821,19 +844,23 @@ void handleRTCNow() {
 void handleRTCSet() {
 
  if (server.hasArg("timestamp")) {
-    String timestamp = server.arg("timestamp");
-    server.send(200, "text/json", "{\"result\":\"" + timestamp + "\"}");
-    DateTime now = DateTime(timestamp.toInt());
-    ext_rtc.adjust(now);
-    int_rtc.setTime(now.unixtime());  
-    handleRTCNow();
+    // Reject garbage — toInt() on a non-number is 0, which would silently
+    // set both clocks to 1970
+    long ts = server.arg("timestamp").toInt();
+    if (ts < 1000000000) { server.send(400, "text/json", "{\"result\":\"invalid timestamp\"}"); return; }
+    DateTime now = DateTime((uint32_t)ts);
+    if (haveRTC) ext_rtc.adjust(now); // don't write to an absent I2C device
+    int_rtc.setTime(now.unixtime());
+    handleRTCNow(); // single response (a second send() desyncs keep-alive clients)
  } else {
     server.send(500, "text/json", "{\"result\":\"timestamp missing\"}");
-
  }
 }
 void handleSdCardDeleteAll() {
     if (haveSDCard) {
+      // Never unlink the log file while it's open for writing — FatFs allows
+      // it and subsequent writes then corrupt the allocation table
+      if (dataFile) { dataFile.close(); }
       File root, file;
       if (haveSDCard) {
         root = SD_MMC.open("/");
@@ -892,7 +919,8 @@ void handleFileList() {
   String output = "[";
 
   if(!root){
-    //DBG_OUTPUT_PORT.print("- failed to open directory");
+    // Always answer — returning without a response leaves the client hanging
+    server.send(404, "text/plain", "DirNotFound");
     return;
   }
 
@@ -934,13 +962,28 @@ void uart_readUntill(char val)
   while((retVal>0) && (uartMessBuff[0] != val));
 }
 
+// Terminate any partial line sitting in the inverter's terminal buffer
+// (garbage accumulates there whenever we talked at the wrong baud) and
+// discard the inverter's response to it, so the next command's echo/reply
+// framing starts clean.
+static void uartResync()
+{
+  uart_write_bytes(INVERTER_PORT, "\n", 1);
+  uart_wait_tx_done(INVERTER_PORT, UART_TIMEOUT);
+  delay(30); // let the inverter emit its error/prompt line for the junk
+  uart_flush(INVERTER_PORT);
+}
+
 bool uart_readStartsWith(const char *val)
 {
   bool retVal = false;
-  int rxBytes = uart_read_bytes(INVERTER_PORT, uartMessBuff, strnlen(val,UART_MESSBUF_SIZE), UART_TIMEOUT);
-  if(rxBytes >= strnlen(val,UART_MESSBUF_SIZE))
+  // Cap at buffer size - 1 so the terminator below can never write past the
+  // end of uartMessBuff (a 100-char prefix used to index uartMessBuff[100])
+  size_t want = strnlen(val, UART_MESSBUF_SIZE - 1);
+  int rxBytes = uart_read_bytes(INVERTER_PORT, uartMessBuff, want, UART_TIMEOUT);
+  if(rxBytes > 0 && (size_t)rxBytes >= want)
   {
-    if(strncmp(val, uartMessBuff, strnlen(val,UART_MESSBUF_SIZE))==0)
+    if(strncmp(val, uartMessBuff, want)==0)
       retVal = true;
     uartMessBuff[rxBytes] = 0;
     DBG_OUTPUT_PORT.println(uartMessBuff);
@@ -1027,35 +1070,121 @@ static void handleCommand() {
 
   int repeat = 0;
   char buffer[255];
-  size_t len = 0;
+  int len = 0; // uart_read_bytes returns -1 on error: as size_t that became SIZE_MAX and passed `len > 0`
   String output;
 
   if (server.hasArg("repeat"))
-    repeat = server.arg("repeat").toInt();
-
-  if (!fastUart && fastUartAvailable)
   {
+    repeat = server.arg("repeat").toInt();
+    // Unclamped values could block the single-threaded server for minutes
+    // and grow `output` until the heap dies
+    if (repeat < 0) repeat = 0;
+    if (repeat > 100) repeat = 100;
+  }
+
+  if (!fastUart && fastUartAvailable && fastUartAttempts < 3)
+  {
+    fastUartAttempts++;
+    // Negotiate carefully: firmware that supports fastuart switches to
+    // 921600 unconditionally after receiving the command (some, e.g.
+    // ZombieVerter, print the OK only after switching, so it may never be
+    // readable at 115200). Blindly switching (old behaviour) garbled the
+    // link against firmware WITHOUT fastuart; blindly staying put desyncs
+    // against firmware WITH it. So: check for OK at 115200, and if absent
+    // probe at 921600 — fastuart is idempotent and re-replies OK when the
+    // inverter is already fast. Each attempt is preceded by a resync,
+    // because bytes sent at the wrong baud land in the inverter's terminal
+    // as line-buffer garbage: its error line for that junk otherwise
+    // offsets the echo/reply framing and the OK is never seen (the ESP
+    // then strands itself at 115200 against a fast inverter — the classic
+    // "have to reboot the ESP" state).
+    uartResync();
     sendCommand("fastuart");
-    uart_set_baudrate(INVERTER_PORT, 921600);
-    fastUart = true;
+    if (uart_readStartsWith("OK"))
+    {
+      uart_set_baudrate(INVERTER_PORT, 921600);
+      fastUart = true;
+    }
+    else
+    {
+      uart_set_baudrate(INVERTER_PORT, 921600);
+      uartResync();
+      sendCommand("fastuart");
+      if (uart_readStartsWith("OK"))
+      {
+        fastUart = true;
+      }
+      else
+      {
+        // Last resort: find ANY baud with working plain comms so the link
+        // is never left stranded. Prefer fast if the inverter is there.
+        bool linked = false;
+        const uint32_t bauds[2] = { 921600, 115200 };
+        for (int b = 0; b < 2 && !linked; b++)
+        {
+          uart_set_baudrate(INVERTER_PORT, bauds[b]);
+          uartResync();
+          sendCommand("errors");
+          char probe[4];
+          if (uart_read_bytes(INVERTER_PORT, probe, sizeof(probe), UART_TIMEOUT) > 0)
+          {
+            fastUart = (bauds[b] == 921600);
+            linked = true;
+            delay(20);
+            uart_flush(INVERTER_PORT); // discard the rest of the probe reply
+          }
+        }
+        if (!linked) uart_set_baudrate(INVERTER_PORT, 115200);
+        fastUartAvailable = false; // negotiation done — don't re-ask until reboot/reset
+      }
+    }
   }
 
   sendCommand(cmd);
+  int rpt = repeat;
   do {
     memset(buffer,0,sizeof(buffer));
-    //len = Inverter.readBytes(buffer, sizeof(buffer) - 1);
     len = uart_read_bytes(INVERTER_PORT, buffer, sizeof(buffer), UART_TIMEOUT);
-    if(len > 0) output.concat(buffer, len);// += buffer;
+    if(len > 0) output.concat(buffer, len);
 
-    if (repeat)
+    if (rpt)
     {
-      repeat--;
-      //Inverter.print("!");
-      uart_write_bytes(INVERTER_PORT, "!", 1);
-      //Inverter.readBytes(buffer, 1); //consume "!"
-      uart_read_bytes(INVERTER_PORT, buffer, 1, UART_TIMEOUT);
+      rpt--;
+      uart_write_bytes(INVERTER_PORT, "!", 1); //trigger next repetition
+      uart_read_bytes(INVERTER_PORT, buffer, 1, UART_TIMEOUT); //consume "!"
     }
   } while (len > 0);
+
+  if (fastUart && output.length() == 0)
+  {
+    // Empty reply at fast baud: the inverter likely rebooted back to
+    // 115200 underneath us (the stale-desync case that used to require an
+    // ESP reboot). Drop to base baud, resync and retry the command once.
+    uart_set_baudrate(INVERTER_PORT, 115200);
+    fastUart = false;
+    fastUartAvailable = false; // re-armed below only once slow comms answer
+    uartResync();
+    sendCommand(cmd);
+    rpt = repeat;
+    do {
+      memset(buffer,0,sizeof(buffer));
+      len = uart_read_bytes(INVERTER_PORT, buffer, sizeof(buffer), UART_TIMEOUT);
+      if(len > 0) output.concat(buffer, len);
+      if (rpt)
+      {
+        rpt--;
+        uart_write_bytes(INVERTER_PORT, "!", 1);
+        uart_read_bytes(INVERTER_PORT, buffer, 1, UART_TIMEOUT);
+      }
+    } while (len > 0);
+  }
+
+  // Proof of life at slow baud re-arms fast negotiation (bounded by the
+  // attempt cap) — so a rebooted inverter gets fast mode back once it's
+  // actually answering, and an absent one is never spammed with probes.
+  if (!fastUart && !fastUartAvailable && output.length() > 0 && fastUartAttempts < 3)
+    fastUartAvailable = true;
+
   DBG_OUTPUT_PORT.println(output);
   server.sendHeader("Access-Control-Allow-Origin","*");
   server.send(200, "text/json", output);
@@ -1118,8 +1247,11 @@ static String canLookupEnum(const String& unitStr, uint32_t value) {
 static String canGetParamUnit(const String& name) {
   int entry = canParamJson.indexOf("\"" + name + "\"");
   if (entry < 0) return "";
+  // Bound the search to this entry's object — otherwise a param without a
+  // unit silently returns the NEXT param's unit (bogus enum decodes)
+  int entryEnd = canParamJson.indexOf('}', entry);
   int unitPos = canParamJson.indexOf("\"unit\":\"", entry);
-  if (unitPos < 0) return "";
+  if (unitPos < 0 || (entryEnd >= 0 && unitPos > entryEnd)) return "";
   unitPos += 8;
   int unitEnd = canParamJson.indexOf('"', unitPos);
   if (unitEnd < 0) return "";
@@ -1573,20 +1705,32 @@ static void handleCanFwUpdate()
   file.close();
   if (fileSize == 0) { server.send(500, "text/json", "{\"message\":\"Firmware file is empty\"}"); return; }
 
+  // The CAN bootloader protocol caps the page count at one byte
+  if (fileSize > 255 * 1024) { server.send(500, "text/json", "{\"message\":\"Firmware too large (max 255KB)\"}"); return; }
+
   canFwPath = server.arg("file");
   canFwMsg = "";
   canFwState = CANFW_WAITBOOT;
   canFwPage = 0;
   canFwPages = (fileSize + 1023) / 1024;
 
-  xTaskCreate(canFwUpdateTask, "canfw", 8192, NULL, 2, NULL);
+  // State was set optimistically above — roll it back if the task can't
+  // start, or every future update attempt is refused until reboot
+  if (xTaskCreate(canFwUpdateTask, "canfw", 8192, NULL, 2, NULL) != pdPASS) {
+    canFwState = CANFW_ERROR;
+    canFwMsg = "Could not start update task (out of memory?)";
+    server.send(500, "text/json", "{\"message\":\"Could not start update task\"}");
+    return;
+  }
 
   server.send(200, "text/json", "{\"pages\":" + String(canFwPages) + ",\"message\":\"started\"}");
 }
 
 static void handleCanFwStatus()
 {
-  String msg = canFwMsg;
+  // Only read the message String once the task has stopped writing it —
+  // copying while the task assigns it is a cross-task use-after-free
+  String msg = (canFwState == CANFW_DONE || canFwState == CANFW_ERROR) ? canFwMsg : "";
   msg.replace("\"", "'");
   server.send(200, "text/json",
     "{\"state\":" + String(canFwState) +
@@ -1627,9 +1771,22 @@ static void handleUpdate()
     if (PAGE_SIZE_BYTES < 256 || PAGE_SIZE_BYTES > 1024) PAGE_SIZE_BYTES = 1024;
   }
 
-  // Note: the bootloader receives the page count as a single byte, so files
-  // larger than 255 pages cannot be transferred with this protocol
+  // The bootloader receives the page count as a single byte, so files larger
+  // than 255 pages cannot be transferred — reject instead of silently sending
+  // a truncated count that "handshakes" and then flashes garbage
   uint16_t pages = (uint16_t)((fileSize + PAGE_SIZE_BYTES - 1) / PAGE_SIZE_BYTES);
+  if (pages > 255) {
+    file.close();
+    server.send(500, "text/json", "{ \"message\": \"Firmware too large for the bootloader protocol (max 255 pages)\" }");
+    return;
+  }
+  // Reject steps outside the file — a failed seek would flash the wrong page
+  // contents with a valid CRC
+  if (step >= (int)pages) {
+    file.close();
+    server.send(500, "text/json", "{ \"message\": \"Step beyond end of file\" }");
+    return;
+  }
 
   // Timeout/retry helper macro for bootloader handshake loops
   #define HANDSHAKE_TIMEOUT 100  // ~10 seconds (100 * 100ms)
@@ -1644,7 +1801,7 @@ static void handleUpdate()
     {
       uart_set_baudrate(INVERTER_PORT, 115200);
       fastUart = false;
-      fastUartAvailable = true; //retry after reboot
+      fastUartAvailable = true; fastUartAttempts = 0; //retry after reboot
     }
     do {
       uart_read_bytes(INVERTER_PORT, &c, 1, UART_TIMEOUT);
@@ -1685,7 +1842,11 @@ static void handleUpdate()
   else
   {
     bool repeat = true;
-    file.seek(step * PAGE_SIZE_BYTES);
+    if (!file.seek(step * PAGE_SIZE_BYTES)) {
+      file.close();
+      server.send(500, "text/json", "{ \"message\": \"Seek failed\" }");
+      return;
+    }
     char buffer[PAGE_SIZE_BYTES];
     size_t bytesRead = file.readBytes(buffer, sizeof(buffer));
 
@@ -1726,7 +1887,7 @@ static void handleUpdate()
         case 'D':
           message = "Update Done";
           repeat = false;
-          fastUartAvailable = true;
+          fastUartAvailable = true; fastUartAttempts = 0;
           break;
         case 'E':
           readRetries = 0;
@@ -1761,9 +1922,14 @@ static void handleUpdate()
 static void handleWifi()
 {
   bool updated = true;
-  if(server.hasArg("apSSID") && server.hasArg("apPW")) 
+  if(server.hasArg("apSSID") && server.hasArg("apPW"))
   {
-    WiFi.softAP(server.arg("apSSID").c_str(), server.arg("apPW").c_str());
+    // softAP() fails on a 1-7 char password — report it instead of showing
+    // the "updated" page while the old credentials silently stay active
+    if(!WiFi.softAP(server.arg("apSSID").c_str(), server.arg("apPW").c_str())) {
+      server.send(400, "text/html", "AP update failed — password must be 8+ characters (or empty for an open AP)");
+      return;
+    }
   }
   else if(server.hasArg("staSSID") && server.hasArg("staPW")) 
   {
@@ -1798,6 +1964,26 @@ static void handleBaud()
     server.send(200, "text/html", "fastUart off");
 }
 
+// Find the index of the ']' closing the array that starts at `open` (which
+// must point at '['), skipping over quoted strings (with escapes) — a node
+// named "Leaf [pack 1]" must not terminate the array early and corrupt
+// settings.json on the next save.
+static int findArrayEnd(const String& json, int open)
+{
+  bool inStr = false;
+  int depth = 0;
+  for (unsigned int i = open; i < json.length(); i++) {
+    char c = json[i];
+    if (inStr) {
+      if (c == '\\') i++;          // skip escaped char
+      else if (c == '"') inStr = false;
+    } else if (c == '"') inStr = true;
+    else if (c == '[') depth++;
+    else if (c == ']' && --depth == 0) return i;
+  }
+  return -1;
+}
+
 // Read the saved can_nodes array out of settings.json (returns "[]" if absent)
 static String readSavedCanNodes()
 {
@@ -1809,7 +1995,7 @@ static String readSavedCanNodes()
       f.close();
       int s = json.indexOf("\"can_nodes\":[");
       if (s >= 0) {
-        int e = json.indexOf(']', s);
+        int e = findArrayEnd(json, s + 12);
         if (e >= 0) nodes = json.substring(s + 12, e + 1);
       }
     }
@@ -1849,7 +2035,7 @@ static void loadSettings()
       // Prefer the node flagged as default in the saved node list (set by the UI)
       int ns = json.indexOf("\"can_nodes\":[");
       if (ns >= 0) {
-        int ne = json.indexOf(']', ns);
+        int ne = findArrayEnd(json, ns + 12);
         if (ne > ns) {
           String nodes = json.substring(ns, ne);
           int dp = nodes.indexOf("\"default\":true");
@@ -1883,11 +2069,16 @@ static void handleSettings()
     initUART(true);
     server.send(200, "text/json", "{\"result\":\"ok\"}");
   } else if (server.hasArg("can_mode")) {
+    if (canFwBusy()) { server.send(409, "text/json", "{\"error\":\"CAN firmware update in progress\"}"); return; }
     canMode = (server.arg("can_mode") == "1");
     if (server.hasArg("can_node_id")) canNodeId = server.arg("can_node_id").toInt();
     if (server.hasArg("can_speed")) canSpeed = server.arg("can_speed").toInt();
     if (server.hasArg("can_rx_pin")) canRxPin = server.arg("can_rx_pin").toInt();
     if (server.hasArg("can_tx_pin")) canTxPin = server.arg("can_tx_pin").toInt();
+    // Validate GPIO numbers — garbage would persist and silently kill CAN
+    // mode at every boot until the settings file is fixed
+    if (canRxPin < 0 || canRxPin > 48) canRxPin = CAN_RX_PIN;
+    if (canTxPin < 0 || canTxPin > 48) canTxPin = CAN_TX_PIN;
     if (canNodeId < CAN_NODE_ID_MIN) canNodeId = CAN_NODE_ID_MIN;
     if (canNodeId > CAN_NODE_ID_MAX) canNodeId = CAN_NODE_ID_MAX;
     if (canSpeed < 0 || canSpeed > 2) canSpeed = 2;
@@ -1930,7 +2121,7 @@ static void handleSettings()
         f.close();
         int nodesStart = settingsJson.indexOf("\"can_nodes\":[");
         if (nodesStart >= 0) {
-          int nodesEnd = settingsJson.indexOf(']', nodesStart);
+          int nodesEnd = findArrayEnd(settingsJson, nodesStart + 12);
           if (nodesEnd >= 0) {
             json += ",\"can_nodes\":" + settingsJson.substring(nodesStart + 12, nodesEnd + 1);
           }
@@ -2068,6 +2259,11 @@ void setup(void){
 
   //ESP32 self-update: flash app firmware or the SPIFFS filesystem from the browser
   server.on("/espupdate", HTTP_POST, [](){
+    if(espOtaUploadRejected){
+      espOtaUploadRejected = false;
+      server.send(409, "application/json", "{\"ok\":false,\"message\":\"URL update already in progress\"}");
+      return;
+    }
     bool ok = espOtaDone && espOtaOk;
     String msg = ok ? "" : (espOtaErr.length() ? espOtaErr : (espOtaDone ? "Update failed" : "No image received"));
     String body = ok ? "{\"ok\":true}" : (String("{\"ok\":false,\"message\":\"") + msg + "\"}");
@@ -2103,6 +2299,7 @@ void setup(void){
   });
   server.on("/reboot", [](){ server.send(200, "text/plain", "Rebooting..."); ESP.restart(); });
   server.on("/reset-inverter", [](){
+    if (canFwBusy()) { server.send(409, "text/plain", "CAN firmware update in progress"); return; }
     server.send(200, "text/plain", "Inverter reset sent");
     if (canMode) {
       // SDO reset command (same as the firmware update flow uses)
@@ -2110,14 +2307,15 @@ void setup(void){
       return;
     }
     sendCommand("reset");
-    // Reset UART state so baud rate renegotiates after inverter reboot
-    if (fastUart) {
-      uart_set_baudrate(INVERTER_PORT, 115200);
-      fastUart = false;
-      fastUartAvailable = true;
-    }
+    // Reset UART state so baud rate renegotiates after inverter reboot —
+    // re-arm even when negotiation had latched off, the inverter is fresh
+    uart_set_baudrate(INVERTER_PORT, 115200);
+    fastUart = false;
+    fastUartAvailable = true;
+    fastUartAttempts = 0;
   });
   server.on("/can-send", [](){
+    if (canFwBusy()) { server.send(409, "text/json", "{\"error\":\"CAN firmware update in progress\"}"); return; }
     if (!server.hasArg("canId")) {
       server.send(400, "text/json", "{\"error\":\"Missing canId\"}");
       return;
@@ -2155,6 +2353,7 @@ void setup(void){
       server.send(400, "text/json", "{\"error\":\"CAN mode not enabled\"}");
       return;
     }
+    if (canFwBusy()) { server.send(409, "text/json", "{\"error\":\"CAN firmware update in progress\"}"); return; }
     String result = "[";
     bool first = true;
     CanSpeed speed = (canSpeed == 0) ? CAN_125K : (canSpeed == 1) ? CAN_250K : CAN_500K;
@@ -2163,10 +2362,12 @@ void setup(void){
       // Switch to narrow filter for this node to avoid noise
       canDriverInitForDevice(nid, speed, canTxPin, canRxPin);
 
-      // Try to read serial number (index 0x5000, subIndex 0)
+      // Try to read serial number (index 0x5000, subIndex 0). 40ms is ample
+      // for an SDO response (<10ms on a healthy bus) and keeps the full
+      // 127-node sweep under ~6s instead of ~13s of blocked web server
       if (canSdoRead(nid, CAN_INDEX_SERIAL, 0)) {
         twai_message_t resp;
-        if (canReceiveForNode(nid, &resp, 100)) {
+        if (canReceiveForNode(nid, &resp, 40)) {
           int32_t serial = 0;
           uint8_t rNodeId;
           if (canSdoParseResponse(&resp, &rNodeId, NULL, NULL, &serial)) {
@@ -2176,11 +2377,13 @@ void setup(void){
           }
         }
       }
-      delay(5); // Small delay between nodes
+      delay(2); // Small delay between nodes
     }
     result += "]";
-    // Return to scanning mode
-    canDriverInitScan(speed, canTxPin, canRxPin);
+    // Restore the active node's accept-all filter — the narrow scan filter
+    // (0x580-0x5FF only) would silently freeze every CAN-mapped virtual
+    // value until the next settings save or reboot
+    canDriverInitForDevice(canNodeId, speed, canTxPin, canRxPin);
     server.send(200, "text/json", result);
   });
   // UI layout files: return empty defaults instead of 404 when not yet saved
@@ -2202,6 +2405,7 @@ void setup(void){
     server.send(200, "application/json", "{\"count\":" + String(virtCount) + "}");
   });
   server.on("/can-debug", [](){
+    if (canFwBusy()) { server.send(409, "text/json", "{\"error\":\"CAN firmware update in progress\"}"); return; }
     // ?reset=1: reset the device and capture all frames seen on the bus for 8s
     // (diagnoses whether a CAN bootloader announces itself after reset)
     if (server.hasArg("reset")) {
@@ -2260,6 +2464,7 @@ void setup(void){
     server.send(200, "text/json", r);
   });
   server.on("/set-can-node", [](){
+    if (canFwBusy()) { server.send(409, "text/plain", "CAN firmware update in progress"); return; }
     if (server.hasArg("id")) {
       canNodeId = server.arg("id").toInt();
       if (canNodeId < CAN_NODE_ID_MIN) canNodeId = CAN_NODE_ID_MIN;
@@ -2270,7 +2475,10 @@ void setup(void){
       // Switch to device-specific filter
       CanSpeed speed = (canSpeed == 0) ? CAN_125K : (canSpeed == 1) ? CAN_250K : CAN_500K;
       canDriverInitForDevice(canNodeId, speed, canTxPin, canRxPin);
-      // Persist the selection so reboots and settings saves keep this node
+      // Persist the selection for settings saves within this boot. Note: a
+      // node flagged "default" in the saved node list still wins at the next
+      // boot — the star in the UI is the boot-time choice, this is the
+      // session's active node.
       saveSettings();
     }
     server.send(200, "text/json", "{\"nodeId\":" + String(canNodeId) + "}");
