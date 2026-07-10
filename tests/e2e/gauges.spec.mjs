@@ -463,40 +463,63 @@ test.describe('Gauges grid', () => {
   });
 
   test('conditional page display switches to the page whose condition matches', async ({ page, mock }) => {
-    // Fast shows above speed's midpoint (500); Idle is INVERTED on pot 0..100
-    // (midpoint 50), so it matches right from load while pot is 0
+    // Conditions are inclusive ranges: Boost matches opmode EXACTLY 3 (not
+    // 0-2 or 4), Fast matches speed 500-and-up (open-ended max)
     const layout = { v: 3, pages: [
       { id: 1, name: 'Main', items: [{ id: 1, name: 'udc', type: 'text', x: 0, y: 0, w: 2, h: 1 }] },
-      { id: 2, name: 'Fast', cond: { name: 'speed', min: 0, max: 1000 }, items: [] },
-      { id: 3, name: 'Idle', cond: { name: 'pot', min: 0, max: 100, invert: true }, items: [] },
+      { id: 2, name: 'Boost', cond: { name: 'opmode', min: 3, max: 3 }, items: [] },
+      { id: 3, name: 'Fast', cond: { name: 'speed', min: 500 }, items: [] },
     ] };
     await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(layout) });
     await openApp(page, mock);
     await gotoTab(page, 'Gauges');
-    await expect(page.locator('.page-pill.active')).toHaveText('Idle', { timeout: 5000 });
-    // An earlier page's condition coming true wins (first match in page order)
+    // opmode 0 / speed 0: nothing matches, first page shows
+    await page.waitForTimeout(500);
+    await expect(page.locator('.page-pill.active')).toHaveText('Main');
+    // opmode 2 is below the 3..3 range -> still no match
+    await fetch(mock.url + '/__test/spot?name=opmode&value=2');
+    await page.waitForTimeout(500);
+    await expect(page.locator('.page-pill.active')).toHaveText('Main');
+    // opmode exactly 3 -> Boost
+    await fetch(mock.url + '/__test/spot?name=opmode&value=3');
+    await expect(page.locator('.page-pill.active')).toHaveText('Boost', { timeout: 5000 });
+    // opmode 4 leaves the range: no page matches -> stays put
+    await fetch(mock.url + '/__test/spot?name=opmode&value=4');
+    await page.waitForTimeout(500);
+    await expect(page.locator('.page-pill.active')).toHaveText('Boost');
+    // Open-ended range: speed 900 >= 500 -> Fast
     await fetch(mock.url + '/__test/spot?name=speed&value=900');
     await expect(page.locator('.page-pill.active')).toHaveText('Fast', { timeout: 5000 });
-    // ...and dropping again hands back to the still-matching Idle
-    await fetch(mock.url + '/__test/spot?name=speed&value=0');
-    await expect(page.locator('.page-pill.active')).toHaveText('Idle', { timeout: 5000 });
-    // No condition matching -> stays where it is, and the user can browse
-    // freely (a persisting match must not yank the page back)
-    await fetch(mock.url + '/__test/spot?name=pot&value=200');
-    await page.waitForTimeout(500);
-    await expect(page.locator('.page-pill.active')).toHaveText('Idle');
+    // The user can browse away while the condition still matches
     await page.locator('.page-pill', { hasText: 'Main' }).click();
     await page.waitForTimeout(500);
     await expect(page.locator('.page-pill.active')).toHaveText('Main');
     // A fresh match still fires
-    await fetch(mock.url + '/__test/spot?name=pot&value=0');
-    await expect(page.locator('.page-pill.active')).toHaveText('Idle', { timeout: 5000 });
+    await fetch(mock.url + '/__test/spot?name=speed&value=0');
+    await page.waitForTimeout(300);
+    await fetch(mock.url + '/__test/spot?name=speed&value=900');
+    await expect(page.locator('.page-pill.active')).toHaveText('Fast', { timeout: 5000 });
+  });
+
+  test('inverted condition matches outside the range (any-error page)', async ({ page, mock }) => {
+    const layout = { v: 3, pages: [
+      { id: 1, name: 'Main', items: [{ id: 1, name: 'udc', type: 'text', x: 0, y: 0, w: 2, h: 1 }] },
+      { id: 2, name: 'Fault', cond: { name: 'lasterr', min: 0, max: 0, invert: true }, items: [] },
+    ] };
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(layout) });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    // lasterr 0 is inside 0..0, inverted -> no match
+    await page.waitForTimeout(500);
+    await expect(page.locator('.page-pill.active')).toHaveText('Main');
+    await fetch(mock.url + '/__test/spot?name=lasterr&value=1');
+    await expect(page.locator('.page-pill.active')).toHaveText('Fault', { timeout: 5000 });
   });
 
   test('Auto pages toggle disarms conditional display and persists', async ({ page, mock }) => {
     const layout = { v: 3, pages: [
       { id: 1, name: 'Main', items: [{ id: 1, name: 'udc', type: 'text', x: 0, y: 0, w: 2, h: 1 }] },
-      { id: 2, name: 'Fast', cond: { name: 'speed', min: 0, max: 1000 }, items: [] },
+      { id: 2, name: 'Fast', cond: { name: 'speed', min: 500 }, items: [] },
     ] };
     await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(layout) });
     await openApp(page, mock);
@@ -521,10 +544,13 @@ test.describe('Gauges grid', () => {
     await page.locator('button', { hasText: 'Add condition' }).click();
     await page.locator('#page-cond div', { hasText: /^Select\.\.\.$/ }).last().click();
     await page.locator('.hover-row', { hasText: 'speed' }).last().click();
-    await page.locator('#page-cond input[type="number"]').nth(1).fill('3000'); // max
+    // Min clears to blank (open-ended), Max set — "3000 and below"
+    await page.locator('#page-cond input[type="number"]').nth(0).fill('');
+    await page.locator('#page-cond input[type="number"]').nth(1).fill('3000');
     await page.locator('button', { hasText: 'Save & Done' }).click();
+    // A blank bound persists as ABSENT (open end), not a default snapped back
     await expect.poll(async () => (await savedLayout(mock)).pages[0].cond)
-      .toEqual({ name: 'speed', min: 0, max: 3000 });
+      .toEqual({ name: 'speed', max: 3000 });
     // The Auto pages toggle appears once any page carries a condition
     await expect(page.locator('#auto-pages')).toBeVisible();
   });

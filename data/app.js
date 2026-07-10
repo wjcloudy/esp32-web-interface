@@ -2861,10 +2861,11 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decim
 // 12) keeps cells big enough that a phone-width grid stays readable.
 // gauges.json v3: { v: 3, autoPage, pages: [{ id, name, cond?, items:
 // [{ id, name, type, color, min, max, invert?, x, y, w, h }] }] }. cond
-// ({ name, min, max, invert }) drives conditional page display; autoPage is
-// its master switch. v2 (same shape, 12-column coordinates) is rescaled;
-// v1 ({ items, size }) migrates transparently; the settings export bundle
-// carries the file wholesale.
+// ({ name, min?, max?, invert }) drives conditional page display — an
+// inclusive value range with open ends, outside-the-range when inverted;
+// autoPage is its master switch. v2 (same shape, 12-column coordinates) is
+// rescaled; v1 ({ items, size }) migrates transparently; the settings export
+// bundle carries the file wholesale.
 
 const GRID_COLS = 10;
 const V1_SPAN = { xs: 2, sm: 2, md: 3, lg: 4 }; // legacy fixed sizes -> tile span (10-col)
@@ -2874,15 +2875,17 @@ const V1_SPAN = { xs: 2, sm: 2, md: 3, lg: 4 }; // legacy fixed sizes -> tile sp
 const tileFloor = (type) => (type === 'indicator' || type === 'text') ? 1 : 2;
 const tileFreeform = (type) => type === 'line' || type === 'text';
 
-// A page condition ({ name, min, max, invert }) matches exactly like an
-// indicator lamp lights: value at/above the midpoint of min..max — or below
-// it when inverted. Used by conditional page display.
+// A page condition ({ name, min, max, invert }) matches while the value sits
+// inside min..max INCLUSIVE — so equality is min = max (opmode 3..3 matches
+// only 3, not 2 or 4). A blank/missing bound is open-ended (min 500 alone =
+// "500 and above"); invert matches outside the range (0..0 inverted = "any
+// non-zero"). Used by conditional page display.
 const condMatch = (cond, val) => {
   if (val == null || isNaN(val)) return false;
-  const lo = cond.min == null ? 0 : cond.min;
-  const hi = cond.max == null ? lo : cond.max;
-  const on = val >= (lo + hi) / 2;
-  return cond.invert ? !on : on;
+  const lo = (cond.min == null || isNaN(cond.min)) ? -Infinity : cond.min;
+  const hi = (cond.max == null || isNaN(cond.max)) ? Infinity : cond.max;
+  const inside = val >= lo && val <= hi;
+  return cond.invert ? !inside : inside;
 };
 
 function migrateGauges(data) {
@@ -3269,9 +3272,11 @@ const Gauges = () => {
     setActivePage(next[0].id);
   };
   // Conditional page display config: each page may carry one condition
+  // Defaults apply only on creation — a cleared Min/Max must STAY blank
+  // (blank = open-ended), not snap back to a default
   const updatePageCond = (field, value) =>
     setPages(ps => ps.map(p => p.id !== activePage ? p : {
-      ...p, cond: { name: '', min: 0, max: 1, ...(p.cond || {}), [field]: value },
+      ...p, cond: { ...(p.cond || { name: '', min: 1, max: 1 }), [field]: value },
     }));
   const clearPageCond = () =>
     setPages(ps => ps.map(p => p.id !== activePage ? p : { ...p, cond: undefined }));
@@ -3363,23 +3368,23 @@ const Gauges = () => {
             </div>
             <div style="display:flex;gap:8px;align-items:center">
               <label style="width:3.5em">Min</label>
-              <input type="number" value=${page.cond.min} step="any" style="width:5em;padding:4px 6px"
-                oninput=${e => updatePageCond('min', parseFloat(e.target.value) || 0)} />
+              <input type="number" value=${page.cond.min != null ? page.cond.min : ''} step="any" placeholder="any" style="width:5em;padding:4px 6px"
+                oninput=${e => { const n = parseFloat(e.target.value); updatePageCond('min', isNaN(n) ? undefined : n); }} />
               <label>Max</label>
-              <input type="number" value=${page.cond.max} step="any" style="width:5em;padding:4px 6px"
-                oninput=${e => updatePageCond('max', parseFloat(e.target.value) || 0)} />
+              <input type="number" value=${page.cond.max != null ? page.cond.max : ''} step="any" placeholder="any" style="width:5em;padding:4px 6px"
+                oninput=${e => { const n = parseFloat(e.target.value); updatePageCond('max', isNaN(n) ? undefined : n); }} />
             </div>
             <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
               <span style="width:3.5em">Invert</span>
               <input type="checkbox" checked=${!!page.cond.invert} onchange=${e => updatePageCond('invert', e.target.checked)} style="width:auto" />
-              <span style="font-size:.72rem;color:var(--text3)">show while below the switching point</span>
+              <span style="font-size:.72rem;color:var(--text3)">show while OUTSIDE the range</span>
             </label>
             <button onclick=${clearPageCond} style="font-size:.72rem;padding:3px 10px;width:auto;align-self:flex-start;color:var(--red)"><${Icon} n="x" size=${11} />Remove condition</button>
-            <p style="font-size:.72rem;color:var(--text3);margin:0">Like an indicator: the app switches to this page when the value crosses the midpoint of Min/Max. The Auto toggle above the grid arms it.</p>
+            <p style="font-size:.72rem;color:var(--text3);margin:0">Shows this page while the value is between Min and Max (inclusive). Equal-to is Min = Max — e.g. opmode 3 to 3. Leave Min or Max blank for no lower/upper limit. The Auto toggle above the grid arms it.</p>
           </div>
         ` : html`
           <button onclick=${() => updatePageCond('name', '')} style="font-size:.75rem;padding:4px 10px;width:auto"><${Icon} n="plus" />Add condition</button>
-          <p style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">A condition switches to this page automatically when a value matches — e.g. show Debug while lasterr is non-zero.</p>
+          <p style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">A condition switches to this page automatically while a value is in range — e.g. opmode 3 to 3, or lasterr 0 to 0 inverted (any error).</p>
         `}
         <p style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">Tap a tile to configure its value, type, colour and range — or to duplicate or remove it.</p>
       </div>
