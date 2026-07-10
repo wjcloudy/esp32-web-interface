@@ -182,6 +182,19 @@ function parseEnums(unit) {
   return Object.keys(enums).length > 0 ? enums : null;
 }
 
+// URL breadcrumbs: every tab is bookmarkable as #tab, and the gauges tab
+// nests its page as #gauges/<page name> — so a browser favourite can open a
+// particular inverter view directly. (Must match the navbar tabs list, which
+// is declared later in the file.)
+const VALID_TABS = ['dashboard', 'parameters', 'spotvalues', 'plot', 'gauges', 'logger', 'canmapping', 'files', 'update', 'settings', 'support'];
+function parseHash() {
+  const parts = location.hash.replace(/^#\/?/, '').split('/');
+  const tab = decodeURIComponent(parts[0] || '');
+  let sub = '';
+  try { sub = decodeURIComponent(parts.slice(1).join('/')); } catch (e) {}
+  return { tab: VALID_TABS.includes(tab) ? tab : null, sub };
+}
+
 const initialState = {
   params: null,
   spotValues: null,
@@ -189,7 +202,7 @@ const initialState = {
   status: null, opmode: null, lasterr: null, udc: null, tmphs: null,
   firmwareVersion: '',
   fetchAge: 0,
-  activeTab: 'dashboard',
+  activeTab: parseHash().tab || 'dashboard',
   refreshRate: 3000, // -1 = off, else ms interval
   paramFavorites: [],
   spotFavorites: [],
@@ -2846,10 +2859,12 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decim
 // coordinate space on every device — it scales rather than reflows, and a
 // page laid out on the desktop looks the same on a phone. 10 columns (not
 // 12) keeps cells big enough that a phone-width grid stays readable.
-// gauges.json v3: { v: 3, pages: [{ id, name, items: [{ id, name, type,
-// color, min, max, x, y, w, h }] }] }. v2 (same shape, 12-column
-// coordinates) is rescaled; v1 ({ items, size }) migrates transparently;
-// the settings export bundle carries the file wholesale.
+// gauges.json v3: { v: 3, autoPage, pages: [{ id, name, cond?, items:
+// [{ id, name, type, color, min, max, invert?, x, y, w, h }] }] }. cond
+// ({ name, min, max, invert }) drives conditional page display; autoPage is
+// its master switch. v2 (same shape, 12-column coordinates) is rescaled;
+// v1 ({ items, size }) migrates transparently; the settings export bundle
+// carries the file wholesale.
 
 const GRID_COLS = 10;
 const V1_SPAN = { xs: 2, sm: 2, md: 3, lg: 4 }; // legacy fixed sizes -> tile span (10-col)
@@ -2859,6 +2874,17 @@ const V1_SPAN = { xs: 2, sm: 2, md: 3, lg: 4 }; // legacy fixed sizes -> tile sp
 const tileFloor = (type) => (type === 'indicator' || type === 'text') ? 1 : 2;
 const tileFreeform = (type) => type === 'line' || type === 'text';
 
+// A page condition ({ name, min, max, invert }) matches exactly like an
+// indicator lamp lights: value at/above the midpoint of min..max — or below
+// it when inverted. Used by conditional page display.
+const condMatch = (cond, val) => {
+  if (val == null || isNaN(val)) return false;
+  const lo = cond.min == null ? 0 : cond.min;
+  const hi = cond.max == null ? lo : cond.max;
+  const on = val >= (lo + hi) / 2;
+  return cond.invert ? !on : on;
+};
+
 function migrateGauges(data) {
   if (data && Array.isArray(data.pages)) {
     // v2 layouts were authored on a 12-column grid — rescale to 8 columns
@@ -2867,6 +2893,7 @@ function migrateGauges(data) {
       .map((p, pi) => ({
         id: p.id || pi + 1,
         name: p.name || 'Page ' + (pi + 1),
+        cond: (p.cond && p.cond.name) ? p.cond : undefined,
         items: (Array.isArray(p.items) ? p.items : []).map(g => {
           const type = g.type || 'radial';
           const floor = tileFloor(type);
@@ -2898,14 +2925,17 @@ function migrateGauges(data) {
 // Indicator lamp for On/Off and 0/1 values: min/max describe the value's
 // range (like every other gauge type) and the lamp switches at the midpoint —
 // lit in the gauge colour above it, dim below. Min 0 / Max 1 switches at 0.5.
-const IndicatorLamp = ({ value, min, max, color, enums, px }) => {
+// invert flips the lamp (lit while the value is OFF/below the midpoint) —
+// the caption still names the value's real state.
+const IndicatorLamp = ({ value, min, max, color, enums, invert, px }) => {
   const v = (value == null || isNaN(value)) ? null : value;
   const lo = (min == null) ? 0 : min;
   const hi = (max == null) ? lo : max;
-  const on = v != null && v >= (lo + hi) / 2;
+  const rawOn = v != null && v >= (lo + hi) / 2;
+  const on = invert ? (v != null && !rawOn) : rawOn;
   const col = (color && /^#[0-9a-fA-F]{6}$/.test(color)) ? color : 'var(--accent)';
   const d = Math.round(px * 0.52);
-  const label = v == null ? '—' : (enums ? enumLabel(enums, v) : (on ? 'ON' : 'OFF'));
+  const label = v == null ? '—' : (enums ? enumLabel(enums, v) : (rawOn ? 'ON' : 'OFF'));
   return html`
     <div class="ind-wrap" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:${Math.round(px * 0.06)}px">
       <div class="ind-lamp ${on ? 'on' : ''}" style=${{
@@ -2983,7 +3013,7 @@ const GaugeTileBody = ({ g, title, value, unit, enums }) => {
             w=${w - 4} h=${gh - 2} />`
         : (g.type === 'indicator')
         ? html`<${IndicatorLamp} value=${value} min=${g.min} max=${g.max} color=${g.color || ''} enums=${enums}
-            px=${Math.max(14, Math.min(w, gh) - 4)} />`
+            invert=${!!g.invert} px=${Math.max(14, Math.min(w, gh) - 4)} />`
         : (g.type === 'text')
         ? html`<${TextTile} value=${value} unit=${unit} enums=${enums} text=${g.text || ''}
             decimals=${g.decimals != null ? g.decimals : 1} w=${w - 6} h=${gh - 4} />`
@@ -3000,11 +3030,17 @@ const Gauges = () => {
   const [lineVals, setLineVals] = useState({});
   const [editing, setEditing] = useState(false);
   const [configId, setConfigId] = useState(null); // gauge whose settings modal is open
+  const [autoPage, setAutoPage] = useState(true); // conditional page display armed
+  const [loaded, setLoaded] = useState(false); // gauges.json fetch settled
+  // Deep-link target, captured at first render — effects rewrite the hash
+  // before the async layout fetch reads it
+  const initialSubRef = useRef(parseHash().sub);
   const fetchRef = useRef(null);
   const nextId = useRef(1);
   const gridRef = useRef(null);  // .grid-stack DOM node
   const gridApi = useRef(null);  // GridStack instance
   const dragBusyRef = useRef(false); // true during (and briefly after) a drag/resize
+  const lastHitRef = useRef(null); // page whose condition matched last tick
   const activeRef = useRef(activePage);
   activeRef.current = activePage;
 
@@ -3012,6 +3048,32 @@ const Gauges = () => {
   const items = page.items;
   const itemsRef = useRef(items);
   itemsRef.current = items;
+  const pagesRef = useRef(pages);
+  pagesRef.current = pages;
+  const editingRef = useRef(editing);
+  editingRef.current = editing;
+
+  // Keep the URL in step with the visible page (#gauges/<name>) so it can be
+  // bookmarked; replaceState so flipping pages doesn't spam browser history.
+  // Waits for the layout fetch so it can't clobber a deep link with the
+  // placeholder page, and so it runs again once the real pages are in.
+  useEffect(() => {
+    if (!loaded) return;
+    if (!/^#gauges(\/|$)/.test(location.hash)) return;
+    history.replaceState(null, '', '#gauges/' + encodeURIComponent(page.name));
+  }, [loaded, activePage, page.name]);
+  useEffect(() => {
+    const onHash = () => {
+      const { tab, sub } = parseHash();
+      if (tab !== 'gauges' || !sub) return;
+      const want = sub.trim().toLowerCase();
+      const p = pagesRef.current.find(x =>
+        String(x.id) === want || String(x.name).trim().toLowerCase() === want);
+      if (p && p.id !== activeRef.current) setActivePage(p.id);
+    };
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
 
   // Load saved layout (migrating v1 if needed) and fetch spot names for the picker
   useEffect(() => {
@@ -3019,22 +3081,30 @@ const Gauges = () => {
       try {
         const r = await fetch('/gauges.json');
         if (r.ok) {
-          const migrated = migrateGauges(await r.json());
+          const data = await r.json();
+          const migrated = migrateGauges(data);
           let maxId = 0;
           migrated.forEach(p => p.items.forEach(g => { if (typeof g.id === 'number' && g.id > maxId) maxId = g.id; }));
           migrated.forEach(p => p.items.forEach(g => { if (!g.id) g.id = ++maxId; }));
           nextId.current = maxId + 1;
           setPages(migrated);
-          setActivePage(migrated[0].id);
+          // Deep link: #gauges/<page name> (or page id) opens that page —
+          // lets a browser favourite target e.g. the Driving layout directly
+          const want = initialSubRef.current.trim().toLowerCase();
+          const linked = want && migrated.find(p =>
+            String(p.id) === want || String(p.name).trim().toLowerCase() === want);
+          setActivePage((linked || migrated[0]).id);
+          if (data && data.autoPage === false) setAutoPage(false);
         }
       } catch (e) { /* no saved layout */ }
+      setLoaded(true);
       api.getJSON('json').then(json => dispatch({ type: 'SET_PARAMS', payload: json })).catch(() => {});
     })();
   }, []);
 
-  const persist = async (nextPages) => {
+  const persist = async (nextPages, auto = autoPage) => {
     try {
-      const blob = new Blob([JSON.stringify({ v: 3, pages: nextPages })], { type: 'application/json' });
+      const blob = new Blob([JSON.stringify({ v: 3, autoPage: auto, pages: nextPages })], { type: 'application/json' });
       const fd = new FormData();
       fd.append('updatefile', blob, 'gauges.json');
       await fetch('/edit', { method: 'POST', body: fd });
@@ -3198,13 +3268,25 @@ const Gauges = () => {
     setPages(next);
     setActivePage(next[0].id);
   };
+  // Conditional page display config: each page may carry one condition
+  const updatePageCond = (field, value) =>
+    setPages(ps => ps.map(p => p.id !== activePage ? p : {
+      ...p, cond: { name: '', min: 0, max: 1, ...(p.cond || {}), [field]: value },
+    }));
+  const clearPageCond = () =>
+    setPages(ps => ps.map(p => p.id !== activePage ? p : { ...p, cond: undefined }));
 
   // High-rate spot value fetching for the active page (pauses main json refresh)
   useEffect(() => {
     // Pause streaming while the settings modal is open: its constant
     // re-renders otherwise revert an in-progress edit of a controlled input
     // (type a value, a stream tick lands, the field snaps back).
-    const names = configId ? [] : items.map(g => g.name).filter(Boolean);
+    // Page-condition values ride along in the same fetch (deduplicated) so
+    // conditional page display sees them even from a page with no gauges.
+    const condNames = (autoPage && !configId)
+      ? pages.map(p => p.cond && p.cond.name).filter(Boolean) : [];
+    const names = configId ? []
+      : [...new Set([...items.map(g => g.name).filter(Boolean), ...condNames])];
     if (names.length === 0) {
       dispatch({ type: 'SET_LOGGING', payload: false });
       return;
@@ -3222,14 +3304,24 @@ const Gauges = () => {
         // Positional mapping is only safe when counts line up — an error reply
         // (e.g. one bad name) would shift every gauge onto its neighbour's value
         if (vals.length !== names.length) return;
+        const byName = {};
+        names.forEach((n, i) => { byName[n] = parseFloat(vals[i]); });
         const next = {};
-        let vi = 0;
         items.forEach(g => {
-          if (!g.name) return;
-          const val = parseFloat(vals[vi++]);
-          if (!isNaN(val)) next[g.id] = val;
+          if (g.name && !isNaN(byName[g.name])) next[g.id] = byName[g.name];
         });
         setLineVals(prev => ({ ...prev, ...next }));
+        // Conditional page display: when a page's condition STARTS matching,
+        // switch to it. A persisting match doesn't re-trigger, so the user can
+        // still browse away; when nothing matches the current page stays.
+        if (autoPage && !editingRef.current) {
+          const hit = pagesRef.current.find(p => p.cond && p.cond.name && condMatch(p.cond, byName[p.cond.name]));
+          const hitId = hit ? hit.id : null;
+          if (hitId !== lastHitRef.current) {
+            lastHitRef.current = hitId;
+            if (hitId != null && hitId !== activeRef.current) setActivePage(hitId);
+          }
+        }
       } catch (e) { /* ignore */ }
       if (active) {
         const elapsed = performance.now() - t0;
@@ -3242,7 +3334,7 @@ const Gauges = () => {
       dispatch({ type: 'SET_LOGGING', payload: false });
       if (fetchRef.current) { clearTimeout(fetchRef.current); fetchRef.current = null; }
     };
-  }, [items, configId]);
+  }, [items, configId, autoPage, pages.map(p => (p.cond && p.cond.name) || '').join()]);
 
   const spotNames = state.spotValues ? Object.keys(state.spotValues) : [];
 
@@ -3262,13 +3354,55 @@ const Gauges = () => {
           <button onclick=${renamePage} style="font-size:.75rem;padding:4px 10px"><${Icon} n="edit" />Rename</button>
           <button onclick=${deletePage} style="font-size:.75rem;padding:4px 10px;color:var(--red)"><${Icon} n="x" />Delete</button>
         </div>
+        <h3 class="underline">Page condition</h3>
+        ${page.cond ? html`
+          <div id="page-cond" style="display:flex;flex-direction:column;gap:6px;font-size:.8rem">
+            <div style="display:flex;gap:8px;align-items:center">
+              <label style="width:3.5em">Value</label>
+              <${FieldPicker} value=${page.cond.name || ''} spotNames=${spotNames} onChange=${n => updatePageCond('name', n)} />
+            </div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <label style="width:3.5em">Min</label>
+              <input type="number" value=${page.cond.min} step="any" style="width:5em;padding:4px 6px"
+                oninput=${e => updatePageCond('min', parseFloat(e.target.value) || 0)} />
+              <label>Max</label>
+              <input type="number" value=${page.cond.max} step="any" style="width:5em;padding:4px 6px"
+                oninput=${e => updatePageCond('max', parseFloat(e.target.value) || 0)} />
+            </div>
+            <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+              <span style="width:3.5em">Invert</span>
+              <input type="checkbox" checked=${!!page.cond.invert} onchange=${e => updatePageCond('invert', e.target.checked)} style="width:auto" />
+              <span style="font-size:.72rem;color:var(--text3)">show while below the switching point</span>
+            </label>
+            <button onclick=${clearPageCond} style="font-size:.72rem;padding:3px 10px;width:auto;align-self:flex-start;color:var(--red)"><${Icon} n="x" size=${11} />Remove condition</button>
+            <p style="font-size:.72rem;color:var(--text3);margin:0">Like an indicator: the app switches to this page when the value crosses the midpoint of Min/Max. The Auto toggle above the grid arms it.</p>
+          </div>
+        ` : html`
+          <button onclick=${() => updatePageCond('name', '')} style="font-size:.75rem;padding:4px 10px;width:auto"><${Icon} n="plus" />Add condition</button>
+          <p style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">A condition switches to this page automatically when a value matches — e.g. show Debug while lasterr is non-zero.</p>
+        `}
         <p style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">Tap a tile to configure its value, type, colour and range — or to duplicate or remove it.</p>
       </div>
       `}
       <div class="main-left">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem;gap:8px;flex-wrap:wrap">
           <h2 style="margin:0">Gauges</h2>
-          ${!editing && html`<button onclick=${() => setEditing(true)} style="font-size:.75rem;padding:4px 12px"><${Icon} n="edit" />Edit Layout</button>`}
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            ${pages.some(p => p.cond && p.cond.name) && html`
+              <label class="toggle-row" id="auto-pages" style="width:auto;padding:4px 10px;font-size:.72rem" title="Conditional page display: switch pages automatically when a page condition matches">
+                <span class="toggle-label">Auto pages</span>
+                <span class="switch sm">
+                  <input type="checkbox" checked=${autoPage} onchange=${e => {
+                    const v = e.target.checked;
+                    setAutoPage(v);
+                    lastHitRef.current = null; // re-arm: a live match fires immediately
+                    persist(pages, v);
+                  }} />
+                  <span class="slider"></span>
+                </span>
+              </label>`}
+            ${!editing && html`<button onclick=${() => setEditing(true)} style="font-size:.75rem;padding:4px 12px"><${Icon} n="edit" />Edit Layout</button>`}
+          </div>
         </div>
         <div id="gauge-pages" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:.6rem">
           ${pages.map(p => html`
@@ -3356,7 +3490,13 @@ const Gauges = () => {
                   <option value="3">3</option>
                 </select>
               </div>`}
-              ${cfg.type === 'indicator' && html`<p style="font-size:.72rem;color:var(--text3);margin:0">The lamp lights in the chosen colour when the value rises past the midpoint between Min and Max — e.g. Min 0 / Max 1 switches at 0.5.</p>`}
+              ${cfg.type === 'indicator' && html`
+                <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+                  <span style="width:4.5em">Invert</span>
+                  <input type="checkbox" checked=${!!cfg.invert} onchange=${e => updateGaugeConfig(cfg.id, 'invert', e.target.checked)} style="width:auto" />
+                  <span style="font-size:.72rem;color:var(--text3)">lamp lit while the value is OFF</span>
+                </label>
+                <p style="font-size:.72rem;color:var(--text3);margin:0">The lamp lights in the chosen colour when the value rises past the midpoint between Min and Max — e.g. Min 0 / Max 1 switches at 0.5.</p>`}
               <div style="display:flex;gap:8px;align-items:center">
                 <label style="width:4.5em">Size</label>
                 ${tileFreeform(cfg.type) ? html`
@@ -3413,6 +3553,27 @@ const App = () => {
   // the effect last ran
   const activeTabRef = useRef(state.activeTab);
   activeTabRef.current = state.activeTab;
+
+  // URL breadcrumbs: reflect the active tab into the hash (so the current
+  // view can be bookmarked) and follow hash changes (back/forward buttons,
+  // or opening a bookmark while the app is already loaded)
+  useEffect(() => {
+    const onHash = () => {
+      const { tab } = parseHash();
+      if (tab && tab !== activeTabRef.current) dispatch({ type: 'SET_ACTIVE_TAB', payload: tab });
+    };
+    window.addEventListener('hashchange', onHash);
+    return () => window.removeEventListener('hashchange', onHash);
+  }, []);
+  useEffect(() => {
+    const cur = parseHash();
+    if (cur.tab !== state.activeTab) {
+      // Tab switches make history entries (back button walks tabs); the very
+      // first paint just normalises the empty hash without adding one
+      if (cur.tab) location.hash = '#' + state.activeTab;
+      else history.replaceState(null, '', '#' + state.activeTab);
+    }
+  }, [state.activeTab]);
 
   // Load CAN settings on mount
   useEffect(() => {

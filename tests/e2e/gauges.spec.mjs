@@ -427,4 +427,105 @@ test.describe('Gauges grid', () => {
     await page.locator('button', { hasText: 'Save & Done' }).click();
     await expect.poll(async () => (await mock.state()).files).toContain('gauges.json');
   });
+
+  test('inverted indicator lights while the value is OFF', async ({ page, mock }) => {
+    const layout = { v: 3, pages: [{ id: 1, name: 'Main', items: [
+      { id: 1, name: 'pot', type: 'indicator', min: 0, max: 4095, invert: true, color: '#ff6b6b', x: 0, y: 0, w: 3, h: 3 },
+    ] }] };
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(layout) });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    const lamp = page.locator('.ind-lamp');
+    // pot is 0 — below the midpoint, so the value is OFF and the inverted
+    // lamp is LIT; the caption still names the value's real state
+    await expect(lamp).toHaveClass(/on/, { timeout: 5000 });
+    await expect(page.locator('.ind-wrap .g-unit')).toHaveText('OFF');
+    // Value comes ON -> inverted lamp goes dark
+    await fetch(mock.url + '/__test/spot?name=pot&value=3000');
+    await expect(lamp).not.toHaveClass(/on/, { timeout: 5000 });
+    await expect(page.locator('.ind-wrap .g-unit')).toHaveText('ON');
+  });
+
+  test('indicator invert checkbox round-trips through the settings modal', async ({ page, mock }) => {
+    const layout = { v: 3, pages: [{ id: 1, name: 'Main', items: [
+      { id: 1, name: 'pot', type: 'indicator', min: 0, max: 1, x: 0, y: 0, w: 3, h: 3 },
+    ] }] };
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(layout) });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await enterEdit(page);
+    await page.locator('.gauge-tile').click();
+    const modal = page.locator('.modal-content');
+    await modal.locator('label', { hasText: 'Invert' }).locator('input[type="checkbox"]').check();
+    await modal.locator('button', { hasText: 'Done' }).click();
+    await page.locator('button', { hasText: 'Save & Done' }).click();
+    await expect.poll(async () => (await savedLayout(mock)).pages[0].items[0].invert).toBe(true);
+  });
+
+  test('conditional page display switches to the page whose condition matches', async ({ page, mock }) => {
+    // Fast shows above speed's midpoint (500); Idle is INVERTED on pot 0..100
+    // (midpoint 50), so it matches right from load while pot is 0
+    const layout = { v: 3, pages: [
+      { id: 1, name: 'Main', items: [{ id: 1, name: 'udc', type: 'text', x: 0, y: 0, w: 2, h: 1 }] },
+      { id: 2, name: 'Fast', cond: { name: 'speed', min: 0, max: 1000 }, items: [] },
+      { id: 3, name: 'Idle', cond: { name: 'pot', min: 0, max: 100, invert: true }, items: [] },
+    ] };
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(layout) });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await expect(page.locator('.page-pill.active')).toHaveText('Idle', { timeout: 5000 });
+    // An earlier page's condition coming true wins (first match in page order)
+    await fetch(mock.url + '/__test/spot?name=speed&value=900');
+    await expect(page.locator('.page-pill.active')).toHaveText('Fast', { timeout: 5000 });
+    // ...and dropping again hands back to the still-matching Idle
+    await fetch(mock.url + '/__test/spot?name=speed&value=0');
+    await expect(page.locator('.page-pill.active')).toHaveText('Idle', { timeout: 5000 });
+    // No condition matching -> stays where it is, and the user can browse
+    // freely (a persisting match must not yank the page back)
+    await fetch(mock.url + '/__test/spot?name=pot&value=200');
+    await page.waitForTimeout(500);
+    await expect(page.locator('.page-pill.active')).toHaveText('Idle');
+    await page.locator('.page-pill', { hasText: 'Main' }).click();
+    await page.waitForTimeout(500);
+    await expect(page.locator('.page-pill.active')).toHaveText('Main');
+    // A fresh match still fires
+    await fetch(mock.url + '/__test/spot?name=pot&value=0');
+    await expect(page.locator('.page-pill.active')).toHaveText('Idle', { timeout: 5000 });
+  });
+
+  test('Auto pages toggle disarms conditional display and persists', async ({ page, mock }) => {
+    const layout = { v: 3, pages: [
+      { id: 1, name: 'Main', items: [{ id: 1, name: 'udc', type: 'text', x: 0, y: 0, w: 2, h: 1 }] },
+      { id: 2, name: 'Fast', cond: { name: 'speed', min: 0, max: 1000 }, items: [] },
+    ] };
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(layout) });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await expect(page.locator('#auto-pages')).toBeVisible();
+    await page.locator('#auto-pages .slider').click(); // off
+    await expect.poll(async () => (await savedLayout(mock)).autoPage).toBe(false);
+    await fetch(mock.url + '/__test/spot?name=speed&value=900');
+    await page.waitForTimeout(700);
+    await expect(page.locator('.page-pill.active')).toHaveText('Main');
+    // The saved off state survives a reload
+    await page.reload();
+    await expect(page.locator('#version')).toContainText('Web: vMOCK');
+    await page.waitForTimeout(700);
+    await expect(page.locator('.page-pill.active')).toHaveText('Main');
+  });
+
+  test('page condition editor round-trips through Save & Done', async ({ page, mock }) => {
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await enterEdit(page);
+    await page.locator('button', { hasText: 'Add condition' }).click();
+    await page.locator('#page-cond div', { hasText: /^Select\.\.\.$/ }).last().click();
+    await page.locator('.hover-row', { hasText: 'speed' }).last().click();
+    await page.locator('#page-cond input[type="number"]').nth(1).fill('3000'); // max
+    await page.locator('button', { hasText: 'Save & Done' }).click();
+    await expect.poll(async () => (await savedLayout(mock)).pages[0].cond)
+      .toEqual({ name: 'speed', min: 0, max: 3000 });
+    // The Auto pages toggle appears once any page carries a condition
+    await expect(page.locator('#auto-pages')).toBeVisible();
+  });
 });
