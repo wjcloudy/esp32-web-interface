@@ -3012,16 +3012,17 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decim
         </g>
       </svg>
       <div class="g-center">
-        <div class="g-val" style=${'font-size:' + Math.max(0.62, size / 230 * 2.1).toFixed(2) + 'rem'}>${v == null ? '—' : (enums ? String(Math.round(v)) : v.toFixed(decimals))}</div>
-        ${/* unit tracks the gauge size like the value does. Small dials
-            (under 90px, where min/max labels already hide) drop it — the
-            .8rem floor would render it BIGGER than the value and overflow
-            the dial centre */ ''}
-        ${size >= 90 && (() => {
-          const ufs = Math.max(0.8, size / 230 * 0.8).toFixed(2) + 'rem';
-          return enums
-            ? (v != null && html`<div class="g-unit g-enum" style=${'font-size:' + ufs}>${enumLabel(enums, v)}</div>`)
-            : (unit && html`<div class="g-unit" style=${'font-size:' + ufs}>${unit}</div>`);
+        ${(() => {
+          // Unit stays proportional to the VALUE font (never bigger, as the
+          // old .8rem floor became on small dials) with a small readable
+          // floor — so it shows at every size without overflowing the centre
+          const vfs = Math.max(0.62, size / 230 * 2.1);
+          const ufs = Math.max(0.5, Math.min(vfs * 0.45, Math.max(0.8, size / 230 * 0.8))).toFixed(2) + 'rem';
+          return html`
+            <div class="g-val" style=${'font-size:' + vfs.toFixed(2) + 'rem'}>${v == null ? '—' : (enums ? String(Math.round(v)) : v.toFixed(decimals))}</div>
+            ${enums
+              ? (v != null && html`<div class="g-unit g-enum" style=${'font-size:' + ufs}>${enumLabel(enums, v)}</div>`)
+              : (unit && html`<div class="g-unit" style=${'font-size:' + ufs}>${unit}</div>`)}`;
         })()}
       </div>
       ${size >= 90 && html`
