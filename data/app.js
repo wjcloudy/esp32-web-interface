@@ -19,20 +19,6 @@ const api = {
     return this._pending[cmd];
   },
 
-  async getSpotValues(names) {
-    if (!names || names.length === 0) return {};
-    const cmd = 'get ' + names.join(',');
-    const text = await this.getText(cmd);
-    // Parse float values using exact regex from original codebase
-    const re = /(\-{0,1}[0-9]+\.[0-9]*)/g;
-    const vals = [];
-    let m;
-    while ((m = re.exec(text)) !== null) vals.push(parseFloat(m[1]));
-    const result = {};
-    names.forEach((name, i) => { result[name] = vals[i] !== undefined ? vals[i] : 0; });
-    return result;
-  },
-
   async getText(cmd, repeat, timeoutMs) {
     let url = '/cmd?cmd=' + encodeURIComponent(cmd);
     if (repeat) url += '&repeat=' + repeat;
@@ -50,6 +36,37 @@ const api = {
     } finally {
       if (timer) clearTimeout(timer);
     }
+  },
+
+  // Fetch many spot values with the command split into <=120-char chunks —
+  // the inverter's UART terminal buffer truncates commands beyond 128 chars,
+  // which would silently mis-map values onto the wrong names.
+  async getValuesChunked(names) {
+    const chunks = [];
+    let cur = [], len = 4; // 'get '
+    for (const n of names) {
+      if (cur.length && len + n.length + 1 > 120) { chunks.push(cur); cur = []; len = 4; }
+      cur.push(n); len += n.length + 1;
+    }
+    if (cur.length) chunks.push(cur);
+    const out = {};
+    for (const c of chunks) {
+      const text = await this.getText('get ' + c.join(','));
+      const vals = text.match(/[\-\d\.]+/g) || [];
+      if (vals.length !== c.length) throw new Error('count mismatch');
+      c.forEach((n, i) => { out[n] = parseFloat(vals[i]); });
+    }
+    return out;
+  },
+
+  // Set a parameter and interpret the inverter's free-text reply: returns
+  // { ok, reply }. Both backends reply with recognisable failure text
+  // ("Value out of range", "Unknown parameter", CAN-mode "Set failed") that
+  // callers previously ignored, showing rejected values as applied.
+  async setParam(name, value) {
+    const reply = (await this.getText('set ' + name + ' ' + value)).trim();
+    const ok = !/out of range|unknown param|set failed|error/i.test(reply);
+    return { ok, reply };
   },
 
   async uploadFile(formData) {
@@ -103,14 +120,19 @@ const api = {
     const start = await fetch('/fwupdate?step=-1&file=' + encodeURIComponent(file));
     const sj = await start.json().catch(() => ({}));
     if (!start.ok) throw new Error(sj.message || 'Could not start update');
+    let failures = 0; // consecutive status-poll failures — bail instead of looping forever
     while (true) {
       await new Promise(res => setTimeout(res, 400));
       let st;
       try {
         const r = await fetch('/fwupdate-status');
-        if (!r.ok) continue;
+        if (!r.ok) throw new Error('HTTP ' + r.status);
         st = await r.json();
-      } catch (e) { continue; }
+        failures = 0;
+      } catch (e) {
+        if (++failures >= 25) throw new Error('Lost contact with the device during the update'); // ~10s
+        continue;
+      }
       if (st.state === 1) onProgress(0, 'Waiting for bootloader — power-cycle the device if this hangs');
       else if (st.state === 2) onProgress(Math.round(100 * st.page / (st.pages || 1)), 'Flashing page ' + st.page + ' / ' + st.pages);
       else if (st.state === 3) { onProgress(100, 'Update complete'); return; }
@@ -128,14 +150,20 @@ const api = {
     } catch (e) { return { params: [], spots: [] }; }
   },
 
-  async saveFavorites(paramFavs, spotFavs) {
-    try {
-      const json = JSON.stringify({ p: paramFavs || [], s: spotFavs || [] });
-      const blob = new Blob([json], { type: 'application/json' });
-      const fd = new FormData();
-      fd.append('updatefile', blob, 'favorites.json');
-      await fetch('/edit', { method: 'POST', body: fd });
-    } catch(e) { console.log('Save favorites failed', e); }
+  // Debounced: rapid toggles collapse into one write of the LATEST lists —
+  // two overlapping uploads could otherwise finish out of order and persist
+  // the stale one
+  saveFavorites(paramFavs, spotFavs) {
+    this._favData = { p: paramFavs || [], s: spotFavs || [] };
+    clearTimeout(this._favTimer);
+    this._favTimer = setTimeout(async () => {
+      try {
+        const blob = new Blob([JSON.stringify(this._favData)], { type: 'application/json' });
+        const fd = new FormData();
+        fd.append('updatefile', blob, 'favorites.json');
+        await fetch('/edit', { method: 'POST', body: fd });
+      } catch(e) { console.log('Save favorites failed', e); }
+    }, 400);
   }
 };
 
@@ -536,7 +564,7 @@ const Navbar = () => {
       </div>
       ${state.refreshRate === -1 && !state.logging && html`
         <div style="text-align:center;padding:4px 0 0">
-          <button onclick=${() => { dispatch({ type: 'SET_FETCHING' }); api.getJSON('json').then(json => dispatch({ type: 'SET_PARAMS', payload: json })).catch(() => {}); }} style="font-size:.7rem;padding:4px 12px"><${Icon} n="refresh" />Refresh now</button>
+          <button onclick=${() => { dispatch({ type: 'SET_FETCHING' }); api.getJSON('json').then(json => dispatch({ type: 'SET_PARAMS', payload: json })).catch(() => dispatch({ type: 'FETCH_ERROR' })); }} style="font-size:.7rem;padding:4px 12px"><${Icon} n="refresh" />Refresh now</button>
         </div>
       `}
       ${state.canMode && html`
@@ -741,8 +769,10 @@ const Parameters = () => {
   }
 
   const saveParam = async (name, value) => {
-    await api.getText('set ' + name + ' ' + value);
-    dispatch({ type: 'SET_PARAM_VALUE', name, value });
+    const { ok, reply } = await api.setParam(name, value);
+    if (!ok) { alert(name + ': ' + reply); setEditing(null); return; } // rejected — keep the old value
+    const num = parseFloat(value);
+    dispatch({ type: 'SET_PARAM_VALUE', name, value: isNaN(num) ? value : num });
     setEditing(null);
   };
 
@@ -775,13 +805,15 @@ const Parameters = () => {
       const fd = new FormData();
       fd.append('updatefile', blob, 'subscription.js');
       await fetch('/edit', { method: 'POST', body: fd });
-      // Apply parameters
+      // Apply parameters, reporting any the inverter rejects
+      const rejected = [];
       for (const name in params) {
         if (params[name] && params[name].value !== undefined) {
-          await api.getText('set ' + name + ' ' + params[name].value);
+          const res = await api.setParam(name, params[name].value);
+          if (!res.ok) rejected.push(name);
         }
       }
-      alert('Subscribed and parameters applied!');
+      alert('Subscribed and parameters applied!' + (rejected.length ? '\nRejected: ' + rejected.join(', ') : ''));
       setShowSubscribe(false);
       // Refresh
       const json = await api.getJSON('json');
@@ -829,8 +861,11 @@ const Parameters = () => {
       for (let i = 0; i < total; i++) {
         const [name, value] = entries[i];
         setApplyMsg('Setting ' + name + ' (' + (i + 1) + ' / ' + total + ')');
-        try { await api.getText('set ' + name + ' ' + value); ok++; }
-        catch (err) { failed.push(name); }
+        try {
+          const res = await api.setParam(name, value);
+          if (res.ok) ok++;
+          else failed.push(name + ' (' + res.reply + ')');
+        } catch (err) { failed.push(name); }
         setApplyPct(Math.round(100 * (i + 1) / total));
       }
       setApplyMsg('Refreshing...');
@@ -1232,20 +1267,25 @@ const Update = () => {
       const j = await r.json().catch(() => ({}));
       if (!r.ok || !j.ok) throw new Error(j.message || ('HTTP ' + r.status));
       // The download/flash runs in the background on the device; poll for progress.
-      let fails = 0;
+      let fails = 0, lastPct = 0;
       while (true) {
         await new Promise(res => setTimeout(res, 500));
         let st;
         try { st = await (await fetch('/espupdate-status')).json(); fails = 0; }
         catch (e) {
-          // device likely rebooting after a successful flash
-          if (++fails > 4) { setProgress(100); setUpdateMsg('Flashed — rebooting, reloading shortly...'); setTimeout(() => location.reload(), 7000); return; }
+          if (++fails > 4) {
+            // Silence only means "rebooting after success" if the flash was
+            // essentially done — losing WiFi at 3% is a failure, not a reboot
+            if (lastPct >= 95) { setProgress(100); setUpdateMsg('Flashed — rebooting, reloading shortly...'); setTimeout(() => location.reload(), 7000); return; }
+            throw new Error('Lost contact with the device at ' + lastPct + '% — check it and retry');
+          }
           continue;
         }
         if (st.state === 2) { setProgress(100); setUpdateMsg('Flashed — rebooting, reloading shortly...'); setTimeout(() => location.reload(), 7000); return; }
         if (st.state === 3) throw new Error(st.message || 'Update failed');
-        setProgress(st.pct || 0);
-        setUpdateMsg('Downloading & flashing... ' + (st.pct || 0) + '%');
+        lastPct = st.pct || 0;
+        setProgress(lastPct);
+        setUpdateMsg('Downloading & flashing... ' + lastPct + '%');
       }
     } catch (e) {
       setUpdateMsg('Error: ' + e.message);
@@ -1261,9 +1301,17 @@ const Update = () => {
     setUpdating(true); setProgress(0); setUpdateMsg('Uploading...');
     // Pause json polling — its UART/CAN traffic would corrupt the bootloader transfer
     dispatch({ type: 'SET_LOGGING', payload: true });
-    const fd = new FormData();
-    fd.append('update-firmware-file', file);
-    await api.uploadFile(fd);
+    try {
+      const fd = new FormData();
+      fd.append('update-firmware-file', file);
+      await api.uploadFile(fd);
+    } catch (e) {
+      // Failed upload must release the polling pause or the whole app stalls
+      setUpdateMsg('Error: upload failed — ' + e.message);
+      dispatch({ type: 'SET_LOGGING', payload: false });
+      setTimeout(() => setUpdating(false), 4000);
+      return;
+    }
     if (fileRef.current) fileRef.current.value = ''; // allow re-selecting the same file
     setUpdateMsg('Installing firmware...');
 
@@ -1273,10 +1321,10 @@ const Update = () => {
         await api.runCanUpdate('/' + file.name, (pct, msg) => { setProgress(pct); setUpdateMsg(msg); });
         setUpdateMsg('Update Done!');
         api.deleteFile('/' + file.name);
-        setTimeout(() => setUpdating(false), 3000);
       } catch (e) {
         setUpdateMsg('Error: ' + e.message);
       }
+      setTimeout(() => setUpdating(false), 3000);
       dispatch({ type: 'SET_LOGGING', payload: false });
       return;
     }
@@ -1318,7 +1366,10 @@ const Update = () => {
   const installOTA = async (url) => {
     setOtaMsg('Downloading...');
     try {
-      const blob = await fetch(url).then(r => r.blob());
+      // Guard against an error page being flashed as firmware
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error('Download failed (HTTP ' + resp.status + ')');
+      const blob = await resp.blob();
       setOtaMsg('Uploading...');
       const fd = new FormData();
       fd.append('updatefile', blob, 'stm32.bin');
@@ -1333,10 +1384,10 @@ const Update = () => {
           await api.runCanUpdate('/stm32.bin', (pct, msg) => { setProgress(pct); setUpdateMsg(msg); });
           setUpdateMsg('Done!');
           api.deleteFile('/stm32.bin');
-          setTimeout(() => setUpdating(false), 3000);
         } catch (e) {
           setUpdateMsg('Error: ' + e.message);
         }
+        setTimeout(() => setUpdating(false), 3000);
         dispatch({ type: 'SET_LOGGING', payload: false });
         return;
       }
@@ -1365,12 +1416,14 @@ const Update = () => {
   const uploadWebFile = async () => {
     const file = webFileRef.current?.files?.[0];
     if (!file) return;
-    const fd = new FormData();
-    fd.append('updatefile', file);
-    await api.uploadFile(fd);
-    if (webFileRef.current) webFileRef.current.value = '';
-    alert('File uploaded');
-    dispatch({ type: 'SET_FILE_LIST', payload: await api.getFileList() });
+    try {
+      const fd = new FormData();
+      fd.append('updatefile', file);
+      await api.uploadFile(fd);
+      if (webFileRef.current) webFileRef.current.value = '';
+      alert('File uploaded');
+      dispatch({ type: 'SET_FILE_LIST', payload: await api.getFileList() });
+    } catch (e) { alert('Upload failed: ' + e.message); }
   };
 
   // OTA-flash the web interface from a combined image (firmware + filesystem in
@@ -1519,7 +1572,11 @@ if (typeof Chart !== 'undefined') {
 }
 
 // Simple chart renderer — just a canvas, no controls
-const PlotChart = ({ plot, pushValue, maxValues }) => {
+// Renders one plot. Samples arrive via `queueRef` (an array of name->value
+// maps) and `sampleTick` bumps once per fetch — pushing is driven by actual
+// data arrival, not render identity, so unrelated app re-renders (e.g. the
+// 1 Hz age ticker) can no longer inject duplicate points.
+const PlotChart = ({ plot, queueRef, sampleTick, maxValues }) => {
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
   const timeRef = useRef(0);
@@ -1540,6 +1597,9 @@ const PlotChart = ({ plot, pushValue, maxValues }) => {
         }
       });
     }
+    // Destroy on unmount — Chart.js keeps a registry entry + ResizeObserver
+    // per instance, so tab switches leaked charts before
+    return () => { if (chartRef.current) { chartRef.current.destroy(); chartRef.current = null; } };
   }, []);
 
   useEffect(() => {
@@ -1557,20 +1617,23 @@ const PlotChart = ({ plot, pushValue, maxValues }) => {
   }, [items]);
 
   useEffect(() => {
-    if (!pushValue || !chartRef.current) return;
+    if (!queueRef || !chartRef.current) return;
     const chart = chartRef.current;
     const active = items.filter(p => p.name);
     if (active.length === 0 || chart.data.datasets.length !== active.length) return;
-    const t = timeRef.current++;
-    active.forEach((p, si) => {
-      const val = pushValue(p.name);
-      if (val !== null && !isNaN(val) && chart.data.datasets[si]) {
-        chart.data.datasets[si].data.push({ x: t, y: val });
-        while (chart.data.datasets[si].data.length > maxValues) chart.data.datasets[si].data.shift();
-      }
-    });
+    // Drain every queued sample — with Burst > 1 several arrive per fetch
+    for (const sample of queueRef.current) {
+      const t = timeRef.current++;
+      active.forEach((p, si) => {
+        const val = sample[p.name];
+        if (val != null && !isNaN(val) && chart.data.datasets[si]) {
+          chart.data.datasets[si].data.push({ x: t, y: val });
+          while (chart.data.datasets[si].data.length > maxValues) chart.data.datasets[si].data.shift();
+        }
+      });
+    }
     chart.update('none');
-  }, [pushValue]);
+  }, [sampleTick]);
 
   return html`<div style="margin-bottom:1.5rem"><canvas ref=${canvasRef} width="100%" height="40" style="width:100%;max-height:300px"></canvas></div>`;
 };
@@ -1618,8 +1681,9 @@ const Plot = () => {
   const [editing, setEditing] = useState(false);
   const [maxValues, setMaxValues] = useState(500);
   const [burstLength, setBurstLength] = useState(5);
-  const [, setTick] = useState(0); // force re-render tick
+  const [sampleTick, setSampleTick] = useState(0); // bumps once per fetch of new samples
   const valsRef = useRef({});
+  const queueRef = useRef([]); // samples pending chart draw (several per fetch with Burst)
   const nextId = useRef(1);
   const fetchRef = useRef(null);
 
@@ -1638,18 +1702,37 @@ const Plot = () => {
     let running = true;
     const combined = allNames.join(',');
 
+    // Long name lists overflow the inverter's 128-char UART command buffer —
+    // fall back to chunked single samples (no burst) rather than truncating
+    const chunked = !state.canMode && ('get ' + combined).length > 128;
+
     const loop = async () => {
       if (!running) return;
       try {
-        const text = await api.getText('get ' + combined, burstLength);
-        if (!running) return;
-        const vals = text.match(/[\-\d\.]+/g) || [];
-        const startIdx = Math.max(0, vals.length - allNames.length);
-        allNames.forEach((name, i) => {
-          const vi = startIdx + i;
-          if (vi < vals.length) valsRef.current[name] = parseFloat(vals[vi]);
-        });
-        setTick(t => t + 1);
+        if (chunked) {
+          const sample = await api.getValuesChunked(allNames);
+          if (!running) return;
+          queueRef.current = [sample];
+          valsRef.current = sample;
+          setSampleTick(t => t + 1);
+        } else {
+          const text = await api.getText('get ' + combined, burstLength);
+          if (!running) return;
+          const vals = text.match(/[\-\d\.]+/g) || [];
+          // Only accept whole sample groups: an error reply (or a truncated
+          // one) would otherwise shift values onto the wrong series
+          const groups = Math.floor(vals.length / allNames.length);
+          if (groups > 0 && vals.length === groups * allNames.length) {
+            queueRef.current = [];
+            for (let gIdx = 0; gIdx < groups; gIdx++) {
+              const sample = {};
+              allNames.forEach((name, i) => { sample[name] = parseFloat(vals[gIdx * allNames.length + i]); });
+              queueRef.current.push(sample);
+            }
+            valsRef.current = queueRef.current[groups - 1]; // latest, for live readouts
+            setSampleTick(t => t + 1);
+          }
+        }
       } catch (e) { /* ignore */ }
       if (running) fetchRef.current = setTimeout(loop, 100);
     };
@@ -1658,7 +1741,6 @@ const Plot = () => {
     return () => { running = false; if (fetchRef.current) clearTimeout(fetchRef.current); };
   }, [plotting, plots]);
 
-  const getValue = (name) => valsRef.current[name] ?? null;
 
   const addPlot = () => {
     setPlots([...plots, { id: nextId.current++, items: [] }]);
@@ -1773,7 +1855,7 @@ const Plot = () => {
           </div>
         </div>
         ${plots.map(p => html`
-          <${PlotChart} key=${p.id} plot=${p} pushValue=${plotting ? getValue : null} maxValues=${maxValues} />
+          <${PlotChart} key=${p.id} plot=${p} queueRef=${plotting ? queueRef : null} sampleTick=${sampleTick} maxValues=${maxValues} />
         `)}
         ${plots.length === 0 && !editing && html`<p style="color:var(--text3);text-align:center;padding:2rem 0">Click Edit Layout to add a plot.</p>`}
       </div>
@@ -1805,19 +1887,22 @@ const Logger = () => {
     if (names.length === 0) return;
 
     loggingRef.current = true;
+    const maxLines = Math.min(5000, Math.max(50, parseInt(samples) || 500));
+    let errs = 0; // consecutive failures — tolerate blips, stop when persistent
     (async function loop() {
       while (loggingRef.current) {
         try {
-          const cmd = 'get ' + names.join(',');
-          const text = await api.getText(cmd);
+          // Chunked: long field lists exceed the inverter's 128-char UART
+          // command buffer; garbled/mismatched replies throw instead of
+          // silently shifting columns
+          const out = await api.getValuesChunked(names);
           if (!loggingRef.current) break;
-          const vals = text.match(/[\-\d\.]+/g) || [];
-          const line = vals.join('\t');
+          errs = 0;
+          const line = names.map(n => out[n]).join('\t');
           setLogText(prev => {
             const next = prev + line + '\n';
-            // Limit to ~500 lines to avoid memory issues
             const lines = next.split('\n');
-            if (lines.length > 500) lines.splice(0, lines.length - 500);
+            if (lines.length > maxLines) lines.splice(0, lines.length - maxLines);
             return lines.join('\n');
           });
           // Auto-scroll
@@ -1825,7 +1910,11 @@ const Logger = () => {
             textRef.current.scrollTop = textRef.current.scrollHeight;
           }
         } catch (e) {
-          if (loggingRef.current) setLogText(p => p + 'Error: ' + e.message + '\n');
+          if (++errs < 5) continue; // transient blip — keep logging
+          if (loggingRef.current) setLogText(p => p + 'Error: ' + e.message + ' — logging stopped\n');
+          // Release the app-wide polling pause, or the whole UI stays stale
+          // while the Recording pill misleadingly stays lit
+          dispatch({ type: 'SET_LOGGING', payload: false });
           break;
         }
       }
@@ -1856,7 +1945,7 @@ const Logger = () => {
           a.click();
         }}><${Icon} n="download" />Save as...</button>
         <h3 class="underline">Configure Logger</h3>
-        <label>Samples per line: <input type="number" value=${samples} oninput=${e => setSamples(e.target.value)} style="width:5em" /></label>
+        <label>Max lines kept: <input type="number" min="50" max="5000" value=${samples} oninput=${e => setSamples(e.target.value)} style="width:5em" /></label>
         ${logItems.map((item, i) => html`
           <div class="logger-field" key=${i} style="display:flex;gap:4px;align-items:center;margin-bottom:4px">
             <${FieldPicker} value=${item.name || ''} spotNames=${spotNames} onChange=${name => updateItem(i, 'name', name)} />
@@ -2124,10 +2213,11 @@ const Files = () => {
 
 // ==================== Settings ====================
 
-// Theme helper
-function getTheme() { return localStorage.getItem('theme') || 'system'; }
+// Theme helper (guarded: blocked site-data makes localStorage THROW, and this
+// runs at module scope — an unguarded call would blank the whole app)
+function getTheme() { try { return localStorage.getItem('theme') || 'system'; } catch (e) { return 'system'; } }
 function setTheme(theme) {
-  localStorage.setItem('theme', theme);
+  try { localStorage.setItem('theme', theme); } catch (e) {}
   if (theme === 'system') document.documentElement.removeAttribute('data-theme');
   else document.documentElement.setAttribute('data-theme', theme);
 }
@@ -3041,6 +3131,9 @@ const Gauges = () => {
         const text = await api.getText('get ' + names.join(','));
         if (!active) return;
         const vals = text.match(/[\-\d\.]+/g) || [];
+        // Positional mapping is only safe when counts line up — an error reply
+        // (e.g. one bad name) would shift every gauge onto its neighbour's value
+        if (vals.length !== names.length) return;
         const next = {};
         let vi = 0;
         items.forEach(g => {
@@ -3181,6 +3274,12 @@ const Gauges = () => {
 const App = () => {
   const [state, dispatch] = useReducer(reducer, initialState);
   const store = useMemo(() => ({ state, dispatch }), [state]);
+  // The poll effect below only re-runs on rate/logging changes, so it must
+  // read the current tab through a ref — a closure would go stale and keep
+  // fetching (or stop fetching) 'errors' for whichever tab was active when
+  // the effect last ran
+  const activeTabRef = useRef(state.activeTab);
+  activeTabRef.current = state.activeTab;
 
   // Load CAN settings on mount
   useEffect(() => {
@@ -3209,8 +3308,8 @@ const App = () => {
         const json = await api.getJSON('json');
         if (!running) return true;
         dispatch({ type: 'SET_PARAMS', payload: json });
-        if (state.activeTab === 'dashboard') {
-          api.getText('errors').then(r => dispatch({ type: 'SET_MESSAGES', payload: r }));
+        if (activeTabRef.current === 'dashboard') {
+          api.getText('errors').then(r => dispatch({ type: 'SET_MESSAGES', payload: r })).catch(() => {});
         }
       } catch (e) {
         if (running) dispatch({ type: 'FETCH_ERROR' });
