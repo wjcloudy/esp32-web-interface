@@ -588,6 +588,69 @@ test.describe('Gauges grid', () => {
     await expect(page.locator('.gauge-tile-name', { hasText: 'udc' })).toBeVisible();
   });
 
+  test('action tile sets a parameter when pressed (configured via modal)', async ({ page, mock }) => {
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await enterEdit(page);
+    await page.locator('button', { hasText: 'Add Gauge' }).click();
+    const modal = page.locator('.modal-content');
+    await modal.locator('select').first().selectOption('action');
+    // Pick the parameter and target value; confirm stays on by default
+    await modal.locator('div', { hasText: /^Select\.\.\.$/ }).last().click();
+    await modal.locator('.hover-row', { hasText: 'fweak' }).last().click();
+    await modal.locator('input[type="number"]').first().fill('72');
+    await modal.locator('button', { hasText: 'Done' }).click();
+    await page.locator('button', { hasText: 'Save & Done' }).click();
+    await expect.poll(async () => (await savedLayout(mock)).pages[0].items[0].type).toBe('action');
+    const item = (await savedLayout(mock)).pages[0].items[0];
+    expect(item.param).toBe('fweak');
+    expect(item.value).toBe(72);
+    // Fire it (accept the confirm dialog) — the inverter actually changes
+    page.once('dialog', d => d.accept());
+    const btn = page.locator('.action-tile-btn');
+    await expect(btn).toContainText('set fweak 72'); // no label -> summary
+    await btn.click();
+    await expect(btn).toHaveClass(/ok/, { timeout: 5000 });
+    expect(await mock.commands()).toContain('set fweak 72');
+    expect((await mock.state()).inverter.params.fweak.value).toBe(72);
+  });
+
+  test('action tile confirm dialog: dismissing fires nothing', async ({ page, mock }) => {
+    const layout = { v: 3, pages: [{ id: 1, name: 'Main', items: [
+      { id: 1, type: 'action', param: 'fweak', value: 90, label: 'Boost', x: 0, y: 0, w: 2, h: 1 },
+    ] }] };
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(layout) });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    page.once('dialog', d => d.dismiss());
+    await page.locator('.action-tile-btn', { hasText: 'Boost' }).click();
+    await page.waitForTimeout(400);
+    expect((await mock.commands()).filter(c => c.startsWith('set '))).toEqual([]);
+    expect((await mock.state()).inverter.params.fweak.value).toBe(67);
+  });
+
+  test('CAN action tile sends a frame in CAN mode, fails cleanly in UART mode', async ({ page, mock }) => {
+    const layout = { v: 3, pages: [{ id: 1, name: 'Main', items: [
+      { id: 1, type: 'action', act: 'can', canId: '0x180', canData: '01 02', confirm: false, label: 'Heater', x: 0, y: 0, w: 2, h: 1 },
+    ] }] };
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(layout) });
+    // UART mode first: the button must fail with a flash, not send anything
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    const btn = page.locator('.action-tile-btn', { hasText: 'Heater' });
+    await btn.click();
+    await expect(btn).toHaveClass(/fail/, { timeout: 5000 });
+    expect((await mock.commands()).filter(c => c.startsWith('can-send'))).toEqual([]);
+    // Switch the device to CAN mode and reload: now it sends
+    await fetch(mock.url + '/settings?can_mode=1', { method: 'POST' });
+    await page.reload();
+    await expect(page.locator('#version')).toContainText('Web: v0.1-mock');
+    await gotoTab(page, 'Gauges');
+    await btn.click();
+    await expect(btn).toHaveClass(/ok/, { timeout: 5000 });
+    await expect.poll(async () => await mock.commands()).toContain('can-send 0x180 01 02');
+  });
+
   test('page condition editor round-trips through Save & Done', async ({ page, mock }) => {
     await openApp(page, mock);
     await gotoTab(page, 'Gauges');

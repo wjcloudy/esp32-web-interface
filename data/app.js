@@ -3052,10 +3052,10 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decim
 const GRID_COLS = 10;
 const V1_SPAN = { xs: 2, sm: 2, md: 3, lg: 4 }; // legacy fixed sizes -> tile span (10-col)
 
-// Per-type tile rules: indicators and text tiles can go down to 1 cell;
-// dials/lamps stay square, line charts and text strips can be any shape
-const tileFloor = (type) => (type === 'indicator' || type === 'text') ? 1 : 2;
-const tileFreeform = (type) => type === 'line' || type === 'text';
+// Per-type tile rules: indicators, text tiles and action buttons can go down
+// to 1 cell; dials/lamps stay square, everything else can be any shape
+const tileFloor = (type) => (type === 'indicator' || type === 'text' || type === 'action') ? 1 : 2;
+const tileFreeform = (type) => type === 'line' || type === 'text' || type === 'action';
 
 // A page condition ({ name, min, max, invert }) matches while the value sits
 // inside min..max INCLUSIVE — so equality is min = max (opmode 3..3 matches
@@ -3166,10 +3166,56 @@ const TextTile = ({ value, unit, enums, text, decimals, w, h }) => {
     </div>`;
 };
 
+// Action button tile: tap to set a parameter to a fixed value, or (in CAN
+// mode) send a raw CAN frame — same backends as the Parameters table and the
+// dashboard CAN sender. The tile flashes green/red with the outcome; the
+// last reply lives in the tooltip. In edit mode the button goes inert so the
+// tap opens the tile's settings instead of firing.
+const actionSummary = (g) => (g.act === 'can')
+  ? 'CAN ' + (g.canId || '?')
+  : 'set ' + (g.param || '?') + ' ' + (g.value != null ? g.value : '?');
+const ActionTile = ({ g, canMode, editing, w, h }) => {
+  const [flash, setFlash] = useState(''); // '' | 'busy' | 'ok' | 'fail'
+  const [lastMsg, setLastMsg] = useState('');
+  const fire = async () => {
+    if (editing || flash === 'busy') return;
+    // confirm defaults ON (g.confirm undefined = ask) — these buttons write
+    // to the inverter, so silence must be opted into
+    if (g.confirm !== false && !window.confirm('Fire "' + (g.label || actionSummary(g)) + '"?')) return;
+    setFlash('busy');
+    let ok = false, msg = '';
+    try {
+      if (g.act === 'can') {
+        if (!canMode) throw new Error('CAN mode is off — this button needs the CAN interface');
+        if (!g.canId) throw new Error('No CAN ID configured');
+        const r = await fetch('/can-send?canId=' + encodeURIComponent(g.canId) + '&data=' + encodeURIComponent(g.canData || ''));
+        const j = await r.json().catch(() => ({}));
+        ok = r.ok && !j.error;
+        msg = j.error || 'sent';
+      } else {
+        if (!g.param) throw new Error('No parameter configured');
+        const res = await api.setParam(g.param, g.value != null ? g.value : 0);
+        ok = res.ok;
+        msg = res.reply || (ok ? 'OK' : 'failed');
+      }
+    } catch (e) { msg = e.message; }
+    setLastMsg(msg);
+    setFlash(ok ? 'ok' : 'fail');
+    setTimeout(() => setFlash(f => (f === 'ok' || f === 'fail') ? '' : f), 1200);
+  };
+  const label = g.label || actionSummary(g);
+  const fs = Math.max(11, Math.min(18, Math.round(h * 0.3), Math.round((w * 1.6) / Math.max(3, label.length))));
+  return html`
+    <button class="action-tile-btn ${flash}" onclick=${fire} title=${actionSummary(g) + (lastMsg ? ' — ' + lastMsg : '')}
+      style=${'font-size:' + fs + 'px;pointer-events:' + (editing ? 'none' : 'auto')}>
+      ${flash === 'busy' ? '…' : label}
+    </button>`;
+};
+
 // Fills the tile under the name label and measures itself with a
 // ResizeObserver, so gauges rescale live while a tile is being resized
 // (GridStack changes the DOM size continuously during the drag).
-const GaugeTileBody = ({ g, title, value, unit, enums }) => {
+const GaugeTileBody = ({ g, title, value, unit, enums, editing, canMode }) => {
   const ref = useRef(null);
   const [dim, setDim] = useState({ w: 0, h: 0 });
   // Layout effect: measure before first paint so a freshly mounted page
@@ -3227,6 +3273,8 @@ const GaugeTileBody = ({ g, title, value, unit, enums }) => {
         : (g.type === 'text')
         ? html`<${TextTile} value=${value} unit=${unit} enums=${enums} text=${g.text || ''}
             decimals=${g.decimals != null ? g.decimals : 1} w=${w - 6} h=${gh - 4} />`
+        : (g.type === 'action')
+        ? html`<${ActionTile} g=${g} canMode=${canMode} editing=${editing} w=${w - 10} h=${gh - 8} />`
         : html`<${SvgGauge} id=${g.id} value=${value} unit=${unit} color=${g.color || ''} enums=${enums}
             px=${Math.max(40, Math.min(w, gh) - 4)} decimals=${g.decimals != null ? g.decimals : 1}
             min=${g.min != null ? g.min : 0} max=${(g.max == null || g.max === 0) ? 4000 : g.max} />`)}
@@ -3664,8 +3712,17 @@ const Gauges = () => {
                 onclick=${editing ? (() => { if (!dragBusyRef.current) setConfigId(g.id); }) : undefined}>
                 ${/* 'tap to set up' only for truly unconfigured tiles — a
                     static-text tile is fully configured without a value or
-                    label (its body IS the text, no name row needed) */ ''}
-                <${GaugeTileBody} g=${g} title=${g.label || g.name || (editing && !(g.type === 'text' && g.text && String(g.text).trim()) ? 'tap to set up' : '—')} value=${lineVals[g.id]} unit=${unit} enums=${enums} />
+                    label (its body IS the text), and an action tile shows its
+                    label on the button itself (no name row) */ ''}
+                ${(() => {
+                  const configured = g.type === 'text' ? !!(g.name || g.label || (g.text && String(g.text).trim()))
+                    : g.type === 'action' ? !!(g.label || g.param || g.canId)
+                    : !!(g.name || g.label);
+                  const title = g.type === 'action' ? (editing && !configured ? 'tap to set up' : '—')
+                    : (g.label || g.name || (editing && !configured ? 'tap to set up' : '—'));
+                  return html`<${GaugeTileBody} g=${g} title=${title} value=${lineVals[g.id]} unit=${unit} enums=${enums}
+                    editing=${editing} canMode=${state.canMode} />`;
+                })()}
               </div>
             </div>`;
           })}
@@ -3676,10 +3733,10 @@ const Gauges = () => {
         return cfg && html`
           <${Modal} id="gauge-config" title="Gauge settings" onClose=${() => setConfigId(null)}>
             <div style="display:flex;flex-direction:column;gap:10px;font-size:.85rem">
-              <div style="display:flex;gap:8px;align-items:center">
+              ${cfg.type !== 'action' && html`<div style="display:flex;gap:8px;align-items:center">
                 <label style="width:4.5em">Value</label>
                 <${FieldPicker} value=${cfg.name} spotNames=${spotNames} onChange=${name => updateGaugeConfig(cfg.id, 'name', name)} />
-              </div>
+              </div>`}
               <div style="display:flex;gap:8px;align-items:center">
                 <label style="width:4.5em">Label</label>
                 <input type="text" value=${cfg.label || ''} placeholder="(shows the value name)" maxlength="24"
@@ -3694,18 +3751,23 @@ const Gauges = () => {
                   if (t === 'indicator' && cfg.min === 0 && cfg.max === 4000) {
                     updateGaugeConfig(cfg.id, 'max', 1);
                   }
+                  // Action buttons fire writes — default to asking first
+                  if (t === 'action' && cfg.confirm == null) {
+                    updateGaugeConfig(cfg.id, 'confirm', true);
+                  }
                 }} style="width:auto;min-width:9.5em;padding:5px 30px 5px 8px">
                   <option value="radial">Radial</option>
                   <option value="line">Line</option>
                   <option value="indicator">Indicator</option>
                   <option value="text">Text</option>
+                  <option value="action">Action button</option>
                 </select>
                 <label style="margin-left:8px">Colour</label>
                 <input type="color" value=${cfg.color || '#4cc9f0'} oninput=${e => updateGaugeConfig(cfg.id, 'color', e.target.value)}
                   style="width:34px;height:28px;padding:0;border:1px solid var(--border2);border-radius:6px;background:none;cursor:pointer" />
                 ${cfg.color && html`<button onclick=${() => updateGaugeConfig(cfg.id, 'color', '')} style="font-size:.65rem;padding:2px 8px;width:auto" title="Reset to theme gradient"><${Icon} n="undo" size=${11} /></button>`}
               </div>
-              ${cfg.type !== 'text' && html`<div style="display:flex;gap:8px;align-items:center">
+              ${cfg.type !== 'text' && cfg.type !== 'action' && html`<div style="display:flex;gap:8px;align-items:center">
                 <label style="width:4.5em">Min</label>
                 <input type="number" value=${cfg.min} oninput=${e => updateGaugeConfig(cfg.id, 'min', parseFloat(e.target.value) || 0)} style="width:6em;padding:5px 6px" step="any" />
                 <label>Max</label>
@@ -3719,7 +3781,7 @@ const Gauges = () => {
                 </div>
                 <p style="font-size:.72rem;color:var(--text3);margin:0">Leave Text empty to show the selected value as large text; set it for a static caption (section headers etc.).</p>
               `}
-              ${cfg.type !== 'indicator' && html`<div style="display:flex;gap:8px;align-items:center">
+              ${cfg.type !== 'indicator' && cfg.type !== 'action' && html`<div style="display:flex;gap:8px;align-items:center">
                 <label style="width:4.5em">Decimals</label>
                 <select value=${String(cfg.decimals != null ? cfg.decimals : 1)} onchange=${e => updateGaugeConfig(cfg.id, 'decimals', parseInt(e.target.value))}
                   style="width:auto;min-width:5em;padding:5px 30px 5px 8px">
@@ -3736,6 +3798,48 @@ const Gauges = () => {
                   <span style="font-size:.72rem;color:var(--text3)">lamp lit while the value is OFF</span>
                 </label>
                 <p style="font-size:.72rem;color:var(--text3);margin:0">The lamp lights in the chosen colour when the value rises past the midpoint between Min and Max — e.g. Min 0 / Max 1 switches at 0.5. Set Min = Max to light only on exactly that value (e.g. 3 and 3 for opmode 3).</p>`}
+              ${cfg.type === 'action' && html`
+                <div style="display:flex;gap:8px;align-items:center">
+                  <label style="width:4.5em">Action</label>
+                  <select value=${cfg.act || 'set'} onchange=${e => updateGaugeConfig(cfg.id, 'act', e.target.value)}
+                    style="width:auto;min-width:11em;padding:5px 30px 5px 8px">
+                    <option value="set">Set parameter</option>
+                    <option value="can">Send CAN frame</option>
+                  </select>
+                </div>
+                ${(cfg.act || 'set') === 'set' ? html`
+                  <div style="display:flex;gap:8px;align-items:center">
+                    <label style="width:4.5em">Param</label>
+                    <${FieldPicker} value=${cfg.param || ''} spotNames=${Object.keys(state.params || {}).sort()}
+                      onChange=${n => updateGaugeConfig(cfg.id, 'param', n)} />
+                  </div>
+                  <div style="display:flex;gap:8px;align-items:center">
+                    <label style="width:4.5em">Set to</label>
+                    <input type="number" step="any" value=${cfg.value != null ? cfg.value : ''}
+                      oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'value', isNaN(n) ? undefined : n); }}
+                      style="width:8em;padding:5px 6px" />
+                  </div>
+                  <p style="font-size:.72rem;color:var(--text3);margin:0">Pressing the button runs <b>set ${cfg.param || '…'} ${cfg.value != null ? cfg.value : '…'}</b>. The change is live immediately but not saved to flash — use the Parameters tab to save permanently.</p>
+                ` : html`
+                  <div style="display:flex;gap:8px;align-items:center">
+                    <label style="width:4.5em">CAN ID</label>
+                    <input type="text" value=${cfg.canId || ''} placeholder="0x180" maxlength="10"
+                      oninput=${e => updateGaugeConfig(cfg.id, 'canId', e.target.value)} style="width:7em;padding:5px 6px;font-family:var(--mono)" />
+                  </div>
+                  <div style="display:flex;gap:8px;align-items:center">
+                    <label style="width:4.5em">Data</label>
+                    <input type="text" value=${cfg.canData || ''} placeholder="00 11 22 33 44 55 66 77" maxlength="40"
+                      oninput=${e => updateGaugeConfig(cfg.id, 'canData', e.target.value)} style="flex:1;padding:5px 6px;font-family:var(--mono)" />
+                  </div>
+                  <p style="font-size:.72rem;color:var(--text3);margin:0">Sends one raw frame (hex bytes, space or comma separated) — same as the dashboard CAN sender.${!state.canMode ? html` <b style="color:var(--amber)">The interface is currently UART — this button only works in CAN Bus mode.</b>` : ''}</p>
+                `}
+                <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+                  <span style="width:4.5em">Confirm</span>
+                  <input type="checkbox" checked=${cfg.confirm != null ? !!cfg.confirm : true}
+                    onchange=${e => updateGaugeConfig(cfg.id, 'confirm', e.target.checked)} style="width:auto" />
+                  <span style="font-size:.72rem;color:var(--text3)">ask before firing (recommended for driving pages)</span>
+                </label>
+              `}
               <div style="display:flex;gap:8px;align-items:center">
                 <label style="width:4.5em">Size</label>
                 ${tileFreeform(cfg.type) ? html`

@@ -389,6 +389,18 @@ button:disabled:hover { background: var(--surface); border-color: var(--border2)
   font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
   color: var(--text3); margin: .6rem 0 .35rem;
 }
+/* action gauge tile: a button that fills its tile and flashes the outcome */
+.action-tile-btn {
+  width: 100%; height: 100%; min-height: 0; justify-content: center;
+  font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  border: 1.5px solid var(--accent); color: var(--accent); background: var(--accent-glow);
+  transition: background .15s, border-color .15s, color .15s;
+}
+.action-tile-btn:hover { transform: none; }
+.action-tile-btn.busy { opacity: .6; }
+.action-tile-btn.ok { border-color: var(--green); color: var(--green); background: color-mix(in srgb, var(--green) 18%, transparent); }
+.action-tile-btn.fail { border-color: var(--red); color: var(--red); background: color-mix(in srgb, var(--red) 18%, transparent); }
+
 /* wifi signal bars */
 .wifi-bars { display: inline-flex; align-items: flex-end; gap: 1.5px; line-height: 1; }
 .wifi-bars i { display: inline-block; width: 3px; border-radius: 1px; background: var(--border2); }

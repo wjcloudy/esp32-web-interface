@@ -247,6 +247,11 @@ export function createMockEsp({ port = 0 } = {}) {
         return json({ message: 'ok', pages: uartPages });
       }
       if (p === '/set-can-node') return text('ok');
+      if (p === '/can-send') {
+        if (!settings.can_mode) { res.writeHead(400, { 'Content-Type': 'text/json' }); return res.end('{"error":"CAN mode not enabled"}'); }
+        commandLog.push('can-send ' + url.searchParams.get('canId') + ' ' + url.searchParams.get('data'));
+        return json({ sent: true });
+      }
       if (p === '/can-scan') {
         if (!settings.can_mode) { res.writeHead(400, { 'Content-Type': 'text/json' }); return res.end('{"error":"CAN mode not enabled"}'); }
         return json([{ nodeId: 1, serial: 'CAFEBABE' }]);
