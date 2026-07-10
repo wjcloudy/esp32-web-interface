@@ -3012,10 +3012,12 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decim
         </g>
       </svg>
       <div class="g-center">
-        <div class="g-val" style=${'font-size:' + (size / 230 * 2.1).toFixed(2) + 'rem'}>${v == null ? '—' : (enums ? String(Math.round(v)) : v.toFixed(decimals))}</div>
-        ${/* unit tracks the gauge size like the value does (floored at the
-            stylesheet's .8rem, so small/mobile tiles look as before) */ ''}
-        ${(() => {
+        <div class="g-val" style=${'font-size:' + Math.max(0.62, size / 230 * 2.1).toFixed(2) + 'rem'}>${v == null ? '—' : (enums ? String(Math.round(v)) : v.toFixed(decimals))}</div>
+        ${/* unit tracks the gauge size like the value does. Small dials
+            (under 90px, where min/max labels already hide) drop it — the
+            .8rem floor would render it BIGGER than the value and overflow
+            the dial centre */ ''}
+        ${size >= 90 && (() => {
           const ufs = Math.max(0.8, size / 230 * 0.8).toFixed(2) + 'rem';
           return enums
             ? (v != null && html`<div class="g-unit g-enum" style=${'font-size:' + ufs}>${enumLabel(enums, v)}</div>`)
@@ -3142,12 +3144,21 @@ const TextTile = ({ value, unit, enums, text, decimals, w, h }) => {
     const v = (value == null || isNaN(value)) ? null : value;
     disp = v == null ? '—' : (enums ? String(enumLabel(enums, v)) : v.toFixed(decimals));
   }
-  // Fit by height, shrinking for long strings so they stay on the tile
-  const fs = Math.max(11, Math.min(Math.round(h * 0.5), Math.round((w * 1.5) / Math.max(2, disp.length))));
+  // Fit by height, shrinking for long strings so they stay on the tile.
+  // Short tiles (phone 2x1) put the unit inline after the value — stacking
+  // would either clip the value or shrink it unreadably; taller tiles keep
+  // the stacked layout but budget the unit row out of the value's height.
+  const showUnit = !isStatic && !!unit;
+  const inline = showUnit && h < 40;
+  const budget = (showUnit && !inline) ? h - Math.max(10, Math.round(h * 0.24)) : h;
+  const fitLen = Math.max(2, disp.length + (inline ? Math.ceil(String(unit).length * 0.6) + 1 : 0));
+  const fs = Math.max(11, Math.min(Math.round(budget * 0.52), Math.round((w * 1.5) / fitLen)));
   return html`
     <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;max-width:100%;overflow:hidden">
-      <div class="g-val" style=${'font-size:' + fs + 'px;line-height:1.15;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%'}>${disp}</div>
-      ${!isStatic && unit && html`<div class="g-unit" style=${'font-size:' + Math.max(10, Math.round(fs * 0.38)) + 'px'}>${unit}</div>`}
+      <div class="g-val" style=${'font-size:' + fs + 'px;line-height:1.15;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%'}>
+        ${disp}${inline && html` <span class="g-unit" style="display:inline;font-size:.55em;margin-left:2px">${unit}</span>`}
+      </div>
+      ${showUnit && !inline && html`<div class="g-unit" style=${'font-size:' + Math.max(10, Math.round(fs * 0.38)) + 'px'}>${unit}</div>`}
     </div>`;
 };
 
