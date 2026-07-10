@@ -554,6 +554,40 @@ test.describe('Gauges grid', () => {
     await expect(page.locator('.page-pill.active')).toHaveText('Main');
   });
 
+  test('sample layout replaces pages after confirmation and persists', async ({ page, mock }) => {
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await enterEdit(page);
+    await addGauge(page, 'udc'); // an existing layout the sample must replace
+    const dialogs = [];
+    page.on('dialog', d => { dialogs.push(d.message()); d.accept(); });
+    await page.locator('button', { hasText: 'Load sample layout' }).click();
+    await expect(page.locator('.page-pill', { hasText: 'Driving' })).toBeVisible();
+    expect(dialogs[0]).toContain('Replace your current gauges');
+    for (const name of ['Battery', 'Temps', 'Charging', 'Debug']) {
+      await expect(page.locator('.page-pill', { hasText: name })).toBeVisible();
+    }
+    // Persisted straight to the device, conditional Charging page included
+    await expect.poll(async () => (await savedLayout(mock)).pages.length).toBe(5);
+    const saved = await savedLayout(mock);
+    expect(saved.autoPage).toBe(true);
+    expect(saved.pages[3].cond).toEqual({ name: 'opmode', min: 4, max: 4 });
+    // The Auto pages toggle is visible now a condition exists
+    await expect(page.locator('#auto-pages')).toBeVisible();
+  });
+
+  test('declining the sample-layout confirmation changes nothing', async ({ page, mock }) => {
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await enterEdit(page);
+    await addGauge(page, 'udc');
+    page.on('dialog', d => d.dismiss());
+    await page.locator('button', { hasText: 'Load sample layout' }).click();
+    await page.waitForTimeout(400);
+    await expect(page.locator('.page-pill', { hasText: 'Driving' })).toHaveCount(0);
+    await expect(page.locator('.gauge-tile-name', { hasText: 'udc' })).toBeVisible();
+  });
+
   test('page condition editor round-trips through Save & Done', async ({ page, mock }) => {
     await openApp(page, mock);
     await gotoTab(page, 'Gauges');

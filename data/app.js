@@ -3457,6 +3457,29 @@ const Gauges = () => {
     setPages(next);
     setActivePage(next[0].id);
   };
+  // Replace everything with the bundled example set (data/gauges-sample.json,
+  // ships with the firmware image) — a quick tour of every gauge type, page
+  // conditions included, built on the standard OpenInverter/ZombieVerter
+  // value names. Values a given firmware doesn't have just read "—".
+  const loadSampleLayout = async () => {
+    try {
+      const r = await fetch('/gauges-sample.json');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const data = await r.json();
+      if (!confirm('Replace your current gauges (' + pages.length + ' page' + (pages.length === 1 ? '' : 's') + ') with the sample set?\n\n'
+        + 'Your current layout will be overwritten — use Export settings (Settings → Web Interface) first if you want a backup.')) return;
+      const migrated = migrateGauges(data);
+      let maxId = 0;
+      migrated.forEach(p => p.items.forEach(g => { if (typeof g.id === 'number' && g.id > maxId) maxId = g.id; }));
+      migrated.forEach(p => p.items.forEach(g => { if (!g.id) g.id = ++maxId; }));
+      nextId.current = maxId + 1;
+      const auto = data.autoPage !== false;
+      setAutoPage(auto);
+      setPages(migrated);
+      setActivePage(migrated[0].id);
+      persist(migrated, auto);
+    } catch (e) { alert('Could not load the sample layout: ' + e.message); }
+  };
   // Conditional page display config: each page may carry one condition
   // Defaults apply only on creation — a cleared Min/Max must STAY blank
   // (blank = open-ended), not snap back to a default
@@ -3573,6 +3596,9 @@ const Gauges = () => {
           <p style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">A condition switches to this page automatically while a value is in range — e.g. opmode 3 to 3, or lasterr 0 to 0 inverted (any error).</p>
         `}
         <p style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">Tap a tile to configure its value, type, colour and range — or to duplicate or remove it.</p>
+        <h3 class="underline">Starter Layout</h3>
+        <button onclick=${loadSampleLayout} style="font-size:.75rem;padding:4px 10px"><${Icon} n="cloud" />Load sample layout</button>
+        <p style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">Five example pages (Driving, Battery, Temps, Charging, Debug) using standard value names — replaces your current gauges after confirmation.</p>
       </div>
       `}
       <div class="main-left">

@@ -1,0 +1,73 @@
+{
+  "v": 3,
+  "autoPage": true,
+  "pages": [
+    {
+      "id": 1,
+      "name": "Driving",
+      "items": [
+        { "id": 1, "name": "speed", "label": "Speed", "type": "radial", "min": 0, "max": 8000, "decimals": 0, "x": 0, "y": 0, "w": 4, "h": 4 },
+        { "id": 2, "name": "power", "label": "Power", "type": "radial", "min": -50, "max": 300, "decimals": 1, "x": 4, "y": 0, "w": 4, "h": 4 },
+        { "id": 3, "name": "din_forward", "label": "FWD", "type": "indicator", "min": 0, "max": 1, "x": 8, "y": 0, "w": 1, "h": 1 },
+        { "id": 4, "name": "din_reverse", "label": "REV", "type": "indicator", "min": 0, "max": 1, "x": 9, "y": 0, "w": 1, "h": 1 },
+        { "id": 5, "name": "din_brake", "label": "Brake", "type": "indicator", "min": 0, "max": 1, "x": 8, "y": 1, "w": 1, "h": 1 },
+        { "id": 6, "name": "lasterr", "label": "Fault", "type": "indicator", "min": 0, "max": 0, "invert": true, "color": "#ff6b6b", "x": 9, "y": 1, "w": 1, "h": 1 },
+        { "id": 7, "name": "dir", "label": "Dir", "type": "text", "x": 8, "y": 2, "w": 2, "h": 1 },
+        { "id": 8, "name": "opmode", "label": "Mode", "type": "text", "x": 8, "y": 3, "w": 2, "h": 1 },
+        { "id": 9, "name": "potnom", "label": "Throttle", "type": "line", "min": -100, "max": 100, "decimals": 0, "points": 100, "sampleMs": 100, "x": 0, "y": 4, "w": 10, "h": 2 }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "Battery",
+      "items": [
+        { "id": 10, "name": "udc", "label": "Battery", "type": "radial", "min": 250, "max": 450, "decimals": 1, "x": 0, "y": 0, "w": 4, "h": 4 },
+        { "id": 11, "name": "idc", "label": "Current", "type": "radial", "min": -300, "max": 300, "decimals": 1, "x": 4, "y": 0, "w": 4, "h": 4 },
+        { "id": 12, "name": "uaux", "label": "12V", "type": "text", "decimals": 2, "x": 8, "y": 0, "w": 2, "h": 1 },
+        { "id": 13, "name": "power", "label": "Power", "type": "text", "decimals": 1, "x": 8, "y": 1, "w": 2, "h": 1 },
+        { "id": 14, "name": "power", "label": "Power (last 5 min)", "type": "line", "min": -50, "max": 300, "decimals": 1, "points": 60, "sampleMs": 5000, "x": 0, "y": 4, "w": 10, "h": 2 }
+      ]
+    },
+    {
+      "id": 3,
+      "name": "Temps",
+      "items": [
+        { "id": 15, "name": "tmphs", "label": "Heatsink", "type": "radial", "min": 0, "max": 100, "decimals": 1, "x": 0, "y": 0, "w": 3, "h": 3 },
+        { "id": 16, "name": "tmpm", "label": "Motor", "type": "radial", "min": 0, "max": 150, "decimals": 1, "x": 3, "y": 0, "w": 3, "h": 3 },
+        { "id": 17, "name": "tmpaux", "label": "Shunt", "type": "text", "decimals": 1, "x": 6, "y": 0, "w": 2, "h": 1 },
+        { "id": 18, "name": "tmphs", "label": "Heatsink (2 min)", "type": "line", "min": 0, "max": 100, "decimals": 1, "points": 120, "sampleMs": 1000, "x": 0, "y": 3, "w": 5, "h": 3 },
+        { "id": 19, "name": "tmpm", "label": "Motor (2 min)", "type": "line", "min": 0, "max": 150, "decimals": 1, "points": 120, "sampleMs": 1000, "x": 5, "y": 3, "w": 5, "h": 3 }
+      ]
+    },
+    {
+      "id": 4,
+      "name": "Charging",
+      "cond": { "name": "opmode", "min": 4, "max": 4 },
+      "items": [
+        { "id": 20, "name": "udc", "label": "Battery", "type": "radial", "min": 250, "max": 450, "decimals": 1, "x": 0, "y": 0, "w": 4, "h": 4 },
+        { "id": 21, "name": "idc", "label": "Charge current", "type": "line", "min": -300, "max": 300, "decimals": 1, "points": 120, "sampleMs": 1000, "x": 4, "y": 0, "w": 6, "h": 4 },
+        { "id": 22, "name": "AC_Volts", "label": "AC V", "type": "text", "decimals": 0, "x": 0, "y": 4, "w": 2, "h": 1 },
+        { "id": 23, "name": "AC_Amps", "label": "AC A", "type": "text", "decimals": 1, "x": 2, "y": 4, "w": 2, "h": 1 }
+      ]
+    },
+    {
+      "id": 5,
+      "name": "Debug",
+      "items": [
+        { "id": 24, "name": "opmode", "label": "Mode", "type": "text", "x": 0, "y": 0, "w": 3, "h": 1 },
+        { "id": 25, "name": "lasterr", "label": "Last error", "type": "text", "x": 3, "y": 0, "w": 3, "h": 1 },
+        { "id": 26, "name": "status", "label": "Status", "type": "text", "x": 6, "y": 0, "w": 4, "h": 1 },
+        { "id": 27, "name": "cpuload", "label": "CPU", "type": "radial", "min": 0, "max": 100, "decimals": 0, "x": 0, "y": 1, "w": 2, "h": 2 },
+        { "id": 28, "name": "din_start", "label": "Start", "type": "indicator", "min": 0, "max": 1, "x": 2, "y": 1, "w": 1, "h": 1 },
+        { "id": 29, "name": "din_brake", "label": "Brake", "type": "indicator", "min": 0, "max": 1, "x": 3, "y": 1, "w": 1, "h": 1 },
+        { "id": 30, "name": "din_forward", "label": "FWD", "type": "indicator", "min": 0, "max": 1, "x": 4, "y": 1, "w": 1, "h": 1 },
+        { "id": 31, "name": "din_reverse", "label": "REV", "type": "indicator", "min": 0, "max": 1, "x": 5, "y": 1, "w": 1, "h": 1 },
+        { "id": 32, "name": "din_mprot", "label": "MProt", "type": "indicator", "min": 0, "max": 1, "invert": true, "color": "#ff6b6b", "x": 2, "y": 2, "w": 1, "h": 1 },
+        { "id": 33, "name": "din_emcystop", "label": "E-stop", "type": "indicator", "min": 0, "max": 1, "invert": true, "color": "#ff6b6b", "x": 3, "y": 2, "w": 1, "h": 1 },
+        { "id": 34, "name": "din_bms", "label": "BMS", "type": "indicator", "min": 0, "max": 1, "color": "#ff6b6b", "x": 4, "y": 2, "w": 1, "h": 1 },
+        { "id": 35, "name": "pot", "label": "Pot", "type": "line", "min": 0, "max": 4095, "decimals": 0, "points": 100, "sampleMs": 100, "x": 0, "y": 3, "w": 5, "h": 2 },
+        { "id": 36, "name": "pot2", "label": "Pot 2", "type": "line", "min": 0, "max": 4095, "decimals": 0, "points": 100, "sampleMs": 100, "x": 5, "y": 3, "w": 5, "h": 2 }
+      ]
+    }
+  ]
+}
