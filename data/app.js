@@ -2945,9 +2945,11 @@ const GaugeLine = ({ name, min, max, value, unit, color, enums, w = 230, h = 175
       <canvas ref=${canvasRef}></canvas>
       <div class="g-val" style=${'font-size:' + Math.max(0.8, Math.min(w, h) / 230 * 1.6).toFixed(2) + 'rem;margin-top:2px;line-height:1'}>
         ${value != null ? (enums ? String(Math.round(value)) : value.toFixed(decimals)) : '—'}
+        ${/* unit rides the value's font via em so it scales with tile size
+            (floored near the stylesheet default for small tiles) */ ''}
         ${enums
-          ? (value != null && html`<span class="g-unit g-enum" style="display:inline;margin-left:6px">${enumLabel(enums, value)}</span>`)
-          : (unit && html`<span class="g-unit" style="display:inline;margin-left:4px">${unit}</span>`)}
+          ? (value != null && html`<span class="g-unit g-enum" style=${'display:inline;margin-left:6px;font-size:' + Math.max(0.7, Math.max(0.8, Math.min(w, h) / 230 * 1.6) * 0.42).toFixed(2) + 'rem'}>${enumLabel(enums, value)}</span>`)
+          : (unit && html`<span class="g-unit" style=${'display:inline;margin-left:4px;font-size:' + Math.max(0.7, Math.max(0.8, Math.min(w, h) / 230 * 1.6) * 0.42).toFixed(2) + 'rem'}>${unit}</span>`)}
       </div>
     </div>
   `;
@@ -3009,9 +3011,14 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decim
       </svg>
       <div class="g-center">
         <div class="g-val" style=${'font-size:' + (size / 230 * 2.1).toFixed(2) + 'rem'}>${v == null ? '—' : (enums ? String(Math.round(v)) : v.toFixed(decimals))}</div>
-        ${enums
-          ? (v != null && html`<div class="g-unit g-enum">${enumLabel(enums, v)}</div>`)
-          : (unit && html`<div class="g-unit">${unit}</div>`)}
+        ${/* unit tracks the gauge size like the value does (floored at the
+            stylesheet's .8rem, so small/mobile tiles look as before) */ ''}
+        ${(() => {
+          const ufs = Math.max(0.8, size / 230 * 0.8).toFixed(2) + 'rem';
+          return enums
+            ? (v != null && html`<div class="g-unit g-enum" style=${'font-size:' + ufs}>${enumLabel(enums, v)}</div>`)
+            : (unit && html`<div class="g-unit" style=${'font-size:' + ufs}>${unit}</div>`);
+        })()}
       </div>
       ${size >= 90 && html`
         <div class="g-min" style=${'left:' + Math.round(size * 0.174) + 'px;bottom:' + Math.round(size * 0.072) + 'px;font-size:' + Math.max(0.68, size / 230 * 0.68).toFixed(2) + 'rem'}>${min}</div>
