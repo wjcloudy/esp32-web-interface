@@ -86,6 +86,7 @@
 const char* host = "inverter";
 bool fastUart = false;
 bool fastUartAvailable = true;
+uint8_t fastUartAttempts = 0; // negotiation storms per boot are bounded — wrong-baud bytes can upset some inverter consoles
 bool txrxSwapped = true; // default: swapped for Wemos/OI/Zombie boards
 bool canMode = false; // true = CAN bus mode, false = UART mode
 int canNodeId = CAN_NODE_ID_MIN;
@@ -1081,8 +1082,9 @@ static void handleCommand() {
     if (repeat > 100) repeat = 100;
   }
 
-  if (!fastUart && fastUartAvailable)
+  if (!fastUart && fastUartAvailable && fastUartAttempts < 3)
   {
+    fastUartAttempts++;
     // Negotiate carefully: firmware that supports fastuart switches to
     // 921600 unconditionally after receiving the command (some, e.g.
     // ZombieVerter, print the OK only after switching, so it may never be
@@ -1157,11 +1159,10 @@ static void handleCommand() {
   {
     // Empty reply at fast baud: the inverter likely rebooted back to
     // 115200 underneath us (the stale-desync case that used to require an
-    // ESP reboot). Drop to base baud, resync, retry the command once, and
-    // re-arm negotiation so fast mode comes back on the next command.
+    // ESP reboot). Drop to base baud, resync and retry the command once.
     uart_set_baudrate(INVERTER_PORT, 115200);
     fastUart = false;
-    fastUartAvailable = true;
+    fastUartAvailable = false; // re-armed below only once slow comms answer
     uartResync();
     sendCommand(cmd);
     rpt = repeat;
@@ -1177,6 +1178,12 @@ static void handleCommand() {
       }
     } while (len > 0);
   }
+
+  // Proof of life at slow baud re-arms fast negotiation (bounded by the
+  // attempt cap) — so a rebooted inverter gets fast mode back once it's
+  // actually answering, and an absent one is never spammed with probes.
+  if (!fastUart && !fastUartAvailable && output.length() > 0 && fastUartAttempts < 3)
+    fastUartAvailable = true;
 
   DBG_OUTPUT_PORT.println(output);
   server.sendHeader("Access-Control-Allow-Origin","*");
@@ -1794,7 +1801,7 @@ static void handleUpdate()
     {
       uart_set_baudrate(INVERTER_PORT, 115200);
       fastUart = false;
-      fastUartAvailable = true; //retry after reboot
+      fastUartAvailable = true; fastUartAttempts = 0; //retry after reboot
     }
     do {
       uart_read_bytes(INVERTER_PORT, &c, 1, UART_TIMEOUT);
@@ -1880,7 +1887,7 @@ static void handleUpdate()
         case 'D':
           message = "Update Done";
           repeat = false;
-          fastUartAvailable = true;
+          fastUartAvailable = true; fastUartAttempts = 0;
           break;
         case 'E':
           readRetries = 0;
@@ -2300,12 +2307,12 @@ void setup(void){
       return;
     }
     sendCommand("reset");
-    // Reset UART state so baud rate renegotiates after inverter reboot
-    if (fastUart) {
-      uart_set_baudrate(INVERTER_PORT, 115200);
-      fastUart = false;
-      fastUartAvailable = true;
-    }
+    // Reset UART state so baud rate renegotiates after inverter reboot —
+    // re-arm even when negotiation had latched off, the inverter is fresh
+    uart_set_baudrate(INVERTER_PORT, 115200);
+    fastUart = false;
+    fastUartAvailable = true;
+    fastUartAttempts = 0;
   });
   server.on("/can-send", [](){
     if (canFwBusy()) { server.send(409, "text/json", "{\"error\":\"CAN firmware update in progress\"}"); return; }
