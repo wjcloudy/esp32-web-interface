@@ -51,6 +51,10 @@ test.describe('Gauges grid', () => {
     await page.waitForTimeout(150);
     await page.mouse.up();
     await expect.poll(async () => parseInt(await tile.getAttribute('gs-x') || '0')).toBeGreaterThan(0);
+    // The click fired on mouseup after the drag must NOT open the settings
+    // modal (tap-vs-drag guard)
+    await page.waitForTimeout(250);
+    await expect(page.locator('.modal-content')).toHaveCount(0);
     await page.locator('button', { hasText: 'Save & Done' }).click();
     await expect.poll(async () => (await savedLayout(mock)).pages[0].items[0].x).toBeGreaterThan(0);
   });
@@ -120,7 +124,7 @@ test.describe('Gauges grid', () => {
     await enterEdit(page);
     await addGauge(page, 'udc');
     // Reopen settings from the tile's gear button
-    await page.locator('.tile-gear').click();
+    await page.locator('.gauge-tile').click();
     const modal = page.locator('.modal-content');
     await expect(modal).toBeVisible();
     await modal.locator('input[type="number"]').nth(1).fill('500'); // max
@@ -136,11 +140,11 @@ test.describe('Gauges grid', () => {
     await gotoTab(page, 'Gauges');
     await enterEdit(page);
     await addGauge(page, 'udc');
-    await page.locator('.tile-gear').click();
+    await page.locator('.gauge-tile').click();
     const modal = page.locator('.modal-content');
     await modal.locator('select').first().selectOption('line');
-    // Line-specific history controls appear
-    await modal.locator('input[type="number"]').nth(2).fill('60'); // points (after min/max)
+    // Line-specific history controls appear; points input is labelled
+    await modal.locator('input[min="5"]').fill('60'); // points (min=5 is unique to it)
     await modal.locator('select').nth(1).selectOption('1000'); // sample every 1s
     await modal.locator('button', { hasText: 'Done' }).click();
     await page.locator('button', { hasText: 'Save & Done' }).click();
@@ -156,11 +160,10 @@ test.describe('Gauges grid', () => {
     await enterEdit(page);
     await addGauge(page, 'udc');
     // Give the original a custom range so the copy proves config carries over
-    await page.locator('.tile-gear').click();
+    await page.locator('.gauge-tile').click();
     const modal = page.locator('.modal-content');
     await modal.locator('input[type="number"]').nth(1).fill('500'); // max
-    await modal.locator('button', { hasText: 'Done' }).click();
-    await page.locator('.tile-dup').click();
+    await modal.locator('button', { hasText: 'Duplicate' }).click();
     await expect(page.locator('.grid-stack-item')).toHaveCount(2);
     await expect(page.locator('.gauge-tile-name', { hasText: 'udc' })).toHaveCount(2);
     await page.locator('button', { hasText: 'Save & Done' }).click();
@@ -176,8 +179,8 @@ test.describe('Gauges grid', () => {
     await gotoTab(page, 'Gauges');
     await enterEdit(page);
     await addGauge(page, 'udc');
-    await page.locator('.tile-gear').click();
-    await page.locator('.modal-content button', { hasText: 'Remove gauge' }).click();
+    await page.locator('.gauge-tile').click();
+    await page.locator('.modal-content button', { hasText: 'Remove' }).click();
     await expect(page.locator('.grid-stack-item')).toHaveCount(0);
   });
 
@@ -332,6 +335,33 @@ test.describe('Gauges grid', () => {
     expect(item.w).toBe(5);
     expect(item.h).toBe(5);
     expect(item.x).toBe(5);
+  });
+
+  test('tiny tiles: no resize grip, tap opens settings, size set from modal', async ({ page, mock }) => {
+    const layout = { v: 3, pages: [{ id: 1, name: 'Main', items: [
+      { id: 1, name: 'opmode', type: 'indicator', min: 0, max: 1, x: 0, y: 0, w: 1, h: 1 },
+    ] }] };
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(layout) });
+    await page.setViewportSize({ width: 390, height: 800 });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await enterEdit(page);
+    // The grip would cover the whole ~23px tile and swallow every tap
+    await expect(page.locator('.ui-resizable-se')).toBeHidden();
+    await page.locator('.gauge-tile').click();
+    await expect(page.locator('.modal-content')).toBeVisible();
+    // Grow it from the modal instead: 1 -> 3 cells
+    const size = page.locator('.modal-content input[title^="Size"]');
+    await size.fill('3');
+    await size.dispatchEvent('change');
+    await expect.poll(async () => page.locator('.grid-stack-item').getAttribute('gs-w')).toBe('3');
+    // No longer tiny, so the grip comes back (class check — the open modal
+    // overlays the grip itself, so a visibility check would be unreliable)
+    await expect(page.locator('.grid-stack-item')).not.toHaveClass(/tile-tiny/);
+    // And the new size persists
+    await page.locator('.modal-content button', { hasText: 'Done' }).click();
+    await page.locator('button', { hasText: 'Save & Done' }).click();
+    await expect.poll(async () => (await savedLayout(mock)).pages[0].items[0].w).toBe(3);
   });
 
   test('editing works at a mobile viewport', async ({ page, mock }) => {

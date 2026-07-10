@@ -2928,6 +2928,14 @@ const GaugeTileBody = ({ g, title, value, unit, enums }) => {
     const measure = () => {
       const w = el.clientWidth, h = el.clientHeight;
       setDim(d => (d.w !== w || d.h !== h) ? { w, h } : d);
+      // Tiny tiles (1x1 on a phone) hide the resize grip — it would cover
+      // the whole tile and swallow the tap-to-configure gesture. Their size
+      // is set from the settings modal instead.
+      const item = el.closest('.grid-stack-item');
+      if (item) {
+        const r = item.getBoundingClientRect();
+        item.classList.toggle('tile-tiny', Math.min(r.width, r.height) < 48);
+      }
     };
     measure();
     const ro = new ResizeObserver(measure);
@@ -2967,6 +2975,7 @@ const Gauges = () => {
   const nextId = useRef(1);
   const gridRef = useRef(null);  // .grid-stack DOM node
   const gridApi = useRef(null);  // GridStack instance
+  const dragBusyRef = useRef(false); // true during (and briefly after) a drag/resize
   const activeRef = useRef(activePage);
   activeRef.current = activePage;
 
@@ -3057,15 +3066,21 @@ const Gauges = () => {
       }));
     };
     grid.on('change', onChange);
+    // Tap-vs-drag: a drag or resize still fires a click on mouseup, which
+    // would pop the config modal right after every move — suppress it briefly
+    grid.on('dragstart', () => { dragBusyRef.current = true; });
+    grid.on('dragstop', () => { setTimeout(() => { dragBusyRef.current = false; }, 150); });
     // After a resize: enforce the 2x2 minimum (interactive resizes can slip
     // past engine minW) and keep dial-type gauges square — snap to the nearer
     // square, growing if the drag grew the tile, shrinking otherwise
     const prevDim = { w: 0, h: 0 };
     grid.on('resizestart', (e, el) => {
+      dragBusyRef.current = true;
       const n = el.gridstackNode || {};
       prevDim.w = n.w || 0; prevDim.h = n.h || 0;
     });
     grid.on('resizestop', (e, el) => {
+      setTimeout(() => { dragBusyRef.current = false; }, 150);
       const n = el.gridstackNode;
       if (!n) return;
       const g = itemsRef.current.find(x => String(x.id) === String(n.id));
@@ -3095,6 +3110,21 @@ const Gauges = () => {
   const removeGauge = (id) => {
     if (configId === id) setConfigId(null);
     setPageItems(activePage, prev => prev.filter(g => g.id !== id));
+  };
+
+  // Resize a tile from its settings modal — the only way to grow/shrink
+  // tiny tiles on a phone, where the corner grip is hidden. Drives the grid
+  // engine (which fires 'change' and syncs state); square types stay square.
+  const setGaugeSize = (id, wIn, hIn) => {
+    const g = items.find(x => x.id === id);
+    if (!g) return;
+    const floor = g.type === 'indicator' ? 1 : 2;
+    let w = Math.max(floor, Math.min(GRID_COLS, Math.round(wIn) || floor));
+    let h = Math.max(floor, Math.min(GRID_COLS, Math.round(hIn) || floor));
+    if (g.type !== 'line') h = w;
+    const el = gridRef.current && gridRef.current.querySelector('.grid-stack-item[gs-id="' + id + '"]');
+    if (el && gridApi.current) gridApi.current.update(el, { w, h });
+    else setPageItems(activePage, prev => prev.map(x => x.id !== id ? x : { ...x, w, h }));
   };
 
   // Copy a gauge's full config (value, type, colour, range, size) into a new
@@ -3192,7 +3222,7 @@ const Gauges = () => {
           <button onclick=${renamePage} style="font-size:.75rem;padding:4px 10px"><${Icon} n="edit" />Rename</button>
           <button onclick=${deletePage} style="font-size:.75rem;padding:4px 10px;color:var(--red)"><${Icon} n="x" />Delete</button>
         </div>
-        <p style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">Tap a tile's ⚙ to configure its value, type, colour and range.</p>
+        <p style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">Tap a tile to configure its value, type, colour and range — or to duplicate or remove it.</p>
       </div>
       `}
       <div class="main-left">
@@ -3214,12 +3244,12 @@ const Gauges = () => {
             const enums = (sv && sv.enums) || null;
             return html`
             <div class="grid-stack-item" key=${g.id} gs-id=${g.id} gs-x=${g.x} gs-y=${g.y} gs-w=${g.w} gs-h=${g.h}>
-              <div class="grid-stack-item-content gauge-tile" title=${g.name || ''}>
-                ${editing && html`
-                  <button class="tile-cfg tile-gear" title="Configure gauge" onclick=${() => setConfigId(g.id)}>⚙</button>
-                  <button class="tile-cfg tile-dup" title="Duplicate gauge" onclick=${() => duplicateGauge(g.id)}>⧉</button>
-                `}
-                <${GaugeTileBody} g=${g} title=${g.name || (editing ? 'tap ⚙' : '—')} value=${lineVals[g.id]} unit=${unit} enums=${enums} />
+              ${/* In edit mode a tap opens the tile's settings (no overlay
+                  buttons — on a 1x1 mobile tile they'd all overlap the
+                  resize handle); drags are filtered by dragBusyRef */ ''}
+              <div class="grid-stack-item-content gauge-tile" title=${g.name || ''}
+                onclick=${editing ? (() => { if (!dragBusyRef.current) setConfigId(g.id); }) : undefined}>
+                <${GaugeTileBody} g=${g} title=${g.name || (editing ? 'tap to set up' : '—')} value=${lineVals[g.id]} unit=${unit} enums=${enums} />
               </div>
             </div>`;
           })}
@@ -3260,6 +3290,20 @@ const Gauges = () => {
                 <input type="number" value=${cfg.max} oninput=${e => updateGaugeConfig(cfg.id, 'max', parseFloat(e.target.value) || 0)} style="width:6em;padding:5px 6px" step="any" />
               </div>
               ${cfg.type === 'indicator' && html`<p style="font-size:.72rem;color:var(--text3);margin:0">The lamp lights in the chosen colour when the value rises past the midpoint between Min and Max — e.g. Min 0 / Max 1 switches at 0.5.</p>`}
+              <div style="display:flex;gap:8px;align-items:center">
+                <label style="width:4.5em">Size</label>
+                ${cfg.type === 'line' ? html`
+                  <input type="number" min="2" max=${GRID_COLS} value=${cfg.w} title="Width (cells)"
+                    onchange=${e => setGaugeSize(cfg.id, parseInt(e.target.value), cfg.h)} style="width:5em;padding:5px 6px" />
+                  <label>×</label>
+                  <input type="number" min="2" max=${GRID_COLS} value=${cfg.h} title="Height (cells)"
+                    onchange=${e => setGaugeSize(cfg.id, cfg.w, parseInt(e.target.value))} style="width:5em;padding:5px 6px" />
+                ` : html`
+                  <input type="number" min=${cfg.type === 'indicator' ? 1 : 2} max=${GRID_COLS} value=${cfg.w} title="Size (cells, square)"
+                    onchange=${e => setGaugeSize(cfg.id, parseInt(e.target.value), parseInt(e.target.value))} style="width:5em;padding:5px 6px" />
+                  <span style="font-size:.72rem;color:var(--text3)">cells (of ${GRID_COLS})</span>
+                `}
+              </div>
               ${cfg.type === 'line' && html`
                 <div style="display:flex;gap:8px;align-items:center">
                   <label style="width:4.5em">Points</label>
@@ -3279,9 +3323,10 @@ const Gauges = () => {
                 </div>
                 <p style="font-size:.72rem;color:var(--text3);margin:0">Time window ≈ Points × Sample — e.g. 60 points at 1 s shows the last minute. Faster sampling scrolls faster.</p>
               `}
-              <div style="display:flex;gap:8px;margin-top:4px">
+              <div style="display:flex;gap:8px;margin-top:4px;flex-wrap:wrap">
                 <button onclick=${() => setConfigId(null)} style="width:auto"><${Icon} n="check" />Done</button>
-                <button onclick=${() => removeGauge(cfg.id)} style="width:auto;color:var(--red)"><${Icon} n="x" />Remove gauge</button>
+                <button onclick=${() => { duplicateGauge(cfg.id); setConfigId(null); }} style="width:auto">⧉ Duplicate</button>
+                <button onclick=${() => removeGauge(cfg.id)} style="width:auto;color:var(--red)"><${Icon} n="x" />Remove</button>
               </div>
             </div>
           </${Modal}>`;

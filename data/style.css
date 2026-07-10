@@ -657,8 +657,13 @@ td { font-variant-numeric: tabular-nums; }
 /* edit mode affordances: dashed outline + grab cursor, like a layout editor */
 .gauges-editing .gauge-tile { outline: 1.5px dashed var(--accent); cursor: grab; }
 .gauges-editing .grid-stack-item.ui-draggable-dragging .gauge-tile { cursor: grabbing; opacity: .85; }
-/* gridstack's resize handle, tinted to the theme */
-.grid-stack-item > .ui-resizable-se { opacity: .55; }
+/* Resize grip: a small corner affordance. gridstack's default 20px handle
+   covers the centre of a 1x1 tile on a phone and intercepts the
+   tap-to-configure gesture (!important: gridstack.min.css loads after us) */
+.grid-stack-item > .ui-resizable-se { opacity: .55; width: 14px !important; height: 14px !important; }
+/* 1x1-on-phone tiles: the grip would cover the whole tile — settings modal
+   has a Size control instead */
+.grid-stack-item.tile-tiny > .ui-resizable-se { display: none; }
 /* page pills */
 .page-pill {
   width: auto; font-size: .78rem; padding: 4px 14px;
@@ -666,12 +671,3 @@ td { font-variant-numeric: tabular-nums; }
   background: var(--surface); color: var(--text2);
 }
 .page-pill.active { border-color: var(--accent); color: var(--accent); font-weight: 600; }
-/* per-tile config button (edit mode) */
-.tile-cfg {
-  position: absolute; top: 3px; right: 3px; z-index: 5;
-  width: auto; padding: 1px 7px; font-size: .85rem; line-height: 1.4;
-  border-radius: 6px; border: 1px solid var(--border2);
-  background: var(--surface); color: var(--text2); cursor: pointer;
-}
-.tile-cfg:hover { color: var(--accent); border-color: var(--accent); }
-.tile-dup { right: 36px; }
