@@ -4,9 +4,11 @@ test.describe('Settings tab', () => {
   test('UART TX/RX swap posts to /settings and persists in mock state', async ({ page, mock }) => {
     await openApp(page, mock);
     await gotoTab(page, 'Settings');
-    // The swap switch sits next to its text, not wrapping it
-    const toggle = page.locator('div', { hasText: 'Swap TX/RX Pins' }).locator('label.switch .slider').last();
-    await toggle.click();
+    // The swap switch sits next to its text, not wrapping it — anchor on the
+    // innermost row div holding the exact span, then take ITS slider (a
+    // broader hasText match would catch the keep-awake switch further down)
+    const row = page.locator('#settings div', { has: page.locator('span', { hasText: /^Swap TX\/RX Pins$/ }) }).last();
+    await row.locator('label.switch .slider').click();
     await expect.poll(async () => (await mock.state()).settings.txrx_swapped).toBe(true);
   });
 
@@ -20,6 +22,27 @@ test.describe('Settings tab', () => {
     // as Swap TX/RX Pins), not a ToggleRow
     const wrap = page.locator('div', { has: page.locator('span', { hasText: /^Keep screen awake$/ }) }).last();
     await expect(wrap.locator('label.switch input[type="checkbox"]')).toHaveCount(1);
+  });
+
+  test('CAN scan stays disabled until the interface change is saved', async ({ page, mock }) => {
+    await openApp(page, mock);
+    await gotoTab(page, 'Settings');
+    // Pick CAN Bus on the segmented control — an unsaved change
+    await page.locator('.seg button', { hasText: 'CAN Bus' }).click();
+    const scan = page.locator('#can-scan-btn');
+    await expect(scan).toBeDisabled();
+    await expect(page.locator('#settings')).toContainText('Unsaved changes');
+    // Save applies the mode; scanning becomes available
+    await page.locator('#iface-save').click();
+    await expect(scan).toBeEnabled();
+    await expect.poll(async () => (await mock.state()).settings.can_mode).toBe(true);
+    await expect(page.locator('#settings')).not.toContainText('Unsaved changes');
+    // ...and a scan now actually reaches the bus
+    await scan.click();
+    await expect(scan).toContainText('Found 1 device(s)');
+    // Editing a CAN parameter dirties the config again -> scan re-disabled
+    await page.locator('#settings label', { hasText: 'RX Pin' }).locator('input').fill('7');
+    await expect(scan).toBeDisabled();
   });
 
   test('dashboard hero metrics are configurable (up to 5)', async ({ page, mock }) => {

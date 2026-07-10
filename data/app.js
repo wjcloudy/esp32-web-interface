@@ -2391,7 +2391,9 @@ const Settings = () => {
   const [canSpeed, setCanSpeed] = useState(2);
   const [canRxPin, setCanRxPin] = useState(4);
   const [canTxPin, setCanTxPin] = useState(5);
-  const [savedCanMode, setSavedCanMode] = useState(false); // mode as persisted on the device
+  // Interface settings as persisted on the device — drives the unsaved-change
+  // hint and gates scanning (a scan runs on the SAVED config, not the form)
+  const [savedCan, setSavedCan] = useState({ mode: false, speed: 2, rx: 4, tx: 5 });
   const [scanState, setScanState] = useState(''); // '' | 'scanning' | result message
 
   useEffect(() => {
@@ -2402,11 +2404,15 @@ const Settings = () => {
           const data = await r.json();
           setTxrxSwapped(data.txrx_swapped !== false);
           setCanMode(data.can_mode === true);
-          setSavedCanMode(data.can_mode === true);
           if (data.can_node_id) setCanNodeId(data.can_node_id);
           if (data.can_speed !== undefined) setCanSpeed(data.can_speed);
           if (data.can_rx_pin) setCanRxPin(data.can_rx_pin);
           if (data.can_tx_pin) setCanTxPin(data.can_tx_pin);
+          setSavedCan({
+            mode: data.can_mode === true,
+            speed: data.can_speed !== undefined ? data.can_speed : 2,
+            rx: data.can_rx_pin || 4, tx: data.can_tx_pin || 5,
+          });
         }
       } catch (e) { /* use default */ }
       // Load WiFi info
@@ -2454,75 +2460,31 @@ const Settings = () => {
     } catch (e) { setWifiMsg('Save failed'); }
   };
 
+  // Unsaved interface changes: mode always counts; speed/pins only matter in
+  // CAN mode. Scanning is only meaningful once the device runs the saved
+  // CAN config, so the Scan button stays disabled until then.
+  const canDirty = canMode !== savedCan.mode ||
+    (canMode && (canSpeed !== savedCan.speed || canRxPin !== savedCan.rx || canTxPin !== savedCan.tx));
+  const scanReady = savedCan.mode && !canDirty;
+
   if (loading) return html`<div class="tabdiv main-content" style="display:flex"><p>Loading...</p></div>`;
 
   return html`
     <div id="settings" class="tabdiv main-content" style="display:flex">
       <div class="main-left">
         <h2>Settings</h2>
+        <div class="settings-grid">
+        <h3 class="settings-section">Device & Connection</h3>
 
-        <div class="dash-box" style="margin-bottom:1rem">
-          <h3>Appearance & Display</h3>
-          <p style="font-size:.8rem;margin:0 0 .35rem">Choose appearance — System follows your device setting.</p>
-          <select value=${theme} onchange=${e => { const v = e.target.value; setThemeState(v); setTheme(v); saveUiPrefsToDevice(); }}
-            class="styled" style="align-self:flex-start;width:auto;min-width:160px">
-            <option value="system">System</option>
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
-          </select>
-          <p style="font-size:.8rem;margin:1rem 0 .35rem">Accent colour</p>
-          <div class="accent-swatches">
-            <button class="swatch reset ${!accent ? 'sel' : ''}" title="Default" onclick=${() => pickAccent('')}><${Icon} n="undo" size=${12} /></button>
-            ${ACCENT_PRESETS.map(c => html`
-              <button class="swatch ${accent === c ? 'sel' : ''}" style=${{ background: c }} title=${c} onclick=${() => pickAccent(c)}></button>
-            `)}
-            <input type="color" value=${accent || '#4cc9f0'} oninput=${e => pickAccent(e.target.value)} title="Custom colour" />
-          </div>
-          <p style="font-size:.8rem;margin:1rem 0 .35rem">Display</p>
-          <div style="display:flex;align-items:center;gap:12px;margin-bottom:.25rem">
-            <label class="switch">
-              <input type="checkbox" checked=${keepAwake} onchange=${e => { setKeepAwakeState(e.target.checked); setKeepAwake(e.target.checked); }} />
-              <span class="slider"></span>
-            </label>
-            <span style="font-weight:600">Keep screen awake</span>
-          </div>
-          <p style="font-size:.72rem;color:var(--text3);margin:.35rem 0 0">Stops the screen sleeping while this page is open.</p>
-        </div>
-
-        <div class="dash-box" style="margin-bottom:1rem">
-          <h3>Dashboard</h3>
-          <p style="font-size:.8rem;margin:0 0 .5rem">Choose up to 5 spot values to show on the dashboard hero card. Leave a slot empty to hide it.</p>
-          <div style="display:flex;flex-wrap:wrap;gap:8px">
-            ${dashMetrics.map((name, i) => html`
-              <select class="styled" value=${name} onchange=${e => updateDashMetric(i, e.target.value)}
-                style="width:auto;min-width:130px;font-size:.8rem" title=${'Dashboard value ' + (i + 1)}>
-                <option value="">— none —</option>
-                ${Object.keys(state.spotValues || {}).sort().map(n => html`<option value=${n}>${n}${DASH_METRIC_LABELS[n] ? ' (' + DASH_METRIC_LABELS[n] + ')' : ''}</option>`)}
-              </select>
-            `)}
-          </div>
-          ${!dashMetrics.filter(Boolean).length && html`<p style="font-size:.72rem;color:var(--text3);margin:.35rem 0 0">Nothing selected — the default (udc, tmphs) is shown.</p>`}
-        </div>
-
-        <div class="dash-box compact" style="margin-bottom:1rem">
-          <h3>Web Interface Settings</h3>
-          <p style="font-size:.8rem;margin:0 0 .5rem">Back up or restore favourites, gauge and plot layouts, and UI preferences as a single file.</p>
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button onclick=${exportUiSettings} style="width:auto"><${Icon} n="download" />Export settings</button>
-            <input id="ui-settings-import" type="file" hidden onchange=${importUiSettings} />
-            <label class="butt" for="ui-settings-import" style="width:auto"><${Icon} n="upload" />Import settings</label>
-          </div>
-        </div>
-
-        <div class="dash-box" style="margin-bottom:1rem">
+        <div class="dash-box compact">
           <h3>Data Interface</h3>
-          <div style="display:flex;align-items:center;gap:12px;margin-bottom:.5rem">
-            <label class="switch">
-              <input type="checkbox" checked=${canMode} onchange=${e => setCanMode(e.target.checked)} />
-              <span class="slider"></span>
-            </label>
-            <span style="font-weight:600">${canMode ? 'CAN Bus' : 'UART (Serial)'}</span>
-            <button onclick=${async () => {
+          <p style="color:var(--text2);font-size:.8rem;margin:0 0 .5rem">How this module talks to the inverter.</p>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:.5rem">
+            <div class="seg" id="iface-seg">
+              <button class=${!canMode ? 'sel' : ''} onclick=${() => setCanMode(false)}>UART (Serial)</button>
+              <button class=${canMode ? 'sel' : ''} onclick=${() => setCanMode(true)}>CAN Bus</button>
+            </div>
+            <button id="iface-save" onclick=${async () => {
               setSaving(true);
               try {
                 const bootNode = defaultNodeId();
@@ -2536,19 +2498,19 @@ const Settings = () => {
                 await fetch('/settings?' + params.toString(), { method: 'POST' });
                 dispatch({ type: 'SET_CAN_CONFIG', payload: { canMode, canNodeId: bootNode } });
                 if (canMode) dispatch({ type: 'SET_CAN_NODE', payload: bootNode });
-                setSavedCanMode(canMode);
+                setSavedCan({ mode: canMode, speed: canSpeed, rx: canRxPin, tx: canTxPin });
                 setTimeout(() => setSaving(false), 2000);
               } catch (e) { setSaving(false); }
-            }} style="font-size:.75rem;padding:4px 12px;margin-left:auto;${canMode !== savedCanMode ? 'border-color:var(--amber);color:var(--amber)' : ''}" disabled=${saving}><${Icon} n="save" />${saving ? 'Saving...' : 'Save'}</button>
+            }} style="font-size:.75rem;padding:4px 14px;margin-left:auto;${canDirty ? 'border-color:var(--amber);color:var(--amber)' : ''}" disabled=${saving}><${Icon} n="save" />${saving ? 'Saving...' : 'Save'}</button>
           </div>
-          ${canMode !== savedCanMode && html`
-            <p style="color:var(--amber);font-size:.78rem;margin:.25rem 0 0">
-              Unsaved change — press <b>Save</b> to switch the interface to ${canMode ? 'CAN Bus' : 'UART'}${canMode ? ' before scanning for devices' : ''}.
+          ${canDirty && html`
+            <p style="color:var(--amber);font-size:.78rem;margin:0 0 .5rem">
+              Unsaved changes — press <b>Save</b> to apply${canMode ? '. Scanning stays disabled until then' : ''}.
             </p>
           `}
 
           ${!canMode && html`
-            <h3 style="margin-top:.75rem">UART Configuration</h3>
+            <p class="settings-subhead">UART</p>
             <div style="display:flex;align-items:center;gap:12px;margin-bottom:.25rem">
               <label class="switch">
                 <input type="checkbox" checked=${txrxSwapped} onchange=${e => toggleTxRx(e.target.checked)} disabled=${saving} />
@@ -2564,7 +2526,7 @@ const Settings = () => {
           `}
 
           ${canMode && html`
-            <h3 style="margin-top:.75rem">CAN Bus</h3>
+            <p class="settings-subhead">CAN Bus</p>
             <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:.25rem;align-items:center">
               <label style="font-size:.75rem">Speed <select value=${canSpeed} onchange=${e => setCanSpeed(parseInt(e.target.value))} class="styled" style="font-size:.7rem">
                   <option value="0">125k</option>
@@ -2577,14 +2539,12 @@ const Settings = () => {
             </div>
             <p style="color:var(--text2);font-size:.8rem;margin:0 0 .75rem">Speed and pins apply to all devices on the bus. Default: GPIO4 (RX), GPIO5 (TX).</p>
 
-            <h3 style="margin-top:.75rem">CAN Devices</h3>
+            <p class="settings-subhead">CAN Devices</p>
             <p style="color:var(--text2);font-size:.78rem;margin:0 0 .5rem">
-              Setup: <b>1.</b> switch to CAN Bus → <b>2.</b> Save → <b>3.</b> Scan for devices.
-              Found nodes are stored with the next Save; the <b>default</b> node is selected at boot.
+              Found nodes are stored with the next <b>Save</b>; the <b>default</b> node is selected at boot.
             </p>
-            ${!savedCanMode && html`<p style="color:var(--amber);font-size:.78rem;margin:0 0 .5rem">CAN mode isn't saved yet — scanning needs the saved interface to be CAN Bus.</p>`}
             <div style="display:flex;gap:6px;margin-bottom:.5rem">
-              <button onclick=${async () => {
+              <button id="can-scan-btn" onclick=${async () => {
                 setScanState('scanning');
                 try {
                   const r = await fetch('/can-scan');
@@ -2599,7 +2559,9 @@ const Settings = () => {
                   setScanState('Scan failed');
                 }
                 setTimeout(() => setScanState(''), 2500);
-              }} disabled=${scanState === 'scanning'} style="font-size:.75rem;padding:4px 12px">
+              }} disabled=${scanState === 'scanning' || !scanReady}
+                title=${scanReady ? 'Scan the bus for OpenInverter nodes' : 'Save the CAN interface settings first'}
+                style="font-size:.75rem;padding:4px 12px">
                 ${scanState === 'scanning' ? 'Scanning…' : scanState || html`
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                   Scan for devices`}
@@ -2631,27 +2593,80 @@ const Settings = () => {
           `}
         </div>
 
-        <div class="dash-box" style="margin-bottom:1rem">
-          <h3>WiFi Access Point</h3>
-          <p style="color:var(--text2);font-size:.8rem;margin:0 0 .5rem">Configure the access point created by the inverter.</p>
-          <div style="display:flex;flex-direction:column;gap:6px;max-width:350px">
+        <div class="dash-box compact">
+          <h3>WiFi</h3>
+          <p style="color:var(--text2);font-size:.8rem;margin:0 0 .5rem">${staIP ? 'Current IP: ' + staIP : 'Access point and network settings.'}</p>
+          <p class="settings-subhead">Access Point — created by this module</p>
+          <div style="display:flex;flex-direction:column;gap:6px;max-width:350px;margin-bottom:.85rem">
             <label style="font-size:.8rem">SSID: <input type="text" value=${apSSID} oninput=${e => setApSSID(e.target.value)} style="width:100%" /></label>
             <label style="font-size:.8rem">Password: <input type="text" value=${apPW} oninput=${e => setApPW(e.target.value)} style="width:100%" minlength="8" /></label>
-            <button onclick=${() => saveWiFi('ap')} style="align-self:flex-start">Save AP Settings</button>
+            <button onclick=${() => saveWiFi('ap')} style="align-self:flex-start;font-size:.75rem;padding:4px 12px"><${Icon} n="save" />Save AP settings</button>
           </div>
-        </div>
-
-        <div class="dash-box" style="margin-bottom:1rem">
-          <h3>WiFi Station</h3>
-          <p style="color:var(--text2);font-size:.8rem;margin:0 0 .5rem">Join an existing WiFi network. ${staIP && `Current IP: ${staIP}`}</p>
+          <p class="settings-subhead">Station — join an existing network</p>
           <div style="display:flex;flex-direction:column;gap:6px;max-width:350px">
             <label style="font-size:.8rem">Network SSID: <input type="text" value=${staSSID} oninput=${e => setStaSSID(e.target.value)} style="width:100%" /></label>
             <label style="font-size:.8rem">Password: <input type="text" value=${staPW} oninput=${e => setStaPW(e.target.value)} style="width:100%" /></label>
-            <button onclick=${() => saveWiFi('sta')} style="align-self:flex-start">Save Station Settings</button>
+            <button onclick=${() => saveWiFi('sta')} style="align-self:flex-start;font-size:.75rem;padding:4px 12px"><${Icon} n="save" />Save station settings</button>
+          </div>
+          ${wifiMsg && html`<p style="color:var(--accent);font-size:.78rem;font-weight:600;margin:.5rem 0 0">${wifiMsg}</p>`}
+        </div>
+
+        <h3 class="settings-section">Web Interface</h3>
+
+        <div class="dash-box compact">
+          <h3>Appearance & Display</h3>
+          <p style="font-size:.8rem;margin:0 0 .35rem">Choose appearance — System follows your device setting.</p>
+          <select value=${theme} onchange=${e => { const v = e.target.value; setThemeState(v); setTheme(v); saveUiPrefsToDevice(); }}
+            class="styled" style="align-self:flex-start;width:auto;min-width:160px">
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+          <p style="font-size:.8rem;margin:1rem 0 .35rem">Accent colour</p>
+          <div class="accent-swatches">
+            <button class="swatch reset ${!accent ? 'sel' : ''}" title="Default" onclick=${() => pickAccent('')}><${Icon} n="undo" size=${12} /></button>
+            ${ACCENT_PRESETS.map(c => html`
+              <button class="swatch ${accent === c ? 'sel' : ''}" style=${{ background: c }} title=${c} onclick=${() => pickAccent(c)}></button>
+            `)}
+            <input type="color" value=${accent || '#4cc9f0'} oninput=${e => pickAccent(e.target.value)} title="Custom colour" />
+          </div>
+          <p style="font-size:.8rem;margin:1rem 0 .35rem">Display</p>
+          <div style="display:flex;align-items:center;gap:12px;margin-bottom:.25rem">
+            <label class="switch">
+              <input type="checkbox" checked=${keepAwake} onchange=${e => { setKeepAwakeState(e.target.checked); setKeepAwake(e.target.checked); }} />
+              <span class="slider"></span>
+            </label>
+            <span style="font-weight:600">Keep screen awake</span>
+          </div>
+          <p style="font-size:.72rem;color:var(--text3);margin:.35rem 0 0">Stops the screen sleeping while this page is open.</p>
+        </div>
+
+        <div class="dash-box compact">
+          <h3>Dashboard</h3>
+          <p style="font-size:.8rem;margin:0 0 .5rem">Choose up to 5 spot values to show on the dashboard hero card. Leave a slot empty to hide it.</p>
+          <div style="display:flex;flex-wrap:wrap;gap:8px">
+            ${dashMetrics.map((name, i) => html`
+              <select class="styled" value=${name} onchange=${e => updateDashMetric(i, e.target.value)}
+                style="width:auto;min-width:130px;font-size:.8rem" title=${'Dashboard value ' + (i + 1)}>
+                <option value="">— none —</option>
+                ${Object.keys(state.spotValues || {}).sort().map(n => html`<option value=${n}>${n}${DASH_METRIC_LABELS[n] ? ' (' + DASH_METRIC_LABELS[n] + ')' : ''}</option>`)}
+              </select>
+            `)}
+          </div>
+          ${!dashMetrics.filter(Boolean).length && html`<p style="font-size:.72rem;color:var(--text3);margin:.35rem 0 0">Nothing selected — the default (udc, tmphs) is shown.</p>`}
+        </div>
+
+        <div class="dash-box compact">
+          <h3>Backup & Restore</h3>
+          <p style="font-size:.8rem;margin:0 0 .5rem">Back up or restore favourites, gauge and plot layouts, and UI preferences as a single file.</p>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button onclick=${exportUiSettings} style="width:auto"><${Icon} n="download" />Export settings</button>
+            <input id="ui-settings-import" type="file" hidden onchange=${importUiSettings} />
+            <label class="butt" for="ui-settings-import" style="width:auto"><${Icon} n="upload" />Import settings</label>
           </div>
         </div>
 
-        ${wifiMsg && html`<p style="color:var(--accent);font-weight:600">${wifiMsg}</p>`}
+        </div>
       </div>
     </div>
   `;
