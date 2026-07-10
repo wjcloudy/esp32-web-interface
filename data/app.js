@@ -3733,15 +3733,7 @@ const Gauges = () => {
         return cfg && html`
           <${Modal} id="gauge-config" title="Gauge settings" onClose=${() => setConfigId(null)}>
             <div style="display:flex;flex-direction:column;gap:10px;font-size:.85rem">
-              ${cfg.type !== 'action' && html`<div style="display:flex;gap:8px;align-items:center">
-                <label style="width:4.5em">Value</label>
-                <${FieldPicker} value=${cfg.name} spotNames=${spotNames} onChange=${name => updateGaugeConfig(cfg.id, 'name', name)} />
-              </div>`}
-              <div style="display:flex;gap:8px;align-items:center">
-                <label style="width:4.5em">Label</label>
-                <input type="text" value=${cfg.label || ''} placeholder="(shows the value name)" maxlength="24"
-                  oninput=${e => updateGaugeConfig(cfg.id, 'label', e.target.value)} style="flex:1;padding:5px 8px" />
-              </div>
+              ${/* Type first: it decides which of the rows below even apply */ ''}
               <div style="display:flex;gap:8px;align-items:center">
                 <label style="width:4.5em">Type</label>
                 <select value=${cfg.type || 'radial'} onchange=${e => {
@@ -3766,6 +3758,15 @@ const Gauges = () => {
                 <input type="color" value=${cfg.color || '#4cc9f0'} oninput=${e => updateGaugeConfig(cfg.id, 'color', e.target.value)}
                   style="width:34px;height:28px;padding:0;border:1px solid var(--border2);border-radius:6px;background:none;cursor:pointer" />
                 ${cfg.color && html`<button onclick=${() => updateGaugeConfig(cfg.id, 'color', '')} style="font-size:.65rem;padding:2px 8px;width:auto" title="Reset to theme gradient"><${Icon} n="undo" size=${11} /></button>`}
+              </div>
+              ${cfg.type !== 'action' && html`<div style="display:flex;gap:8px;align-items:center">
+                <label style="width:4.5em">Value</label>
+                <${FieldPicker} value=${cfg.name} spotNames=${spotNames} onChange=${name => updateGaugeConfig(cfg.id, 'name', name)} />
+              </div>`}
+              <div style="display:flex;gap:8px;align-items:center">
+                <label style="width:4.5em">Label</label>
+                <input type="text" value=${cfg.label || ''} placeholder="(shows the value name)" maxlength="24"
+                  oninput=${e => updateGaugeConfig(cfg.id, 'label', e.target.value)} style="flex:1;padding:5px 8px" />
               </div>
               ${cfg.type !== 'text' && cfg.type !== 'action' && html`<div style="display:flex;gap:8px;align-items:center">
                 <label style="width:4.5em">Min</label>
