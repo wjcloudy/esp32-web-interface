@@ -2681,7 +2681,7 @@ const Support = () => html`
 // remounts it (which would drop the accumulated history). `points` sets the
 // visible history length and `sampleMs` how often a sample is taken from the
 // ~100ms stream — together they control the scroll rate/time window.
-const GaugeLine = ({ name, min, max, value, unit, color, enums, w = 230, h = 175, points = 20, sampleMs = 100 }) => {
+const GaugeLine = ({ name, min, max, value, unit, color, enums, w = 230, h = 175, points = 20, sampleMs = 100, decimals = 1 }) => {
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
   const lastSampleRef = useRef(0);
@@ -2764,7 +2764,7 @@ const GaugeLine = ({ name, min, max, value, unit, color, enums, w = 230, h = 175
     <div style=${'width:' + w + 'px;height:' + h + 'px;display:flex;flex-direction:column;align-items:center;overflow:hidden'}>
       <canvas ref=${canvasRef}></canvas>
       <div class="g-val" style=${'font-size:' + Math.max(0.8, Math.min(w, h) / 230 * 1.6).toFixed(2) + 'rem;margin-top:2px;line-height:1'}>
-        ${value != null ? (enums ? String(Math.round(value)) : value.toFixed(1)) : '—'}
+        ${value != null ? (enums ? String(Math.round(value)) : value.toFixed(decimals)) : '—'}
         ${enums
           ? (value != null && html`<span class="g-unit g-enum" style="display:inline;margin-left:6px">${enumLabel(enums, value)}</span>`)
           : (unit && html`<span class="g-unit" style="display:inline;margin-left:4px">${unit}</span>`)}
@@ -2793,7 +2793,7 @@ const hueShift = (hex, deg) => {
 // Modern SVG arc gauge — 270° sweep, gradient stroke, mono numerals.
 // Pure render: value changes animate via CSS transition on the dash array.
 // A custom colour keeps the gradient look, centered on the chosen colour.
-const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px }) => {
+const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decimals = 1 }) => {
   const size = px || 230, c = size / 2, r = Math.round(size * 0.4);
   const sw = Math.max(8, Math.round(size * 0.057));
   const SWEEP = 270; // degrees, gap centered at the bottom
@@ -2828,7 +2828,7 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px }) => 
         </g>
       </svg>
       <div class="g-center">
-        <div class="g-val" style=${'font-size:' + (size / 230 * 2.1).toFixed(2) + 'rem'}>${v == null ? '—' : (enums ? String(Math.round(v)) : v.toFixed(1))}</div>
+        <div class="g-val" style=${'font-size:' + (size / 230 * 2.1).toFixed(2) + 'rem'}>${v == null ? '—' : (enums ? String(Math.round(v)) : v.toFixed(decimals))}</div>
         ${enums
           ? (v != null && html`<div class="g-unit g-enum">${enumLabel(enums, v)}</div>`)
           : (unit && html`<div class="g-unit">${unit}</div>`)}
@@ -2854,6 +2854,11 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px }) => 
 const GRID_COLS = 10;
 const V1_SPAN = { xs: 2, sm: 2, md: 3, lg: 4 }; // legacy fixed sizes -> tile span (10-col)
 
+// Per-type tile rules: indicators and text tiles can go down to 1 cell;
+// dials/lamps stay square, line charts and text strips can be any shape
+const tileFloor = (type) => (type === 'indicator' || type === 'text') ? 1 : 2;
+const tileFreeform = (type) => type === 'line' || type === 'text';
+
 function migrateGauges(data) {
   if (data && Array.isArray(data.pages)) {
     // v2 layouts were authored on a 12-column grid — rescale to 8 columns
@@ -2864,10 +2869,10 @@ function migrateGauges(data) {
         name: p.name || 'Page ' + (pi + 1),
         items: (Array.isArray(p.items) ? p.items : []).map(g => {
           const type = g.type || 'radial';
-          const floor = type === 'indicator' ? 1 : 2; // indicators can be 1x1
+          const floor = tileFloor(type);
           let w = Math.max(floor, Math.round((g.w || 3) * scale));
           let h = Math.max(floor, Math.round((g.h || 3) * scale));
-          if (type !== 'line') w = h = Math.min(w, h); // dials/lamps are square
+          if (!tileFreeform(type)) w = h = Math.min(w, h); // dials/lamps are square
           let x = Math.round((g.x || 0) * scale), y = Math.round((g.y || 0) * scale);
           x = Math.max(0, Math.min(x, GRID_COLS - w)); // keep on the grid
           return { type: 'radial', ...g, x, y, w, h };
@@ -2914,6 +2919,26 @@ const IndicatorLamp = ({ value, min, max, color, enums, px }) => {
     </div>`;
 };
 
+// Plain text tile: the live value as large text (with unit / enum label),
+// or fixed caption text when "Static text" is set — handy for labelling
+// dashboard sections.
+const TextTile = ({ value, unit, enums, text, decimals, w, h }) => {
+  const isStatic = !!(text && String(text).trim());
+  let disp;
+  if (isStatic) disp = String(text).trim();
+  else {
+    const v = (value == null || isNaN(value)) ? null : value;
+    disp = v == null ? '—' : (enums ? String(enumLabel(enums, v)) : v.toFixed(decimals));
+  }
+  // Fit by height, shrinking for long strings so they stay on the tile
+  const fs = Math.max(11, Math.min(Math.round(h * 0.5), Math.round((w * 1.5) / Math.max(2, disp.length))));
+  return html`
+    <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;max-width:100%;overflow:hidden">
+      <div class="g-val" style=${'font-size:' + fs + 'px;line-height:1.15;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%'}>${disp}</div>
+      ${!isStatic && unit && html`<div class="g-unit" style=${'font-size:' + Math.max(10, Math.round(fs * 0.38)) + 'px'}>${unit}</div>`}
+    </div>`;
+};
+
 // Fills the tile under the name label and measures itself with a
 // ResizeObserver, so gauges rescale live while a tile is being resized
 // (GridStack changes the DOM size continuously during the drag).
@@ -2944,8 +2969,9 @@ const GaugeTileBody = ({ g, title, value, unit, enums }) => {
   }, []);
   const { w, h } = dim;
   // Small tiles (1x1, or 2x2 on a phone) drop the name row so the gauge
-  // itself always gets the space — the tile's title attribute still names it
-  const showName = h >= 48;
+  // itself always gets the space — the tile's title attribute still names it.
+  // Unnamed tiles (static text captions) don't render the placeholder dash.
+  const showName = h >= 48 && title !== '—';
   const nameH = showName ? Math.min(20, Math.round(h * 0.16)) : 0;
   const gh = h - nameH - 2;
   return html`
@@ -2953,13 +2979,16 @@ const GaugeTileBody = ({ g, title, value, unit, enums }) => {
       ${showName && html`<div class="gauge-tile-name" style=${'font-size:' + Math.min(13, Math.max(9, Math.round(nameH * 0.7))) + 'px;line-height:' + nameH + 'px;margin:0'}>${title}</div>`}
       ${w > 12 && gh > 12 && ((g.type === 'line')
         ? html`<${GaugeLine} key=${g.id} name=${g.name} min=${g.min} max=${g.max} value=${value} unit=${unit} color=${g.color || ''} enums=${enums}
-            points=${g.points || 20} sampleMs=${g.sampleMs || 100}
+            points=${g.points || 20} sampleMs=${g.sampleMs || 100} decimals=${g.decimals != null ? g.decimals : 1}
             w=${w - 4} h=${gh - 2} />`
         : (g.type === 'indicator')
         ? html`<${IndicatorLamp} value=${value} min=${g.min} max=${g.max} color=${g.color || ''} enums=${enums}
             px=${Math.max(14, Math.min(w, gh) - 4)} />`
+        : (g.type === 'text')
+        ? html`<${TextTile} value=${value} unit=${unit} enums=${enums} text=${g.text || ''}
+            decimals=${g.decimals != null ? g.decimals : 1} w=${w - 6} h=${gh - 4} />`
         : html`<${SvgGauge} id=${g.id} value=${value} unit=${unit} color=${g.color || ''} enums=${enums}
-            px=${Math.max(40, Math.min(w, gh) - 4)}
+            px=${Math.max(40, Math.min(w, gh) - 4)} decimals=${g.decimals != null ? g.decimals : 1}
             min=${g.min != null ? g.min : 0} max=${(g.max == null || g.max === 0) ? 4000 : g.max} />`)}
     </div>`;
 };
@@ -3046,7 +3075,7 @@ const Gauges = () => {
     // indicator lamps, 2x2 for everything else)
     const minFor = (id) => {
       const g = itemsRef.current.find(x => String(x.id) === String(id));
-      return g && g.type === 'indicator' ? 1 : 2;
+      return g ? tileFloor(g.type) : 2;
     };
     grid.batchUpdate();
     grid.getGridItems().forEach(el => {
@@ -3061,7 +3090,7 @@ const Gauges = () => {
       setPageItems(activeRef.current, prev => prev.map(g => {
         const l = layout.find(w => String(w.id) === String(g.id));
         if (!l) return g;
-        const floor = g.type === 'indicator' ? 1 : 2;
+        const floor = tileFloor(g.type);
         return { ...g, x: l.x || 0, y: l.y || 0, w: Math.max(floor, l.w || 1), h: Math.max(floor, l.h || 1) };
       }));
     };
@@ -3084,9 +3113,9 @@ const Gauges = () => {
       const n = el.gridstackNode;
       if (!n) return;
       const g = itemsRef.current.find(x => String(x.id) === String(n.id));
-      const floor = g && g.type === 'indicator' ? 1 : 2;
+      const floor = g ? tileFloor(g.type) : 2;
       let w = Math.max(floor, n.w || 1), h = Math.max(floor, n.h || 1);
-      if (g && g.type !== 'line') {
+      if (g && !tileFreeform(g.type)) {
         const grew = (n.w || 1) * (n.h || 1) >= prevDim.w * prevDim.h;
         w = h = grew ? Math.max(w, h) : Math.min(w, h);
       }
@@ -3113,18 +3142,26 @@ const Gauges = () => {
   };
 
   // Resize a tile from its settings modal — the only way to grow/shrink
-  // tiny tiles on a phone, where the corner grip is hidden. Drives the grid
-  // engine (which fires 'change' and syncs state); square types stay square.
+  // tiny tiles on a phone, where the corner grip is hidden. The rendered
+  // size is driven by gridstack's inline style, so the ENGINE update is what
+  // actually resizes the tile; its 'change' event then syncs state. The
+  // element is found via gridstack's own node list (it strips gs-* attrs
+  // after parsing, so a DOM attribute query is unreliable).
   const setGaugeSize = (id, wIn, hIn) => {
     const g = items.find(x => x.id === id);
     if (!g) return;
-    const floor = g.type === 'indicator' ? 1 : 2;
+    const floor = tileFloor(g.type);
     let w = Math.max(floor, Math.min(GRID_COLS, Math.round(wIn) || floor));
     let h = Math.max(floor, Math.min(GRID_COLS, Math.round(hIn) || floor));
-    if (g.type !== 'line') h = w;
-    const el = gridRef.current && gridRef.current.querySelector('.grid-stack-item[gs-id="' + id + '"]');
-    if (el && gridApi.current) gridApi.current.update(el, { w, h });
-    else setPageItems(activePage, prev => prev.map(x => x.id !== id ? x : { ...x, w, h }));
+    if (!tileFreeform(g.type)) h = w;
+    const engine = gridApi.current;
+    const node = engine && engine.engine && engine.engine.nodes.find(n => String(n.id) === String(id));
+    if (node && node.el) {
+      engine.update(node.el, { w, h }); // fires 'change' -> onChange persists
+    } else {
+      // No live grid (shouldn't happen in edit mode) — persist directly
+      setPageItems(activePage, prev => prev.map(x => x.id !== id ? x : { ...x, w, h }));
+    }
   };
 
   // Copy a gauge's full config (value, type, colour, range, size) into a new
@@ -3164,7 +3201,10 @@ const Gauges = () => {
 
   // High-rate spot value fetching for the active page (pauses main json refresh)
   useEffect(() => {
-    const names = items.map(g => g.name).filter(Boolean);
+    // Pause streaming while the settings modal is open: its constant
+    // re-renders otherwise revert an in-progress edit of a controlled input
+    // (type a value, a stream tick lands, the field snaps back).
+    const names = configId ? [] : items.map(g => g.name).filter(Boolean);
     if (names.length === 0) {
       dispatch({ type: 'SET_LOGGING', payload: false });
       return;
@@ -3202,7 +3242,7 @@ const Gauges = () => {
       dispatch({ type: 'SET_LOGGING', payload: false });
       if (fetchRef.current) { clearTimeout(fetchRef.current); fetchRef.current = null; }
     };
-  }, [items]);
+  }, [items, configId]);
 
   const spotNames = state.spotValues ? Object.keys(state.spotValues) : [];
 
@@ -3247,9 +3287,9 @@ const Gauges = () => {
               ${/* In edit mode a tap opens the tile's settings (no overlay
                   buttons — on a 1x1 mobile tile they'd all overlap the
                   resize handle); drags are filtered by dragBusyRef */ ''}
-              <div class="grid-stack-item-content gauge-tile" title=${g.name || ''}
+              <div class="grid-stack-item-content gauge-tile" title=${g.label || g.name || ''}
                 onclick=${editing ? (() => { if (!dragBusyRef.current) setConfigId(g.id); }) : undefined}>
-                <${GaugeTileBody} g=${g} title=${g.name || (editing ? 'tap to set up' : '—')} value=${lineVals[g.id]} unit=${unit} enums=${enums} />
+                <${GaugeTileBody} g=${g} title=${g.label || g.name || (editing ? 'tap to set up' : '—')} value=${lineVals[g.id]} unit=${unit} enums=${enums} />
               </div>
             </div>`;
           })}
@@ -3265,6 +3305,11 @@ const Gauges = () => {
                 <${FieldPicker} value=${cfg.name} spotNames=${spotNames} onChange=${name => updateGaugeConfig(cfg.id, 'name', name)} />
               </div>
               <div style="display:flex;gap:8px;align-items:center">
+                <label style="width:4.5em">Label</label>
+                <input type="text" value=${cfg.label || ''} placeholder="(shows the value name)" maxlength="24"
+                  oninput=${e => updateGaugeConfig(cfg.id, 'label', e.target.value)} style="flex:1;padding:5px 8px" />
+              </div>
+              <div style="display:flex;gap:8px;align-items:center">
                 <label style="width:4.5em">Type</label>
                 <select value=${cfg.type || 'radial'} onchange=${e => {
                   const t = e.target.value;
@@ -3277,29 +3322,48 @@ const Gauges = () => {
                   <option value="radial">Radial</option>
                   <option value="line">Line</option>
                   <option value="indicator">Indicator</option>
+                  <option value="text">Text</option>
                 </select>
                 <label style="margin-left:8px">Colour</label>
                 <input type="color" value=${cfg.color || '#4cc9f0'} oninput=${e => updateGaugeConfig(cfg.id, 'color', e.target.value)}
                   style="width:34px;height:28px;padding:0;border:1px solid var(--border2);border-radius:6px;background:none;cursor:pointer" />
                 ${cfg.color && html`<button onclick=${() => updateGaugeConfig(cfg.id, 'color', '')} style="font-size:.65rem;padding:2px 8px;width:auto" title="Reset to theme gradient"><${Icon} n="undo" size=${11} /></button>`}
               </div>
-              <div style="display:flex;gap:8px;align-items:center">
+              ${cfg.type !== 'text' && html`<div style="display:flex;gap:8px;align-items:center">
                 <label style="width:4.5em">Min</label>
                 <input type="number" value=${cfg.min} oninput=${e => updateGaugeConfig(cfg.id, 'min', parseFloat(e.target.value) || 0)} style="width:6em;padding:5px 6px" step="any" />
                 <label>Max</label>
                 <input type="number" value=${cfg.max} oninput=${e => updateGaugeConfig(cfg.id, 'max', parseFloat(e.target.value) || 0)} style="width:6em;padding:5px 6px" step="any" />
-              </div>
+              </div>`}
+              ${cfg.type === 'text' && html`
+                <div style="display:flex;gap:8px;align-items:center">
+                  <label style="width:4.5em">Text</label>
+                  <input type="text" value=${cfg.text || ''} placeholder="(empty = show the live value)" maxlength="40"
+                    oninput=${e => updateGaugeConfig(cfg.id, 'text', e.target.value)} style="flex:1;padding:5px 8px" />
+                </div>
+                <p style="font-size:.72rem;color:var(--text3);margin:0">Leave Text empty to show the selected value as large text; set it for a static caption (section headers etc.).</p>
+              `}
+              ${cfg.type !== 'indicator' && html`<div style="display:flex;gap:8px;align-items:center">
+                <label style="width:4.5em">Decimals</label>
+                <select value=${String(cfg.decimals != null ? cfg.decimals : 1)} onchange=${e => updateGaugeConfig(cfg.id, 'decimals', parseInt(e.target.value))}
+                  style="width:auto;min-width:5em;padding:5px 30px 5px 8px">
+                  <option value="0">0</option>
+                  <option value="1">1</option>
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                </select>
+              </div>`}
               ${cfg.type === 'indicator' && html`<p style="font-size:.72rem;color:var(--text3);margin:0">The lamp lights in the chosen colour when the value rises past the midpoint between Min and Max — e.g. Min 0 / Max 1 switches at 0.5.</p>`}
               <div style="display:flex;gap:8px;align-items:center">
                 <label style="width:4.5em">Size</label>
-                ${cfg.type === 'line' ? html`
-                  <input type="number" min="2" max=${GRID_COLS} value=${cfg.w} title="Width (cells)"
+                ${tileFreeform(cfg.type) ? html`
+                  <input type="number" min=${tileFloor(cfg.type)} max=${GRID_COLS} value=${cfg.w} title="Width (cells)"
                     onchange=${e => setGaugeSize(cfg.id, parseInt(e.target.value), cfg.h)} style="width:5em;padding:5px 6px" />
                   <label>×</label>
-                  <input type="number" min="2" max=${GRID_COLS} value=${cfg.h} title="Height (cells)"
+                  <input type="number" min=${tileFloor(cfg.type)} max=${GRID_COLS} value=${cfg.h} title="Height (cells)"
                     onchange=${e => setGaugeSize(cfg.id, cfg.w, parseInt(e.target.value))} style="width:5em;padding:5px 6px" />
                 ` : html`
-                  <input type="number" min=${cfg.type === 'indicator' ? 1 : 2} max=${GRID_COLS} value=${cfg.w} title="Size (cells, square)"
+                  <input type="number" min=${tileFloor(cfg.type)} max=${GRID_COLS} value=${cfg.w} title="Size (cells, square)"
                     onchange=${e => setGaugeSize(cfg.id, parseInt(e.target.value), parseInt(e.target.value))} style="width:5em;padding:5px 6px" />
                   <span style="font-size:.72rem;color:var(--text3)">cells (of ${GRID_COLS})</span>
                 `}

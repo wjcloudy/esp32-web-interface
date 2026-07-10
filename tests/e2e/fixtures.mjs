@@ -16,6 +16,20 @@ export const test = base.extend({
     server.close();
   },
   page: async ({ page }, use) => {
+    // Stub out the PWA service worker: on localhost (a secure context) it
+    // registers, skipWaiting()s and clients.claim()s the page mid-load, which
+    // intermittently aborts in-flight vendor script requests under parallel
+    // test load (preact/preactHooks undefined). It does no caching, so it's
+    // irrelevant to what these tests exercise. Real hardware is unaffected.
+    await page.addInitScript(() => {
+      // register() rejects (app swallows it with .catch) — no SW ever installs
+      try {
+        Object.defineProperty(navigator, 'serviceWorker', {
+          configurable: true,
+          get: () => ({ register: () => Promise.reject(new Error('sw disabled in tests')) }),
+        });
+      } catch (e) {}
+    });
     const errors = [];
     page.on('pageerror', e => errors.push(String(e)));
     await use(page);

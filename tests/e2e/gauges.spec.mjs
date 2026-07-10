@@ -128,7 +128,7 @@ test.describe('Gauges grid', () => {
     const modal = page.locator('.modal-content');
     await expect(modal).toBeVisible();
     await modal.locator('input[type="number"]').nth(1).fill('500'); // max
-    await modal.locator('select').selectOption('line');
+    await modal.locator('select').first().selectOption('line'); // Type is the first select
     await modal.locator('button', { hasText: 'Done' }).click();
     await page.locator('button', { hasText: 'Save & Done' }).click();
     await expect.poll(async () => (await savedLayout(mock)).pages[0].items[0].max).toBe(500);
@@ -145,13 +145,59 @@ test.describe('Gauges grid', () => {
     await modal.locator('select').first().selectOption('line');
     // Line-specific history controls appear; points input is labelled
     await modal.locator('input[min="5"]').fill('60'); // points (min=5 is unique to it)
-    await modal.locator('select').nth(1).selectOption('1000'); // sample every 1s
+    await modal.locator('select').last().selectOption('1000'); // Sample is the last select (Type, Decimals, Sample)
     await modal.locator('button', { hasText: 'Done' }).click();
     await page.locator('button', { hasText: 'Save & Done' }).click();
     await expect.poll(async () => {
       const item = (await savedLayout(mock)).pages[0].items[0];
       return { points: item.points, sampleMs: item.sampleMs, type: item.type };
     }).toEqual({ points: 60, sampleMs: 1000, type: 'line' });
+  });
+
+  test('text tiles: live value with decimals, static caption, custom label', async ({ page, mock }) => {
+    const layout = { v: 3, pages: [{ id: 1, name: 'Main', items: [
+      { id: 1, name: 'udc', type: 'text', decimals: 2, label: 'Battery V', x: 0, y: 0, w: 3, h: 2 },
+      { id: 2, name: '', type: 'text', text: 'DRIVE READY', x: 3, y: 0, w: 4, h: 2 },
+    ] }] };
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(layout) });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    // Live value rendered as text with 2 decimals + unit
+    await expect(page.locator('.gauge-tile').first()).toContainText('398.50');
+    await expect(page.locator('.gauge-tile').first()).toContainText('V');
+    // Custom label replaces the value name on the tile
+    await expect(page.locator('.gauge-tile-name', { hasText: 'Battery V' })).toBeVisible();
+    // Static caption tile needs no value at all
+    await expect(page.locator('.gauge-tile', { hasText: 'DRIVE READY' })).toBeVisible();
+  });
+
+  test('decimals setting applies to radial dials', async ({ page, mock }) => {
+    const layout = { v: 3, pages: [{ id: 1, name: 'Main', items: [
+      { id: 1, name: 'udc', type: 'radial', min: 0, max: 500, decimals: 0, x: 0, y: 0, w: 3, h: 3 },
+    ] }] };
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(layout) });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await expect(page.locator('.gauge-tile .g-val')).toHaveText('399'); // 398.5 @ 0 decimals
+  });
+
+  test('label and decimals configure from the settings modal and persist', async ({ page, mock }) => {
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await enterEdit(page);
+    await addGauge(page, 'udc');
+    await page.locator('.gauge-tile').click();
+    const modal = page.locator('.modal-content');
+    await modal.locator('input[maxlength="24"]').fill('Pack Volts'); // Label
+    await modal.locator('select').nth(1).selectOption('2'); // Decimals (select #2: type is first)
+    await modal.locator('button', { hasText: 'Done' }).click();
+    await expect(page.locator('.gauge-tile-name', { hasText: 'Pack Volts' })).toBeVisible();
+    await expect(page.locator('.gauge-tile .g-val')).toContainText('398.50');
+    await page.locator('button', { hasText: 'Save & Done' }).click();
+    await expect.poll(async () => {
+      const item = (await savedLayout(mock)).pages[0].items[0];
+      return { label: item.label, decimals: item.decimals };
+    }).toEqual({ label: 'Pack Volts', decimals: 2 });
   });
 
   test('duplicate button clones a tile with its full config', async ({ page, mock }) => {
@@ -351,14 +397,16 @@ test.describe('Gauges grid', () => {
     await page.locator('.gauge-tile').click();
     await expect(page.locator('.modal-content')).toBeVisible();
     // Grow it from the modal instead: 1 -> 3 cells
+    const tile = page.locator('.grid-stack-item');
+    const before = (await tile.boundingBox()).width;
     const size = page.locator('.modal-content input[title^="Size"]');
     await size.fill('3');
     await size.dispatchEvent('change');
-    await expect.poll(async () => page.locator('.grid-stack-item').getAttribute('gs-w')).toBe('3');
-    // No longer tiny, so the grip comes back (class check — the open modal
-    // overlays the grip itself, so a visibility check would be unreliable)
-    await expect(page.locator('.grid-stack-item')).not.toHaveClass(/tile-tiny/);
-    // And the new size persists
+    // Assert on the observable geometry, not gs-w (gridstack strips that
+    // attribute after parsing, so it's racy): the tile visibly grows and
+    // loses the tiny class, and the new size persists.
+    await expect.poll(async () => (await tile.boundingBox()).width, { timeout: 10000 }).toBeGreaterThan(before + 20);
+    await expect(tile).not.toHaveClass(/tile-tiny/);
     await page.locator('.modal-content button', { hasText: 'Done' }).click();
     await page.locator('button', { hasText: 'Save & Done' }).click();
     await expect.poll(async () => (await savedLayout(mock)).pages[0].items[0].w).toBe(3);

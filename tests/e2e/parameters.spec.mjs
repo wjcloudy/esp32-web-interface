@@ -36,7 +36,8 @@ test.describe('Parameters tab', () => {
     await gotoTab(page, 'Parameters');
     const row = page.locator('#params tr', { hasText: 'dirmode' });
     await row.locator('select').selectOption({ label: 'DefaultForward' });
-    expect(await mock.commands()).toContain('set dirmode 4');
+    // selectOption -> onchange -> async set; poll rather than check immediately
+    await expect.poll(async () => await mock.commands()).toContain('set dirmode 4');
   });
 
   test('search filters the table', async ({ page, mock }) => {
@@ -54,7 +55,7 @@ test.describe('Parameters tab', () => {
     await page.locator('button', { hasText: 'Save parameters to flash' }).click();
     await page.locator('button', { hasText: 'Restore parameters from flash' }).click();
     await expect.poll(async () => await mock.commands()).toContain('save');
-    expect(await mock.commands()).toContain('load');
+    await expect.poll(async () => await mock.commands()).toContain('load');
   });
 
   test('download link exports the full parameter set as JSON', async ({ page, mock }) => {

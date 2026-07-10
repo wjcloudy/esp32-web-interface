@@ -92,7 +92,9 @@ test.describe('Settings tab', () => {
       name: 'backup.json', mimeType: 'application/octet-stream', // Android-style mime
       buffer: Buffer.from(JSON.stringify(bundle)),
     });
-    await expect.poll(async () => (await mock.state()).files).toContain('favorites.json');
-    expect((await mock.state()).files).toContain('gauges.json');
+    // gauges.json uploads after favorites.json, so poll for the LATER one
+    // (a synchronous check right after favorites lands races the gauges POST)
+    await expect.poll(async () => (await mock.state()).files).toContain('gauges.json');
+    expect((await mock.state()).files).toContain('favorites.json');
   });
 });
