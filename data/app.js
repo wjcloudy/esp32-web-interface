@@ -3025,9 +3025,12 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decim
               : (unit && html`<div class="g-unit" style=${'font-size:' + ufs}>${unit}</div>`)}`;
         })()}
       </div>
+      ${/* 11.5% corner inset (was 17.4%): on small dials the label text was
+          reaching the arc ends — anchored outward it grows away from the
+          track instead of into it */ ''}
       ${size >= 90 && html`
-        <div class="g-min" style=${'left:' + Math.round(size * 0.174) + 'px;bottom:' + Math.round(size * 0.072) + 'px;font-size:' + Math.max(0.68, size / 230 * 0.68).toFixed(2) + 'rem'}>${min}</div>
-        <div class="g-max" style=${'right:' + Math.round(size * 0.174) + 'px;bottom:' + Math.round(size * 0.072) + 'px;font-size:' + Math.max(0.68, size / 230 * 0.68).toFixed(2) + 'rem'}>${max}</div>
+        <div class="g-min" style=${'left:' + Math.round(size * 0.115) + 'px;bottom:' + Math.round(size * 0.072) + 'px;font-size:' + Math.max(0.68, size / 230 * 0.68).toFixed(2) + 'rem'}>${min}</div>
+        <div class="g-max" style=${'right:' + Math.round(size * 0.115) + 'px;bottom:' + Math.round(size * 0.072) + 'px;font-size:' + Math.max(0.68, size / 230 * 0.68).toFixed(2) + 'rem'}>${max}</div>
       `}
     </div>`;
 };
