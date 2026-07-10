@@ -3289,7 +3289,10 @@ const Gauges = () => {
                   resize handle); drags are filtered by dragBusyRef */ ''}
               <div class="grid-stack-item-content gauge-tile" title=${g.label || g.name || ''}
                 onclick=${editing ? (() => { if (!dragBusyRef.current) setConfigId(g.id); }) : undefined}>
-                <${GaugeTileBody} g=${g} title=${g.label || g.name || (editing ? 'tap to set up' : '—')} value=${lineVals[g.id]} unit=${unit} enums=${enums} />
+                ${/* 'tap to set up' only for truly unconfigured tiles — a
+                    static-text tile is fully configured without a value or
+                    label (its body IS the text, no name row needed) */ ''}
+                <${GaugeTileBody} g=${g} title=${g.label || g.name || (editing && !(g.type === 'text' && g.text && String(g.text).trim()) ? 'tap to set up' : '—')} value=${lineVals[g.id]} unit=${unit} enums=${enums} />
               </div>
             </div>`;
           })}

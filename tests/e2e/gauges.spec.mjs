@@ -169,6 +169,11 @@ test.describe('Gauges grid', () => {
     await expect(page.locator('.gauge-tile-name', { hasText: 'Battery V' })).toBeVisible();
     // Static caption tile needs no value at all
     await expect(page.locator('.gauge-tile', { hasText: 'DRIVE READY' })).toBeVisible();
+    // ...and counts as configured in edit mode: no 'tap to set up' nag and
+    // no name row above the caption
+    await enterEdit(page);
+    await expect(page.locator('.gauge-tile', { hasText: 'DRIVE READY' })).not.toContainText('tap to set up');
+    await expect(page.locator('.gauge-tile', { hasText: 'DRIVE READY' }).locator('.gauge-tile-name')).toHaveCount(0);
   });
 
   test('decimals setting applies to radial dials', async ({ page, mock }) => {
