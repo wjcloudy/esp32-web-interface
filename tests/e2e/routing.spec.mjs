@@ -25,6 +25,13 @@ test.describe('URL breadcrumbs', () => {
     await expect(page.locator('.tablink.active')).toHaveText(/Spot Values/);
   });
 
+  test('#settings/web deep-links to the Web Interface sub-tab', async ({ page, mock }) => {
+    await page.goto(mock.url + '/#settings/web');
+    await expect(page.locator('#version')).toContainText('Web: vMOCK');
+    await expect(page.locator('h3', { hasText: 'Appearance & Display' })).toBeVisible();
+    await expect(page.locator('#settings-subtabs .page-pill.active')).toHaveText('Web Interface');
+  });
+
   test('#gauges/<page name> deep-links to that gauge page (case-insensitive)', async ({ page, mock }) => {
     const layout = { v: 3, pages: [
       { id: 1, name: 'Main', items: [] },

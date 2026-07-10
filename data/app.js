@@ -2386,6 +2386,13 @@ const Settings = () => {
   const [staPW, setStaPW] = useState('');
   const [staIP, setStaIP] = useState('');
   const [wifiMsg, setWifiMsg] = useState('');
+  // Sub-tab (Device & Connection / Web Interface) — deep-linkable as
+  // #settings/device or #settings/web, restored when returning via back
+  const [subTab, setSubTab] = useState(() => (parseHash().sub === 'web' ? 'web' : 'device'));
+  const pickSubTab = (s) => {
+    setSubTab(s);
+    if (/^#settings(\/|$)/.test(location.hash)) history.replaceState(null, '', '#settings/' + s);
+  };
   const [canMode, setCanMode] = useState(false);
   const [canNodeId, setCanNodeId] = useState(1);
   const [canSpeed, setCanSpeed] = useState(2);
@@ -2473,8 +2480,12 @@ const Settings = () => {
     <div id="settings" class="tabdiv main-content" style="display:flex">
       <div class="main-left">
         <h2>Settings</h2>
+        <div id="settings-subtabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:.75rem">
+          <button class="page-pill ${subTab === 'device' ? 'active' : ''}" onclick=${() => pickSubTab('device')}>Device & Connection</button>
+          <button class="page-pill ${subTab === 'web' ? 'active' : ''}" onclick=${() => pickSubTab('web')}>Web Interface</button>
+        </div>
         <div class="settings-grid">
-        <h3 class="settings-section">Device & Connection</h3>
+        ${subTab === 'device' && html`
 
         <div class="dash-box compact">
           <h3>Data Interface</h3>
@@ -2611,7 +2622,8 @@ const Settings = () => {
           ${wifiMsg && html`<p style="color:var(--accent);font-size:.78rem;font-weight:600;margin:.5rem 0 0">${wifiMsg}</p>`}
         </div>
 
-        <h3 class="settings-section">Web Interface</h3>
+        `}
+        ${subTab === 'web' && html`
 
         <div class="dash-box compact">
           <h3>Appearance & Display</h3>
@@ -2666,6 +2678,7 @@ const Settings = () => {
           </div>
         </div>
 
+        `}
         </div>
       </div>
     </div>

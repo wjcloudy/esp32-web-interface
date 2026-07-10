@@ -377,15 +377,14 @@ button:disabled:hover { background: var(--surface); border-color: var(--border2)
 .flex-break { display: none; }
 
 /* ===== SETTINGS ===== */
-/* Boxes flow into responsive columns under full-width section headers, so
-   related settings sit side by side instead of one long scroll */
-.settings-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(380px, 100%), 1fr)); gap: 12px; align-items: start; }
-.settings-grid > .dash-box { margin: 0; }
-.settings-section {
-  grid-column: 1 / -1; margin: .6rem 0 0;
-  font-size: .7rem; font-weight: 700; text-transform: uppercase; letter-spacing: .09em; color: var(--text3);
+/* Boxes pack into responsive newspaper columns under full-width section
+   headers: unlike a row-based grid, short cards don't leave holes — the
+   next card flows straight up beneath them */
+.settings-grid { columns: 2 380px; column-gap: 12px; }
+.settings-grid > .dash-box {
+  margin: 0 0 12px; break-inside: avoid;
+  display: block; /* flex column boxes mis-measure inside CSS columns */
 }
-.settings-section:first-of-type { margin-top: 0; }
 .settings-subhead {
   font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
   color: var(--text3); margin: .6rem 0 .35rem;

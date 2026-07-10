@@ -1,5 +1,10 @@
 import { test, expect, openApp, gotoTab } from './fixtures.mjs';
 
+// Settings is split into two sub-tabs; Device & Connection is the default
+async function gotoWebSubTab(page) {
+  await page.locator('#settings-subtabs .page-pill', { hasText: 'Web Interface' }).click();
+}
+
 test.describe('Settings tab', () => {
   test('UART TX/RX swap posts to /settings and persists in mock state', async ({ page, mock }) => {
     await openApp(page, mock);
@@ -12,11 +17,15 @@ test.describe('Settings tab', () => {
     await expect.poll(async () => (await mock.state()).settings.txrx_swapped).toBe(true);
   });
 
-  test('renamed tiles and keep-awake switch styling', async ({ page, mock }) => {
+  test('sub-tabs split device and web-interface cards', async ({ page, mock }) => {
     await openApp(page, mock);
     await gotoTab(page, 'Settings');
-    await expect(page.locator('h3', { hasText: 'Appearance & Display' })).toBeVisible();
+    // Device & Connection is the default sub-tab
     await expect(page.locator('h3', { hasText: 'Data Interface' })).toBeVisible();
+    await expect(page.locator('h3', { hasText: 'Appearance & Display' })).toHaveCount(0);
+    await gotoWebSubTab(page);
+    await expect(page.locator('h3', { hasText: 'Appearance & Display' })).toBeVisible();
+    await expect(page.locator('h3', { hasText: 'Data Interface' })).toHaveCount(0);
     await expect(page.locator('h3', { hasText: /^Theme$/ })).toHaveCount(0);
     // Keep-awake renders as a full-size switch next to bold text (same pattern
     // as Swap TX/RX Pins), not a ToggleRow
@@ -50,6 +59,7 @@ test.describe('Settings tab', () => {
     // Defaults show battery voltage + inverter temp
     await expect(page.locator('.metric-label', { hasText: 'Battery voltage' })).toBeVisible();
     await gotoTab(page, 'Settings');
+    await gotoWebSubTab(page);
     const selects = page.locator('select[title^="Dashboard value"]');
     await expect(selects).toHaveCount(5);
     await selects.nth(2).selectOption('speed');
@@ -65,6 +75,7 @@ test.describe('Settings tab', () => {
   test('theme and accent persist to the device (uiprefs.json)', async ({ page, mock }) => {
     await openApp(page, mock);
     await gotoTab(page, 'Settings');
+    await gotoWebSubTab(page);
     // Pick a preset accent swatch and switch to dark theme
     await page.locator('.accent-swatches .swatch').nth(1).click();
     await page.locator('select.styled').first().selectOption('dark');
@@ -92,6 +103,7 @@ test.describe('Settings tab', () => {
   test('export settings produces a JSON bundle download', async ({ page, mock }) => {
     await openApp(page, mock);
     await gotoTab(page, 'Settings');
+    await gotoWebSubTab(page);
     const dlPromise = page.waitForEvent('download');
     await page.locator('button', { hasText: 'Export settings' }).click();
     const dl = await dlPromise;
@@ -105,6 +117,7 @@ test.describe('Settings tab', () => {
   test('import settings uploads layout files to the device and reloads', async ({ page, mock }) => {
     await openApp(page, mock);
     await gotoTab(page, 'Settings');
+    await gotoWebSubTab(page);
     page.on('dialog', d => d.accept());
     const bundle = {
       type: 'openinverter-ui-settings',
