@@ -18,7 +18,7 @@ async function savedLayout(mock) {
 }
 
 test.describe('Gauges grid', () => {
-  test('adds a gauge, streams its value, persists a v2 layout with geometry', async ({ page, mock }) => {
+  test('adds a gauge, streams its value, persists a v3 layout with geometry', async ({ page, mock }) => {
     await openApp(page, mock);
     await gotoTab(page, 'Gauges');
     await enterEdit(page);
@@ -26,7 +26,7 @@ test.describe('Gauges grid', () => {
     await page.locator('button', { hasText: 'Save & Done' }).click();
     await expect.poll(async () => (await mock.state()).files).toContain('gauges.json');
     const layout = await savedLayout(mock);
-    expect(layout.v).toBe(2);
+    expect(layout.v).toBe(3);
     expect(layout.pages).toHaveLength(1);
     expect(layout.pages[0].name).toBe('Main');
     const item = layout.pages[0].items[0];
@@ -120,7 +120,7 @@ test.describe('Gauges grid', () => {
     await enterEdit(page);
     await addGauge(page, 'udc');
     // Reopen settings from the tile's gear button
-    await page.locator('.tile-cfg').click();
+    await page.locator('.tile-gear').click();
     const modal = page.locator('.modal-content');
     await expect(modal).toBeVisible();
     await modal.locator('input[type="number"]').nth(1).fill('500'); // max
@@ -136,7 +136,7 @@ test.describe('Gauges grid', () => {
     await gotoTab(page, 'Gauges');
     await enterEdit(page);
     await addGauge(page, 'udc');
-    await page.locator('.tile-cfg').click();
+    await page.locator('.tile-gear').click();
     const modal = page.locator('.modal-content');
     await modal.locator('select').first().selectOption('line');
     // Line-specific history controls appear
@@ -150,12 +150,33 @@ test.describe('Gauges grid', () => {
     }).toEqual({ points: 60, sampleMs: 1000, type: 'line' });
   });
 
+  test('duplicate button clones a tile with its full config', async ({ page, mock }) => {
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await enterEdit(page);
+    await addGauge(page, 'udc');
+    // Give the original a custom range so the copy proves config carries over
+    await page.locator('.tile-gear').click();
+    const modal = page.locator('.modal-content');
+    await modal.locator('input[type="number"]').nth(1).fill('500'); // max
+    await modal.locator('button', { hasText: 'Done' }).click();
+    await page.locator('.tile-dup').click();
+    await expect(page.locator('.grid-stack-item')).toHaveCount(2);
+    await expect(page.locator('.gauge-tile-name', { hasText: 'udc' })).toHaveCount(2);
+    await page.locator('button', { hasText: 'Save & Done' }).click();
+    await expect.poll(async () => (await savedLayout(mock)).pages[0].items.length).toBe(2);
+    const items = (await savedLayout(mock)).pages[0].items;
+    expect(items[1].name).toBe('udc');
+    expect(items[1].max).toBe(500); // config copied
+    expect(items[1].id).not.toBe(items[0].id); // but a distinct tile
+  });
+
   test('removing a gauge from its config modal deletes the tile', async ({ page, mock }) => {
     await openApp(page, mock);
     await gotoTab(page, 'Gauges');
     await enterEdit(page);
     await addGauge(page, 'udc');
-    await page.locator('.tile-cfg').click();
+    await page.locator('.tile-gear').click();
     await page.locator('.modal-content button', { hasText: 'Remove gauge' }).click();
     await expect(page.locator('.grid-stack-item')).toHaveCount(0);
   });
@@ -171,7 +192,7 @@ test.describe('Gauges grid', () => {
     // Indicators are exempt from the 2x2 minimum — the tile renders one cell
     // wide (attribute checks are racy: gridstack strips default w=1 at init)
     const gridBox = await page.locator('.grid-stack').boundingBox();
-    await expect.poll(async () => (await tile.boundingBox()).width).toBeLessThan(gridBox.width / 12 * 1.5);
+    await expect.poll(async () => (await tile.boundingBox()).width).toBeLessThan(gridBox.width / 10 * 1.5);
     const lamp = page.locator('.ind-lamp');
     await expect(lamp).toBeVisible();
     // Switching point is the midpoint of min/max: (1 + 4095) / 2 = 2048
@@ -240,7 +261,7 @@ test.describe('Gauges grid', () => {
     await page.mouse.up();
     // Shrunk to a single cell (attribute checks are racy for default w=1)
     const gridBox = await page.locator('.grid-stack').boundingBox();
-    await expect.poll(async () => (await tile.boundingBox()).width).toBeLessThan(gridBox.width / 12 * 1.5);
+    await expect.poll(async () => (await tile.boundingBox()).width).toBeLessThan(gridBox.width / 10 * 1.5);
     await page.locator('button', { hasText: 'Save & Done' }).click();
     // save() omits default w/h of 1 — our sync normalises them back to 1
     await expect.poll(async () => (await savedLayout(mock)).pages[0].items[0].w).toBe(1);
@@ -289,10 +310,28 @@ test.describe('Gauges grid', () => {
     await expect(page.locator('.page-pill.active')).toHaveText('Main');
     await enterEdit(page);
     await page.locator('button', { hasText: 'Save & Done' }).click();
-    await expect.poll(async () => (await savedLayout(mock)).v).toBe(2);
+    await expect.poll(async () => (await savedLayout(mock)).v).toBe(3);
     const item = (await savedLayout(mock)).pages[0].items[0];
     expect(item.w).toBe(4); // legacy 'lg' size maps to a 4-cell span
     expect(item.max).toBe(500);
+  });
+
+  test('v2 (12-column) layouts rescale onto the 10-column grid', async ({ page, mock }) => {
+    const v2 = { v: 2, pages: [{ id: 1, name: 'Main', items: [
+      { id: 1, name: 'speed', type: 'radial', min: 0, max: 8000, x: 6, y: 0, w: 6, h: 6 },
+    ] }] };
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(v2) });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await expect(page.locator('.gauge-tile-name', { hasText: 'speed' })).toBeVisible();
+    await enterEdit(page);
+    await page.locator('button', { hasText: 'Save & Done' }).click();
+    await expect.poll(async () => (await savedLayout(mock)).v).toBe(3);
+    const item = (await savedLayout(mock)).pages[0].items[0];
+    // 6/12 of the grid stays half the grid: 6 -> 5 of 10 columns, still square
+    expect(item.w).toBe(5);
+    expect(item.h).toBe(5);
+    expect(item.x).toBe(5);
   });
 
   test('editing works at a mobile viewport', async ({ page, mock }) => {

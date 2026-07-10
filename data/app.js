@@ -2842,18 +2842,22 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px }) => 
 
 // ==================== Gauges (grid dashboard) ====================
 // Named pages of freely draggable/resizable tiles on a GridStack grid
-// (vendored, MIT). The column count is fixed at 12 so a layout is one
+// (vendored, MIT). The column count is fixed at 10 so a layout is one
 // coordinate space on every device — it scales rather than reflows, and a
-// page laid out on the desktop looks the same on a phone.
-// gauges.json v2: { v: 2, pages: [{ id, name, items: [{ id, name, type,
-// color, min, max, x, y, w, h }] }] }. v1 ({ items, size }) migrates
-// transparently; the settings export bundle carries the file wholesale.
+// page laid out on the desktop looks the same on a phone. 10 columns (not
+// 12) keeps cells big enough that a phone-width grid stays readable.
+// gauges.json v3: { v: 3, pages: [{ id, name, items: [{ id, name, type,
+// color, min, max, x, y, w, h }] }] }. v2 (same shape, 12-column
+// coordinates) is rescaled; v1 ({ items, size }) migrates transparently;
+// the settings export bundle carries the file wholesale.
 
-const GRID_COLS = 12;
-const V1_SPAN = { xs: 2, sm: 3, md: 3, lg: 4 }; // legacy fixed sizes -> tile span
+const GRID_COLS = 10;
+const V1_SPAN = { xs: 2, sm: 2, md: 3, lg: 4 }; // legacy fixed sizes -> tile span (10-col)
 
 function migrateGauges(data) {
   if (data && Array.isArray(data.pages)) {
+    // v2 layouts were authored on a 12-column grid — rescale to 8 columns
+    const scale = (data.v >= 3) ? 1 : GRID_COLS / 12;
     const pages = data.pages
       .map((p, pi) => ({
         id: p.id || pi + 1,
@@ -2861,9 +2865,12 @@ function migrateGauges(data) {
         items: (Array.isArray(p.items) ? p.items : []).map(g => {
           const type = g.type || 'radial';
           const floor = type === 'indicator' ? 1 : 2; // indicators can be 1x1
-          let w = Math.max(floor, g.w || 3), h = Math.max(floor, g.h || 3);
+          let w = Math.max(floor, Math.round((g.w || 3) * scale));
+          let h = Math.max(floor, Math.round((g.h || 3) * scale));
           if (type !== 'line') w = h = Math.min(w, h); // dials/lamps are square
-          return { type: 'radial', ...g, w, h };
+          let x = Math.round((g.x || 0) * scale), y = Math.round((g.y || 0) * scale);
+          x = Math.max(0, Math.min(x, GRID_COLS - w)); // keep on the grid
+          return { type: 'radial', ...g, x, y, w, h };
         }),
       }));
     return pages.length ? pages : [{ id: 1, name: 'Main', items: [] }];
@@ -2872,7 +2879,7 @@ function migrateGauges(data) {
   const v1 = (data && Array.isArray(data.items)) ? data.items : [];
   const items = v1.map((g, i) => {
     const base = typeof g === 'string' ? { name: g, min: 0, max: 100 } : g;
-    const span = V1_SPAN[base.size || (data && data.size)] || 3;
+    const span = V1_SPAN[base.size || (data && data.size)] || 2;
     const perRow = Math.max(1, Math.floor(GRID_COLS / span));
     const { size, ...rest } = base;
     return {
@@ -2989,7 +2996,7 @@ const Gauges = () => {
 
   const persist = async (nextPages) => {
     try {
-      const blob = new Blob([JSON.stringify({ v: 2, pages: nextPages })], { type: 'application/json' });
+      const blob = new Blob([JSON.stringify({ v: 3, pages: nextPages })], { type: 'application/json' });
       const fd = new FormData();
       fd.append('updatefile', blob, 'gauges.json');
       await fetch('/edit', { method: 'POST', body: fd });
@@ -3088,6 +3095,17 @@ const Gauges = () => {
   const removeGauge = (id) => {
     if (configId === id) setConfigId(null);
     setPageItems(activePage, prev => prev.filter(g => g.id !== id));
+  };
+
+  // Copy a gauge's full config (value, type, colour, range, size) into a new
+  // tile appended below the current content
+  const duplicateGauge = (id) => {
+    setPageItems(activePage, prev => {
+      const src = prev.find(g => g.id === id);
+      if (!src) return prev;
+      const y = prev.reduce((m, g) => Math.max(m, (g.y || 0) + (g.h || 3)), 0);
+      return [...prev, { ...src, id: nextId.current++, x: 0, y }];
+    });
   };
 
   const updateGaugeConfig = (id, field, value) =>
@@ -3197,7 +3215,10 @@ const Gauges = () => {
             return html`
             <div class="grid-stack-item" key=${g.id} gs-id=${g.id} gs-x=${g.x} gs-y=${g.y} gs-w=${g.w} gs-h=${g.h}>
               <div class="grid-stack-item-content gauge-tile" title=${g.name || ''}>
-                ${editing && html`<button class="tile-cfg" title="Configure gauge" onclick=${() => setConfigId(g.id)}>⚙</button>`}
+                ${editing && html`
+                  <button class="tile-cfg tile-gear" title="Configure gauge" onclick=${() => setConfigId(g.id)}>⚙</button>
+                  <button class="tile-cfg tile-dup" title="Duplicate gauge" onclick=${() => duplicateGauge(g.id)}>⧉</button>
+                `}
                 <${GaugeTileBody} g=${g} title=${g.name || (editing ? 'tap ⚙' : '—')} value=${lineVals[g.id]} unit=${unit} enums=${enums} />
               </div>
             </div>`;

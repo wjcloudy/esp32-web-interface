@@ -674,3 +674,4 @@ td { font-variant-numeric: tabular-nums; }
   background: var(--surface); color: var(--text2); cursor: pointer;
 }
 .tile-cfg:hover { color: var(--accent); border-color: var(--accent); }
+.tile-dup { right: 36px; }
