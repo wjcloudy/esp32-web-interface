@@ -1071,9 +1071,14 @@ static void handleCommand() {
 
   if (!fastUart && fastUartAvailable)
   {
-    // Only switch baud if the inverter confirms — blindly switching against
-    // firmware without fastuart support leaves the link at mismatched baud
-    // permanently (every reply garbage until a manual reset)
+    // Negotiate carefully: firmware that supports fastuart switches to
+    // 921600 unconditionally after receiving the command (some, e.g.
+    // ZombieVerter, print the OK only after switching, so it may never be
+    // readable at 115200). Blindly switching (old behaviour) garbled the
+    // link against firmware WITHOUT fastuart; blindly staying put desyncs
+    // against firmware WITH it. So: check for OK at 115200, and if absent
+    // probe at 921600 — fastuart is idempotent and re-replies OK when the
+    // inverter is already fast. No OK at either baud = unsupported/absent.
     sendCommand("fastuart");
     if (uart_readStartsWith("OK"))
     {
@@ -1082,7 +1087,17 @@ static void handleCommand() {
     }
     else
     {
-      fastUartAvailable = false; // unsupported — stop asking, stay at 115200
+      uart_set_baudrate(INVERTER_PORT, 921600);
+      sendCommand("fastuart");
+      if (uart_readStartsWith("OK"))
+      {
+        fastUart = true;
+      }
+      else
+      {
+        uart_set_baudrate(INVERTER_PORT, 115200);
+        fastUartAvailable = false; // stop asking until reboot/reset
+      }
     }
   }
 
