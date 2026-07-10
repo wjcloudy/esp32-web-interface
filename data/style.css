@@ -389,6 +389,17 @@ button:disabled:hover { background: var(--surface); border-color: var(--border2)
   font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
   color: var(--text3); margin: .6rem 0 .35rem;
 }
+/* navbar update-available badge */
+.update-badge {
+  display: flex; align-items: center; gap: 2px; margin: 6px 8px 0;
+  padding: 2px 4px 2px 10px; border-radius: 12px;
+  background: var(--accent-glow); border: 1px solid var(--accent);
+  color: var(--accent); font-size: .66rem; font-weight: 700; letter-spacing: .02em;
+}
+.update-badge span { cursor: pointer; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.update-badge button { border: none; background: none; box-shadow: none; color: var(--accent); font-size: .8rem; padding: 0 4px; }
+.update-badge button:hover { background: none; border: none; transform: none; }
+
 /* segmented picker (UART | CAN Bus) */
 .seg { display: inline-flex; border: 1px solid var(--border2); border-radius: var(--radius-xs); overflow: hidden; }
 .seg button { border: none; border-radius: 0; background: var(--surface); font-size: .75rem; padding: 5px 14px; color: var(--text2); }

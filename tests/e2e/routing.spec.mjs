@@ -4,7 +4,7 @@ import { test, expect, openApp, gotoTab } from './fixtures.mjs';
 test.describe('URL breadcrumbs', () => {
   test('opening #parameters lands on the Parameters tab', async ({ page, mock }) => {
     await page.goto(mock.url + '/#parameters');
-    await expect(page.locator('#version')).toContainText('Web: vMOCK');
+    await expect(page.locator('#version')).toContainText('Web: v0.1-mock');
     await expect(page.locator('.tablink.active')).toHaveText(/Parameters/);
     await expect(page.locator('#params')).toBeVisible();
   });
@@ -27,7 +27,7 @@ test.describe('URL breadcrumbs', () => {
 
   test('#settings/web deep-links to the Web Interface sub-tab', async ({ page, mock }) => {
     await page.goto(mock.url + '/#settings/web');
-    await expect(page.locator('#version')).toContainText('Web: vMOCK');
+    await expect(page.locator('#version')).toContainText('Web: v0.1-mock');
     await expect(page.locator('h3', { hasText: 'Appearance & Display' })).toBeVisible();
     await expect(page.locator('#settings-subtabs .page-pill.active')).toHaveText('Web Interface');
   });

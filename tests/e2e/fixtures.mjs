@@ -30,6 +30,11 @@ export const test = base.extend({
         });
       } catch (e) {}
     });
+    // No test traffic ever reaches the real GitHub API (the app's daily
+    // update check runs on load): abort by default — it must fail silently.
+    // Tests that exercise the check register their own fulfilling route,
+    // which wins because later-registered routes take precedence.
+    await page.route('https://api.github.com/**', route => route.abort());
     const errors = [];
     page.on('pageerror', e => errors.push(String(e)));
     await use(page);
@@ -44,7 +49,7 @@ export async function openApp(page, mock) {
   await page.goto(mock.url);
   await expect(page.locator('.tablink', { hasText: 'Dashboard' })).toBeVisible();
   // App is live once the json poll has populated the store (navbar shows F/W version)
-  await expect(page.locator('#version')).toContainText('Web: vMOCK');
+  await expect(page.locator('#version')).toContainText('Web: v0.1-mock');
 }
 
 export async function gotoTab(page, label) {

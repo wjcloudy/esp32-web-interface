@@ -232,8 +232,8 @@ export function createMockEsp({ port = 0 } = {}) {
         return json(settings);
       }
       if (p === '/wifi') return text('<h2>WiFi Settings</h2><form id="mock-wifi"><input name="ssid" value="mocknet" /></form>', 'text/html');
-      if (p === '/version') return text('vMOCK');
-      if (p === '/otainfo') return json({ version: 'vMOCK', repo: 'https://github.com/wjcloudy/esp32-web-interface', target: 'esp32_wemos' });
+      if (p === '/version') return text('v0.1-mock');
+      if (p === '/otainfo') return json({ version: 'v0.1-mock', repo: 'https://github.com/wjcloudy/esp32-web-interface', target: 'esp32_wemos' });
       if (p === '/fwupdate-status') return json(fwStatus);
       if (p === '/fwupdate') {
         const step = parseInt(url.searchParams.get('step'));

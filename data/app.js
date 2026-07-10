@@ -223,6 +223,7 @@ const initialState = {
   canActiveNodeId: 1,
   canConnected: false,
   webVersion: '',
+  updateTag: null, // newest GitHub release tag, when newer than webVersion
   history: {}, // recent numeric samples for dashboard sparklines
 };
 
@@ -346,6 +347,8 @@ function reducer(state, action) {
                canConnected: state.canMode ? (fc < 2 && state.canConnected) : false };
     case 'SET_ACTIVE_TAB':
       return { ...state, activeTab: action.payload };
+    case 'SET_UPDATE_TAG':
+      return { ...state, updateTag: action.payload };
     case 'SET_FILE_LIST':
       return { ...state, fileList: action.payload };
     case 'SET_ALL_CATEGORIES': {
@@ -559,6 +562,19 @@ const Navbar = () => {
       <div id="version">
         ${state.firmwareVersion && html`F/W: ${state.firmwareVersion}<br/>`}Web: ${state.webVersion || '—'}
       </div>
+      ${(() => {
+        // Badge only when BOTH versions parse and the release is truly newer —
+        // a dev build ahead of the latest release stays quiet
+        const latest = parseVer(state.updateTag), cur = parseVer(state.webVersion);
+        return latest && cur && verNewer(latest, cur) && html`
+          <div id="update-badge" class="update-badge" title="A newer web interface release is available on GitHub — open the Update tab">
+            <span onclick=${() => dispatch({ type: 'SET_ACTIVE_TAB', payload: 'update' })}>▲ ${state.updateTag} available</span>
+            <button title="Hide for this version" onclick=${() => {
+              try { localStorage.setItem('updateDismissedTag', state.updateTag); } catch (e) {}
+              dispatch({ type: 'SET_UPDATE_TAG', payload: null });
+            }}>×</button>
+          </div>`;
+      })()}
       <div class="control" style="flex-direction:column;align-items:flex-start;gap:2px">
         <span style="font-size:.65rem;text-transform:uppercase;letter-spacing:.05em">Refresh</span>
         <select value=${state.refreshRate} onchange=${e => dispatch({ type: 'SET_REFRESH_RATE', payload: parseInt(e.target.value) })} style="width:100%;font-size:.7rem;padding:4px 6px">
@@ -1217,6 +1233,22 @@ const Update = () => {
   const fileRef = useRef(null);
   const webFileRef = useRef(null);
   const espOtaRef = useRef(null);
+  // Daily new-release check: master switch + manual bypass of its cache
+  const [autoChk, setAutoChk] = useState(getUpdateCheckAuto);
+  const [chkMsg, setChkMsg] = useState('');
+  const checkNow = async () => {
+    setChkMsg('Checking GitHub…');
+    const tag = await checkLatestRelease(true);
+    if (!tag) { setChkMsg('Could not reach GitHub (offline, blocked or rate-limited).'); return; }
+    const cur = parseVer(state.webVersion), latest = parseVer(tag);
+    if (cur && latest && verNewer(latest, cur)) {
+      setChkMsg('Newer release available: ' + tag + ' — install it below.');
+      try { localStorage.removeItem('updateDismissedTag'); } catch (e) {}
+      dispatch({ type: 'SET_UPDATE_TAG', payload: tag });
+    } else {
+      setChkMsg('Up to date — ' + tag + ' is the latest release.');
+    }
+  };
 
   // Default the GitHub URL to the repo this firmware was built from.
   useEffect(() => {
@@ -1529,6 +1561,11 @@ const Update = () => {
           <input id="updatefile" name="updatefile" type="file" ref=${webFileRef} hidden onchange=${uploadWebFile} />
           <label class="butt" for="updatefile"><${Icon} n="upload" />Upload single file</label>
         </form>
+        <h3 class="underline">Update Check</h3>
+        <${ToggleRow} label="Check GitHub daily for new versions" checked=${autoChk}
+          onChange=${v => { setAutoChk(v); setUpdateCheckAuto(v); }} />
+        <button onclick=${checkNow}><${Icon} n="refresh" />Check for updates now</button>
+        ${chkMsg && html`<p style="font-size:.78rem;margin:.25rem 0 0">${chkMsg}</p>`}
         ${updating && html`
           <div id="progress" class="graph">
             <div id="upload-firmware-bar" style=${{ width: progress + '%' }}></div>
@@ -2283,6 +2320,9 @@ fetch('/uiprefs.json').then(r => r.ok ? r.json() : null).then(p => {
       else localStorage.removeItem('dashMetrics');
     } catch (e) {}
   }
+  if (typeof p.updateCheck === 'boolean') {
+    try { localStorage.setItem('updateCheckAuto', p.updateCheck ? '1' : '0'); } catch (e) {}
+  }
 }).catch(() => {});
 
 // Debounced (the colour picker fires per mouse-move) write-back to the ESP
@@ -2290,11 +2330,67 @@ let _uiPrefsTimer;
 function saveUiPrefsToDevice() {
   clearTimeout(_uiPrefsTimer);
   _uiPrefsTimer = setTimeout(() => {
-    const blob = new Blob([JSON.stringify({ theme: getTheme(), accentColor: getAccent() || '', dashMetrics: getDashMetrics() })], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify({ theme: getTheme(), accentColor: getAccent() || '', dashMetrics: getDashMetrics(), updateCheck: getUpdateCheckAuto() })], { type: 'application/json' });
     const fd = new FormData();
     fd.append('updatefile', blob, 'uiprefs.json');
     fetch('/edit', { method: 'POST', body: fd }).catch(() => {});
   }, 600);
+}
+
+// ==================== Update availability check ====================
+// Browser-side, once-a-day check of the GitHub Releases API for a newer web
+// interface release (the ESP itself often has no internet in AP mode; the
+// phone/laptop viewing the page usually does, and api.github.com sends
+// CORS *). The repo comes from /otainfo, so forks check their own releases.
+//
+// The API response is UNTRUSTED input: only tag_name is used, and only when
+// it is strictly version-shaped — anything else is discarded before it can
+// reach storage or the DOM (which only ever renders it as escaped text).
+// Every failure path (offline, rate-limited, blocked, bad JSON) is silent.
+
+const VERSION_TAG_RE = /^v\d+\.\d+(\.\d+)?$/;
+function parseVer(s) {
+  const m = /^v(\d+)\.(\d+)(?:\.(\d+))?/.exec(String(s || '').trim());
+  return m ? [+m[1], +m[2], +(m[3] || 0)] : null;
+}
+function verNewer(a, b) { // a > b, component-wise
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] > b[i];
+  return false;
+}
+function getUpdateCheckAuto() { try { return localStorage.getItem('updateCheckAuto') !== '0'; } catch (e) { return true; } }
+function setUpdateCheckAuto(on) {
+  try { localStorage.setItem('updateCheckAuto', on ? '1' : '0'); } catch (e) {}
+  saveUiPrefsToDevice();
+}
+
+async function checkLatestRelease(force) {
+  const now = Date.now();
+  let cache = null;
+  try { cache = JSON.parse(localStorage.getItem('updateCheck') || 'null'); } catch (e) {}
+  // Successful checks hold for a day; failures back off an hour, so a flaky
+  // connection can't turn every page load into an API request
+  if (!force && cache && typeof cache.checkedAt === 'number' &&
+      now - cache.checkedAt < (cache.ok ? 24 * 3600e3 : 3600e3)) {
+    return (cache.ok && VERSION_TAG_RE.test(cache.tag || '')) ? cache.tag : null;
+  }
+  let tag = null, ok = false;
+  try {
+    const info = await api.getOtaInfo();
+    const m = /^https:\/\/github\.com\/([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/.exec(info.repo || '');
+    if (m) {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 5000);
+      const r = await fetch('https://api.github.com/repos/' + m[1] + '/' + m[2] + '/releases/latest',
+        { signal: ctrl.signal, headers: { Accept: 'application/vnd.github+json' } });
+      clearTimeout(t);
+      if (r.ok) {
+        const j = await r.json();
+        if (j && VERSION_TAG_RE.test(j.tag_name || '')) { tag = j.tag_name; ok = true; }
+      }
+    }
+  } catch (e) { /* offline / CORS / rate-limited — stay silent */ }
+  try { localStorage.setItem('updateCheck', JSON.stringify({ tag, ok, checkedAt: now })); } catch (e) {}
+  return tag;
 }
 
 // Keep-awake: stop the screen sleeping while the interface is open. Uses the
@@ -3617,6 +3713,18 @@ const App = () => {
       dispatch({ type: 'SET_CAN_CONFIG', payload: { canMode: mode, canNodeId: nodeId } });
       if (mode) dispatch({ type: 'SET_CAN_NODE', payload: nodeId });
       if (data.can_nodes) dispatch({ type: 'SET_CAN_NODES', payload: data.can_nodes });
+    }).catch(() => {});
+  }, []);
+
+  // Once-a-day new-release check (disableable on the Update tab). Silent on
+  // every failure; a per-version dismiss suppresses the badge until the next
+  // release comes out.
+  useEffect(() => {
+    if (!getUpdateCheckAuto()) return;
+    checkLatestRelease(false).then(tag => {
+      let dismissed = null;
+      try { dismissed = localStorage.getItem('updateDismissedTag'); } catch (e) {}
+      if (tag && tag !== dismissed) dispatch({ type: 'SET_UPDATE_TAG', payload: tag });
     }).catch(() => {});
   }, []);
 

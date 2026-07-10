@@ -532,7 +532,7 @@ test.describe('Gauges grid', () => {
     await expect(page.locator('.page-pill.active')).toHaveText('Main');
     // The saved off state survives a reload
     await page.reload();
-    await expect(page.locator('#version')).toContainText('Web: vMOCK');
+    await expect(page.locator('#version')).toContainText('Web: v0.1-mock');
     await page.waitForTimeout(700);
     await expect(page.locator('.page-pill.active')).toHaveText('Main');
   });
