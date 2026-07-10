@@ -88,6 +88,7 @@ bool fastUart = false;
 bool fastUartAvailable = true;
 uint8_t fastUartAttempts = 0; // negotiation storms per boot are bounded — wrong-baud bytes can upset some inverter consoles
 bool txrxSwapped = true; // default: swapped for Wemos/OI/Zombie boards
+bool apFallback = false; // true = AP broadcasts only while the station link is down
 bool canMode = false; // true = CAN bus mode, false = UART mode
 int canNodeId = CAN_NODE_ID_MIN;
 int canSpeed = 2; // 0=125k, 1=250k, 2=500k
@@ -2007,8 +2008,9 @@ static void saveSettings(const String& canNodesJson)
 {
   File f = SPIFFS.open("/settings.json", "w");
   if (f) {
-    f.printf("{\"txrx_swapped\":%s,\"can_mode\":%s,\"can_node_id\":%d,\"can_speed\":%d,\"can_rx_pin\":%d,\"can_tx_pin\":%d,\"can_nodes\":%s}",
+    f.printf("{\"txrx_swapped\":%s,\"ap_fallback\":%s,\"can_mode\":%s,\"can_node_id\":%d,\"can_speed\":%d,\"can_rx_pin\":%d,\"can_tx_pin\":%d,\"can_nodes\":%s}",
              txrxSwapped ? "true" : "false",
+             apFallback ? "true" : "false",
              canMode ? "true" : "false",
              canNodeId, canSpeed, canRxPin, canTxPin,
              canNodesJson.c_str());
@@ -2027,6 +2029,8 @@ static void loadSettings()
       String json = f.readString();
       f.close();
       txrxSwapped = json.indexOf("\"txrx_swapped\":false") < 0;
+
+      apFallback = json.indexOf("\"ap_fallback\":true") >= 0;
 
       canMode = json.indexOf("\"can_mode\":true") >= 0;
 
@@ -2068,6 +2072,15 @@ static void handleSettings()
     saveSettings();
     initUART(true);
     server.send(200, "text/json", "{\"result\":\"ok\"}");
+  } else if (server.hasArg("ap_fallback")) {
+    apFallback = (server.arg("ap_fallback") == "1");
+    saveSettings();
+    // Turning the fallback OFF restores the always-on AP right away; turning
+    // it ON is applied by the periodic mode check in loop(), which never
+    // drops the AP while someone is connected through it
+    if (!apFallback && WiFi.getMode() != WIFI_AP_STA && WiFi.getMode() != WIFI_AP)
+      WiFi.mode(WIFI_AP_STA);
+    server.send(200, "text/json", "{\"result\":\"ok\"}");
   } else if (server.hasArg("can_mode")) {
     if (canFwBusy()) { server.send(409, "text/json", "{\"error\":\"CAN firmware update in progress\"}"); return; }
     canMode = (server.arg("can_mode") == "1");
@@ -2103,6 +2116,8 @@ static void handleSettings()
   } else {
     String json = "{\"txrx_swapped\":";
     json += txrxSwapped ? "true" : "false";
+    json += ",\"ap_fallback\":";
+    json += apFallback ? "true" : "false";
     json += ",\"can_mode\":";
     json += canMode ? "true" : "false";
     json += ",\"can_node_id\":";
@@ -2136,8 +2151,61 @@ static void handleSettings()
 void staCheck(){
   sta_tick.detach();
   if(!(uint32_t)WiFi.localIP()){
-    WiFi.mode(WIFI_AP); //disable station mode
+    // Station didn't come up. Normally stop station scanning (it degrades the
+    // AP); in AP-fallback mode broadcast the AP but KEEP the station retrying,
+    // so the AP can stand down again once the network comes back.
+    WiFi.mode(apFallback ? WIFI_AP_STA : WIFI_AP);
   }
+}
+
+// AP-as-fallback: with the toggle on, the access point broadcasts only while
+// the station link is down. Runs from loop() every few seconds. Never drops
+// the AP while a client is connected through it — flipping modes would kick
+// them mid-session (possibly the very browser that enabled the setting).
+static void wifiModeTick()
+{
+  if (!apFallback) return;
+  bool staUp = (WiFi.status() == WL_CONNECTED);
+  wifi_mode_t m = WiFi.getMode();
+  if (staUp && m != WIFI_STA && WiFi.softAPgetStationNum() == 0)
+    WiFi.mode(WIFI_STA);
+  else if (!staUp && m != WIFI_AP_STA)
+    WiFi.mode(WIFI_AP_STA);
+}
+
+// Live WiFi state for the settings page: station link, signal strength, AP
+// state. SSIDs are attacker-ish input (any nearby network name) — escape
+// them before embedding in JSON.
+static String jsonEscape(const String& s)
+{
+  String out;
+  out.reserve(s.length() + 4);
+  for (size_t i = 0; i < s.length(); i++) {
+    char c = s[i];
+    if (c == '"' || c == '\\') { out += '\\'; out += c; }
+    else if ((uint8_t)c >= 0x20) out += c;
+  }
+  return out;
+}
+
+static void handleWifiStatus()
+{
+  bool staUp = (WiFi.status() == WL_CONNECTED);
+  wifi_mode_t m = WiFi.getMode();
+  String json = "{\"sta_connected\":";
+  json += staUp ? "true" : "false";
+  json += ",\"rssi\":";
+  json += staUp ? WiFi.RSSI() : 0;
+  json += ",\"ssid\":\"" + jsonEscape(WiFi.SSID()) + "\"";
+  json += ",\"ip\":\"" + (staUp ? WiFi.localIP().toString() : String("")) + "\"";
+  json += ",\"ap_active\":";
+  json += (m == WIFI_AP || m == WIFI_AP_STA) ? "true" : "false";
+  json += ",\"ap_clients\":";
+  json += WiFi.softAPgetStationNum();
+  json += ",\"ap_fallback\":";
+  json += apFallback ? "true" : "false";
+  json += "}";
+  server.send(200, "text/json", json);
 }
 
 void setup(void){
@@ -2223,7 +2291,9 @@ void setup(void){
   #ifdef WIFI_IS_OFF_AT_BOOT
     enableWiFiAtBootTime();
   #endif
-  WiFi.mode(WIFI_AP_STA);
+  // AP-fallback boots station-only: the AP appears (via staCheck) only if the
+  // station can't connect within its grace period
+  WiFi.mode(apFallback ? WIFI_STA : WIFI_AP_STA);
   //WiFi.setPhyMode(WIFI_PHY_MODE_11B);
   WiFi.setSleep(false);
   WiFi.setTxPower(WIFI_POWER_19_5dBm);//25); //dbm
@@ -2282,6 +2352,7 @@ void setup(void){
   });
 
   server.on("/wifi", handleWifi);
+  server.on("/wifi-status", HTTP_GET, handleWifiStatus);
   server.on("/cmd", handleCommand);
   server.on("/fwupdate", handleUpdate);
   server.on("/can-fwupdate", handleCanFwUpdate);
@@ -2570,6 +2641,14 @@ void loop(void){
   // note: ArduinoOTA.handle() calls MDNS.update();
   server.handleClient();
   ArduinoOTA.handle();
+
+  // AP-fallback mode transitions (drop the AP once the station is up, bring
+  // it back if the station falls over) — checked every 15 s
+  static uint32_t lastWifiModeCheck = 0;
+  if (apFallback && millis() - lastWifiModeCheck > 15000) {
+    lastWifiModeCheck = millis();
+    wifiModeTick();
+  }
 
   // Pump CAN RX while idle so virtual spot values keep updating between
   // HTTP requests (frames pass through the RX hook). Never during a

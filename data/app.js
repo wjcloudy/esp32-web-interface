@@ -473,6 +473,16 @@ const Icon = ({ n, size = 13 }) => html`<span class="btn-ic" dangerouslySetInner
   __html: '<svg width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + (ICONS[n] || '') + '</svg>'
 }}></span>`;
 
+// Station signal strength as bars + dBm (usual WiFi quality bands)
+const WifiSignal = ({ rssi }) => {
+  const level = rssi >= -55 ? 4 : rssi >= -65 ? 3 : rssi >= -75 ? 2 : 1;
+  const label = ['Weak', 'Fair', 'Good', 'Excellent'][level - 1];
+  return html`<span id="wifi-signal" class="wifi-bars" title=${rssi + ' dBm'}>
+    ${[1, 2, 3, 4].map(i => html`<i key=${i} class=${i <= level ? 'on' : ''} style=${'height:' + (3 + i * 3) + 'px'}></i>`)}
+    <span class="wifi-dbm">${rssi} dBm · ${label}</span>
+  </span>`;
+};
+
 // Labeled switch row for action panels
 const ToggleRow = ({ label, checked, onChange, disabled }) => html`
   <label class="toggle-row ${disabled ? 'disabled' : ''}">
@@ -1518,7 +1528,7 @@ const Update = () => {
   return html`
     <div id="update" class="tabdiv main-content" style="display:flex">
       <div class="main-right">
-        <h3 class="underline">Firmware</h3>
+        <h3 class="underline">Inverter/VCU Firmware</h3>
         <form id="upload-firmware-form" enctype="multipart/form-data">
           <input id="update-firmware-file" name="update-firmware-file" type="file" accept=".bin" ref=${fileRef} hidden onchange=${installFirmware} />
           <label class="butt" for="update-firmware-file"><${Icon} n="upload" />Install firmware from file</label>
@@ -1578,15 +1588,15 @@ const Update = () => {
         <h2>Update</h2>
         <p>On this page you can apply software updates to your OpenInverter system.</p>
         <div class="dash-box compact" style="margin-bottom:1rem">
-          <h3>OpenInverter Board Firmware</h3>
-          <p>Use <b>Install firmware from file</b> to flash stm32_sine.bin or stm32_foc.bin from your computer.</p>
-          <p>Use <b>Load OTA releases</b> to fetch and install firmware directly from GitHub.</p>
+          <h3>Inverter / VCU Firmware</h3>
+          <p>Updates the firmware on the <b>inverter or VCU board itself</b> (stm32_sine, stm32_foc, ZombieVerter…) — not this web interface.</p>
+          <p>Use <b>Install firmware from file</b> to flash a .bin from your computer, or <b>Load OTA releases</b> to fetch official stm32-sine releases from GitHub.</p>
           <p style="font-size:.8rem;color:var(--text3);margin:0">${state.canMode ? 'Updates are sent over the CAN bus — the device needs the CAN-capable bootloader.' : 'Updates are sent over the serial connection to the inverter.'}</p>
         </div>
         <div class="dash-box compact">
           <h3>Web Interface</h3>
-          <p>Update the web interface over the air from the combined <code>*-ota.bin</code> image, which carries the ESP32 firmware and the UI together so they can't drift out of sync.</p>
-          <p><b>Get releases</b> lists releases from the GitHub repo above (pre-filled with the repo this build came from). Choose a release; the image for your board is selected by default. Then <b>Download & install</b>, or use <b>Install OTA image from file</b> to flash one you built locally.</p>
+          <p>Updates <b>this ESP32 module</b> — the combined <code>*-ota.bin</code> image carries the ESP32 firmware and the web pages together so they can't drift out of sync.</p>
+          <p>A daily check flags newer releases with a badge in the sidebar (toggle it off with <b>Daily update check</b>). When one is available its release list loads automatically; otherwise <b>Get releases</b> lists them from the GitHub repo above (pre-filled with the repo this build came from). The image for your board is selected by default — then <b>Download & install</b>, or use <b>Install OTA image from file</b> to flash one you built locally.</p>
           <p>Use <b>Upload single file</b> for individual file tweaks.</p>
           <p><b>Updating erases your saved settings and favourites</b> — the whole filesystem is replaced. Use <b>Export settings (backup)</b> first, then restore them from Settings afterwards.</p>
           <p style="font-size:.8rem;color:var(--text3);margin:0">The bootloader and partition table aren't touched, so a bad image stays recoverable over USB. The web interface reboots and the page reloads when done.</p>
@@ -2482,6 +2492,19 @@ const Settings = () => {
   const [staPW, setStaPW] = useState('');
   const [staIP, setStaIP] = useState('');
   const [wifiMsg, setWifiMsg] = useState('');
+  const [wifiStatus, setWifiStatus] = useState(null); // live /wifi-status (rssi etc.)
+  const [apFb, setApFb] = useState(false); // AP broadcasts only as fallback
+
+  // Live link state for the WiFi card — refreshed while Settings is open so
+  // the signal reading tracks antenna position/moving the device around
+  useEffect(() => {
+    let alive = true;
+    const load = () => fetch('/wifi-status').then(r => r.ok ? r.json() : null)
+      .then(s => { if (alive && s) setWifiStatus(s); }).catch(() => {});
+    load();
+    const t = setInterval(load, 5000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
   // Sub-tab (Device & Connection / Web Interface) — deep-linkable as
   // #settings/device or #settings/web, restored when returning via back
   const [subTab, setSubTab] = useState(() => (parseHash().sub === 'web' ? 'web' : 'device'));
@@ -2506,6 +2529,7 @@ const Settings = () => {
         if (r.ok) {
           const data = await r.json();
           setTxrxSwapped(data.txrx_swapped !== false);
+          setApFb(data.ap_fallback === true);
           setCanMode(data.can_mode === true);
           if (data.can_node_id) setCanNodeId(data.can_node_id);
           if (data.can_speed !== undefined) setCanSpeed(data.can_speed);
@@ -2702,7 +2726,14 @@ const Settings = () => {
 
         <div class="dash-box compact">
           <h3>WiFi</h3>
-          <p style="color:var(--text2);font-size:.8rem;margin:0 0 .5rem">${staIP ? 'Current IP: ' + staIP : 'Access point and network settings.'}</p>
+          ${wifiStatus && wifiStatus.sta_connected ? html`
+            <p style="color:var(--text2);font-size:.8rem;margin:0 0 .5rem;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+              <span>Connected to <b>${wifiStatus.ssid}</b>${wifiStatus.ip ? ' — ' + wifiStatus.ip : ''}</span>
+              <${WifiSignal} rssi=${wifiStatus.rssi} />
+            </p>
+          ` : html`
+            <p style="color:var(--text2);font-size:.8rem;margin:0 0 .5rem">${staIP ? 'Current IP: ' + staIP : 'Access point and network settings.'}</p>
+          `}
           ${/* data-lpignore/data-1p-ignore: these are device-config fields,
               not login credentials — password-manager overlays also render
               in the wrong place inside this CSS multi-column layout
@@ -2720,6 +2751,14 @@ const Settings = () => {
             <button onclick=${() => saveWiFi('sta')} style="align-self:flex-start;font-size:.75rem;padding:4px 12px"><${Icon} n="save" />Save station settings</button>
           </div>
           ${wifiMsg && html`<p style="color:var(--accent);font-size:.78rem;font-weight:600;margin:.5rem 0 0">${wifiMsg}</p>`}
+          <p class="settings-subhead">Access Point Fallback</p>
+          <${ToggleRow} label="Access point only as fallback" checked=${apFb}
+            onChange=${v => { setApFb(v); fetch('/settings?ap_fallback=' + (v ? '1' : '0'), { method: 'POST' }).catch(() => {}); }} />
+          <p style="font-size:.72rem;color:var(--text3);margin:.35rem 0 0">
+            Stops the access point broadcasting while the station connection is up, and brings it
+            back automatically if that connection drops. Anyone already connected through the AP
+            is never kicked. ${wifiStatus && html`<b>AP is ${wifiStatus.ap_active ? 'broadcasting' + (wifiStatus.ap_clients ? ' (' + wifiStatus.ap_clients + ' client' + (wifiStatus.ap_clients > 1 ? 's' : '') + ')' : '') : 'off — fallback armed'}.</b>`}
+          </p>
         </div>
 
         `}

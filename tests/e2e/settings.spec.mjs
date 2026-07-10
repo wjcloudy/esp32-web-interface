@@ -54,6 +54,19 @@ test.describe('Settings tab', () => {
     await expect(scan).toBeDisabled();
   });
 
+  test('WiFi card shows station signal strength and the AP-fallback toggle posts', async ({ page, mock }) => {
+    await openApp(page, mock);
+    await gotoTab(page, 'Settings');
+    // Live link state from /wifi-status: SSID, IP and signal bars
+    await expect(page.locator('#settings')).toContainText('Connected to');
+    await expect(page.locator('#settings')).toContainText('mocknet');
+    await expect(page.locator('#wifi-signal')).toContainText('-58 dBm · Good');
+    await expect(page.locator('#wifi-signal i.on')).toHaveCount(3); // -58 = 3 of 4 bars
+    // The fallback toggle persists to the device
+    await page.locator('.toggle-row', { hasText: 'Access point only as fallback' }).locator('.slider').click();
+    await expect.poll(async () => (await mock.state()).settings.ap_fallback).toBe(true);
+  });
+
   test('dashboard hero metrics are configurable (up to 5)', async ({ page, mock }) => {
     await openApp(page, mock);
     // Defaults show battery voltage + inverter temp

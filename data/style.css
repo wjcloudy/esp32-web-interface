@@ -389,6 +389,12 @@ button:disabled:hover { background: var(--surface); border-color: var(--border2)
   font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
   color: var(--text3); margin: .6rem 0 .35rem;
 }
+/* wifi signal bars */
+.wifi-bars { display: inline-flex; align-items: flex-end; gap: 1.5px; line-height: 1; }
+.wifi-bars i { display: inline-block; width: 3px; border-radius: 1px; background: var(--border2); }
+.wifi-bars i.on { background: var(--green); }
+.wifi-bars .wifi-dbm { font-size: .7rem; color: var(--text3); margin-left: 5px; align-self: center; }
+
 /* navbar update-available badge */
 .update-badge {
   display: flex; align-items: center; gap: 2px; margin: 6px 8px 0;
