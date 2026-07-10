@@ -3195,17 +3195,23 @@ const GaugeTileBody = ({ g, title, value, unit, enums }) => {
   // Small tiles (1x1, or 2x2 on a phone) drop the name row so the gauge
   // itself always gets the space — the tile's title attribute still names it.
   // Unnamed tiles (static text captions) don't render the placeholder dash.
-  const showName = h >= 48 && title !== '—';
+  // Indicators keep their title down to ~26px (phone 1x1): the lamp is small
+  // enough that a compact name row still fits above it. Other types need the
+  // space for the gauge itself, so they drop the name below 48px.
+  const compactName = g.type === 'indicator' && h < 48 && h >= 26;
+  const showName = title !== '—' && (h >= 48 || compactName);
   // 12px floor: on small tiles a cramped line box let title ascenders sit
   // right on the gauge below (worst on indicator lamps, whose glow reaches up)
-  const nameH = showName ? Math.max(12, Math.min(20, Math.round(h * 0.16))) : 0;
+  const nameH = !showName ? 0
+    : compactName ? Math.max(9, Math.min(12, Math.round(h * 0.3)))
+    : Math.max(12, Math.min(20, Math.round(h * 0.16)));
   const gh = h - nameH - 2;
   return html`
     ${/* Title pinned to the top, gauge centered in the space below — with
         both centered as one block, short content (indicator lamps) let the
         title ride lower than on neighbouring full-height dials */ ''}
     <div ref=${ref} style="flex:1;width:100%;min-height:0;display:flex;flex-direction:column;align-items:center;overflow:hidden">
-      ${showName && html`<div class="gauge-tile-name" style=${'font-size:' + Math.min(13, Math.max(9, Math.round(nameH * 0.7))) + 'px;line-height:' + nameH + 'px;margin:0'}>${title}</div>`}
+      ${showName && html`<div class="gauge-tile-name" style=${'font-size:' + Math.min(13, Math.max(8, Math.round(nameH * 0.7))) + 'px;line-height:' + nameH + 'px;margin:0'}>${title}</div>`}
       <div style="flex:1;width:100%;min-height:0;display:flex;align-items:center;justify-content:center;overflow:hidden">
       ${w > 12 && gh > 12 && ((g.type === 'line')
         ? html`<${GaugeLine} key=${g.id} name=${g.name} min=${g.min} max=${g.max} value=${value} unit=${unit} color=${g.color || ''} enums=${enums}
