@@ -660,7 +660,7 @@ td { font-variant-numeric: tabular-nums; }
 /* Resize grip: a small corner affordance. gridstack's default 20px handle
    covers the centre of a 1x1 tile on a phone and intercepts the
    tap-to-configure gesture (!important: gridstack.min.css loads after us) */
-.grid-stack-item > .ui-resizable-se { opacity: .55; width: 14px !important; height: 14px !important; }
+.grid-stack-item > .ui-resizable-se { opacity: .55; width: 18px !important; height: 18px !important; }
 /* 1x1-on-phone tiles: the grip would cover the whole tile — settings modal
    has a Size control instead */
 .grid-stack-item.tile-tiny > .ui-resizable-se { display: none; }
