@@ -19,8 +19,13 @@ test.describe('URL breadcrumbs', () => {
 
   test('browser back returns to the previous tab', async ({ page, mock }) => {
     await openApp(page, mock);
+    // Each hash write happens in an effect AFTER the tab renders — wait for
+    // it before the next step, or a fast second click can land before the
+    // previous history entry exists (flaked on slow CI runners)
     await gotoTab(page, 'Spot Values');
+    await expect.poll(() => new URL(page.url()).hash).toBe('#spotvalues');
     await gotoTab(page, 'Files');
+    await expect.poll(() => new URL(page.url()).hash).toBe('#files');
     await page.goBack();
     await expect(page.locator('.tablink.active')).toHaveText(/Spot Values/);
   });
