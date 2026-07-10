@@ -2752,9 +2752,11 @@ const Settings = () => {
           </div>
           ${wifiMsg && html`<p style="color:var(--accent);font-size:.78rem;font-weight:600;margin:.5rem 0 0">${wifiMsg}</p>`}
           <p class="settings-subhead">Access Point Fallback</p>
-          <${ToggleRow} label="Access point only as fallback" checked=${apFb}
-            onChange=${v => { setApFb(v); fetch('/settings?ap_fallback=' + (v ? '1' : '0'), { method: 'POST' }).catch(() => {}); }} />
-          <p style="font-size:.72rem;color:var(--text3);margin:.35rem 0 0">
+          <div style="max-width:350px">
+            <${ToggleRow} label="Access point only as fallback" checked=${apFb}
+              onChange=${v => { setApFb(v); fetch('/settings?ap_fallback=' + (v ? '1' : '0'), { method: 'POST' }).catch(() => {}); }} />
+          </div>
+          <p style="font-size:.72rem;color:var(--text3);margin:.35rem 0 0;max-width:350px">
             Stops the access point broadcasting while the station connection is up, and brings it
             back automatically if that connection drops. Anyone already connected through the AP
             is never kicked. ${wifiStatus && html`<b>AP is ${wifiStatus.ap_active ? 'broadcasting' + (wifiStatus.ap_clients ? ' (' + wifiStatus.ap_clients + ' client' + (wifiStatus.ap_clients > 1 ? 's' : '') + ')' : '') : 'off — fallback armed'}.</b>`}
