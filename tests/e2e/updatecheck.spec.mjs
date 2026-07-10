@@ -61,11 +61,11 @@ test.describe('Update availability badge', () => {
     await openApp(page, mock);
     await gotoTab(page, 'Update');
     // Check now bypasses the daily cache; v0.1 equals the running version
-    await page.locator('button', { hasText: 'Check for updates now' }).click();
+    await page.locator('button', { hasText: 'Check now' }).click();
     await expect(page.locator('#update')).toContainText('Up to date');
     // Toggle the daily check off, clear the cache so a fresh load WOULD
     // check if it were still enabled, and reload: no request may fire
-    await page.locator('.toggle-row', { hasText: 'Check GitHub' }).locator('.slider').click();
+    await page.locator('.toggle-row', { hasText: 'Daily update check' }).locator('.slider').click();
     await page.evaluate(() => localStorage.removeItem('updateCheck'));
     const before = calls;
     await page.reload();

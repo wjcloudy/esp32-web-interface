@@ -1562,9 +1562,9 @@ const Update = () => {
           <label class="butt" for="updatefile"><${Icon} n="upload" />Upload single file</label>
         </form>
         <h3 class="underline">Update Check</h3>
-        <${ToggleRow} label="Check GitHub daily for new versions" checked=${autoChk}
+        <${ToggleRow} label="Daily update check" checked=${autoChk}
           onChange=${v => { setAutoChk(v); setUpdateCheckAuto(v); }} />
-        <button onclick=${checkNow}><${Icon} n="refresh" />Check for updates now</button>
+        <button onclick=${checkNow} title="Ask GitHub for the latest release now"><${Icon} n="refresh" />Check now</button>
         ${chkMsg && html`<p style="font-size:.78rem;margin:.25rem 0 0">${chkMsg}</p>`}
         ${updating && html`
           <div id="progress" class="graph">
@@ -2703,16 +2703,20 @@ const Settings = () => {
         <div class="dash-box compact">
           <h3>WiFi</h3>
           <p style="color:var(--text2);font-size:.8rem;margin:0 0 .5rem">${staIP ? 'Current IP: ' + staIP : 'Access point and network settings.'}</p>
+          ${/* data-lpignore/data-1p-ignore: these are device-config fields,
+              not login credentials — password-manager overlays also render
+              in the wrong place inside this CSS multi-column layout
+              (offset positions report pre-fragmentation coordinates) */ ''}
           <p class="settings-subhead">Access Point — created by this module</p>
           <div style="display:flex;flex-direction:column;gap:6px;max-width:350px;margin-bottom:.85rem">
-            <label style="font-size:.8rem">SSID: <input type="text" value=${apSSID} oninput=${e => setApSSID(e.target.value)} style="width:100%" /></label>
-            <label style="font-size:.8rem">Password: <input type="text" value=${apPW} oninput=${e => setApPW(e.target.value)} style="width:100%" minlength="8" /></label>
+            <label style="font-size:.8rem">SSID: <input type="text" value=${apSSID} oninput=${e => setApSSID(e.target.value)} style="width:100%" autocomplete="off" data-lpignore="true" data-1p-ignore /></label>
+            <label style="font-size:.8rem">Password: <input type="text" value=${apPW} oninput=${e => setApPW(e.target.value)} style="width:100%" minlength="8" autocomplete="off" data-lpignore="true" data-1p-ignore /></label>
             <button onclick=${() => saveWiFi('ap')} style="align-self:flex-start;font-size:.75rem;padding:4px 12px"><${Icon} n="save" />Save AP settings</button>
           </div>
           <p class="settings-subhead">Station — join an existing network</p>
           <div style="display:flex;flex-direction:column;gap:6px;max-width:350px">
-            <label style="font-size:.8rem">Network SSID: <input type="text" value=${staSSID} oninput=${e => setStaSSID(e.target.value)} style="width:100%" /></label>
-            <label style="font-size:.8rem">Password: <input type="text" value=${staPW} oninput=${e => setStaPW(e.target.value)} style="width:100%" /></label>
+            <label style="font-size:.8rem">Network SSID: <input type="text" value=${staSSID} oninput=${e => setStaSSID(e.target.value)} style="width:100%" autocomplete="off" data-lpignore="true" data-1p-ignore /></label>
+            <label style="font-size:.8rem">Password: <input type="text" value=${staPW} oninput=${e => setStaPW(e.target.value)} style="width:100%" autocomplete="off" data-lpignore="true" data-1p-ignore /></label>
             <button onclick=${() => saveWiFi('sta')} style="align-self:flex-start;font-size:.75rem;padding:4px 12px"><${Icon} n="save" />Save station settings</button>
           </div>
           ${wifiMsg && html`<p style="color:var(--accent);font-size:.78rem;font-weight:600;margin:.5rem 0 0">${wifiMsg}</p>`}
