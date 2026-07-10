@@ -961,6 +961,18 @@ void uart_readUntill(char val)
   while((retVal>0) && (uartMessBuff[0] != val));
 }
 
+// Terminate any partial line sitting in the inverter's terminal buffer
+// (garbage accumulates there whenever we talked at the wrong baud) and
+// discard the inverter's response to it, so the next command's echo/reply
+// framing starts clean.
+static void uartResync()
+{
+  uart_write_bytes(INVERTER_PORT, "\n", 1);
+  uart_wait_tx_done(INVERTER_PORT, UART_TIMEOUT);
+  delay(30); // let the inverter emit its error/prompt line for the junk
+  uart_flush(INVERTER_PORT);
+}
+
 bool uart_readStartsWith(const char *val)
 {
   bool retVal = false;
@@ -1078,7 +1090,13 @@ static void handleCommand() {
     // link against firmware WITHOUT fastuart; blindly staying put desyncs
     // against firmware WITH it. So: check for OK at 115200, and if absent
     // probe at 921600 — fastuart is idempotent and re-replies OK when the
-    // inverter is already fast. No OK at either baud = unsupported/absent.
+    // inverter is already fast. Each attempt is preceded by a resync,
+    // because bytes sent at the wrong baud land in the inverter's terminal
+    // as line-buffer garbage: its error line for that junk otherwise
+    // offsets the echo/reply framing and the OK is never seen (the ESP
+    // then strands itself at 115200 against a fast inverter — the classic
+    // "have to reboot the ESP" state).
+    uartResync();
     sendCommand("fastuart");
     if (uart_readStartsWith("OK"))
     {
@@ -1088,6 +1106,7 @@ static void handleCommand() {
     else
     {
       uart_set_baudrate(INVERTER_PORT, 921600);
+      uartResync();
       sendCommand("fastuart");
       if (uart_readStartsWith("OK"))
       {
@@ -1095,28 +1114,70 @@ static void handleCommand() {
       }
       else
       {
-        uart_set_baudrate(INVERTER_PORT, 115200);
-        fastUartAvailable = false; // stop asking until reboot/reset
+        // Last resort: find ANY baud with working plain comms so the link
+        // is never left stranded. Prefer fast if the inverter is there.
+        bool linked = false;
+        const uint32_t bauds[2] = { 921600, 115200 };
+        for (int b = 0; b < 2 && !linked; b++)
+        {
+          uart_set_baudrate(INVERTER_PORT, bauds[b]);
+          uartResync();
+          sendCommand("errors");
+          char probe[4];
+          if (uart_read_bytes(INVERTER_PORT, probe, sizeof(probe), UART_TIMEOUT) > 0)
+          {
+            fastUart = (bauds[b] == 921600);
+            linked = true;
+            delay(20);
+            uart_flush(INVERTER_PORT); // discard the rest of the probe reply
+          }
+        }
+        if (!linked) uart_set_baudrate(INVERTER_PORT, 115200);
+        fastUartAvailable = false; // negotiation done — don't re-ask until reboot/reset
       }
     }
   }
 
   sendCommand(cmd);
+  int rpt = repeat;
   do {
     memset(buffer,0,sizeof(buffer));
-    //len = Inverter.readBytes(buffer, sizeof(buffer) - 1);
     len = uart_read_bytes(INVERTER_PORT, buffer, sizeof(buffer), UART_TIMEOUT);
-    if(len > 0) output.concat(buffer, len);// += buffer;
+    if(len > 0) output.concat(buffer, len);
 
-    if (repeat)
+    if (rpt)
     {
-      repeat--;
-      //Inverter.print("!");
-      uart_write_bytes(INVERTER_PORT, "!", 1);
-      //Inverter.readBytes(buffer, 1); //consume "!"
-      uart_read_bytes(INVERTER_PORT, buffer, 1, UART_TIMEOUT);
+      rpt--;
+      uart_write_bytes(INVERTER_PORT, "!", 1); //trigger next repetition
+      uart_read_bytes(INVERTER_PORT, buffer, 1, UART_TIMEOUT); //consume "!"
     }
   } while (len > 0);
+
+  if (fastUart && output.length() == 0)
+  {
+    // Empty reply at fast baud: the inverter likely rebooted back to
+    // 115200 underneath us (the stale-desync case that used to require an
+    // ESP reboot). Drop to base baud, resync, retry the command once, and
+    // re-arm negotiation so fast mode comes back on the next command.
+    uart_set_baudrate(INVERTER_PORT, 115200);
+    fastUart = false;
+    fastUartAvailable = true;
+    uartResync();
+    sendCommand(cmd);
+    rpt = repeat;
+    do {
+      memset(buffer,0,sizeof(buffer));
+      len = uart_read_bytes(INVERTER_PORT, buffer, sizeof(buffer), UART_TIMEOUT);
+      if(len > 0) output.concat(buffer, len);
+      if (rpt)
+      {
+        rpt--;
+        uart_write_bytes(INVERTER_PORT, "!", 1);
+        uart_read_bytes(INVERTER_PORT, buffer, 1, UART_TIMEOUT);
+      }
+    } while (len > 0);
+  }
+
   DBG_OUTPUT_PORT.println(output);
   server.sendHeader("Access-Control-Allow-Origin","*");
   server.send(200, "text/json", output);
