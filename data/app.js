@@ -224,8 +224,39 @@ const initialState = {
   canConnected: false,
   webVersion: '',
   updateTag: null, // newest GitHub release tag, when newer than webVersion
+  presets: [], // named parameter sets ({id, name, params: {name: value}})
   history: {}, // recent numeric samples for dashboard sparklines
 };
+
+// ==================== Parameter presets ====================
+// A preset is a named name->value map applied with plain 'set' commands —
+// live immediately, saved to flash only if the user chooses to. Stored on
+// the device (presets.json) and carried by the settings export wholesale.
+
+function savePresetsToDevice(presets) {
+  const blob = new Blob([JSON.stringify({ v: 1, presets })], { type: 'application/json' });
+  const fd = new FormData();
+  fd.append('updatefile', blob, 'presets.json');
+  return fetch('/edit', { method: 'POST', body: fd }).catch(() => {});
+}
+
+// Apply a name->value map one 'set' at a time (each is a serial round-trip),
+// reporting progress and every rejection — same contract as file-loading.
+async function applyParamMap(params, onProgress) {
+  const entries = Object.entries(params || {});
+  let ok = 0;
+  const failed = [];
+  for (let i = 0; i < entries.length; i++) {
+    const [name, value] = entries[i];
+    if (onProgress) onProgress(name, i, entries.length);
+    try {
+      const res = await api.setParam(name, value);
+      if (res.ok) ok++;
+      else failed.push(name + ' (' + res.reply + ')');
+    } catch (e) { failed.push(name); }
+  }
+  return { ok, total: entries.length, failed };
+}
 
 // Friendly display names for common spot values on the dashboard hero card
 const DASH_METRIC_LABELS = {
@@ -349,6 +380,8 @@ function reducer(state, action) {
       return { ...state, activeTab: action.payload };
     case 'SET_UPDATE_TAG':
       return { ...state, updateTag: action.payload };
+    case 'SET_PRESETS':
+      return { ...state, presets: action.payload };
     case 'SET_FILE_LIST':
       return { ...state, fileList: action.payload };
     case 'SET_ALL_CATEGORIES': {
@@ -790,6 +823,8 @@ const Parameters = () => {
   const [applying, setApplying] = useState(false); // loading a parameter set from file
   const [applyPct, setApplyPct] = useState(0);
   const [applyMsg, setApplyMsg] = useState('');
+  // Preset editor draft: { id, name, rows: [{name, value}] } (null = closed)
+  const [presetEdit, setPresetEdit] = useState(null);
 
   if (!state.params) return html`<div class="tabdiv main-content" style="display:flex"><p>Loading...</p></div>`;
 
@@ -918,6 +953,67 @@ const Parameters = () => {
       '\n\nUse "Save parameters to flash" to keep these after a reboot.');
   };
 
+  // --- presets ---
+  const applyPreset = async (pr) => {
+    const total = Object.keys(pr.params || {}).length;
+    if (!total) { alert('Preset "' + pr.name + '" is empty.'); return; }
+    if (applying) return;
+    if (!confirm('Apply preset "' + pr.name + '" (' + total + ' parameter' + (total === 1 ? '' : 's') + ')?')) return;
+    setApplying(true); setApplyPct(0); setApplyMsg('Applying ' + pr.name + '...');
+    const res = await applyParamMap(pr.params, (name, i, t) => {
+      setApplyMsg('Setting ' + name + ' (' + (i + 1) + ' / ' + t + ')');
+      setApplyPct(Math.round(100 * (i + 1) / t));
+    });
+    setApplyMsg('Refreshing...');
+    try { dispatch({ type: 'SET_PARAMS', payload: await api.getJSON('json') }); } catch (err) {}
+    setApplying(false);
+    const summary = 'Applied ' + res.ok + ' of ' + res.total + ' from "' + pr.name + '".' +
+      (res.failed.length ? '\nFailed: ' + res.failed.join(', ') : '');
+    // OK = persist to flash, Cancel = keep the values live-only
+    if (confirm(summary + '\n\nSave parameters to flash now?\n(Cancel keeps them live only — they revert on reboot.)')) {
+      api.getText('save').then(r => alert(r || 'Parameters saved'));
+    }
+  };
+  const deletePreset = (id) => {
+    const pr = state.presets.find(p => p.id === id);
+    if (!pr || !confirm('Delete preset "' + pr.name + '"?')) return;
+    const next = state.presets.filter(p => p.id !== id);
+    dispatch({ type: 'SET_PRESETS', payload: next });
+    savePresetsToDevice(next);
+  };
+  const openPresetEditor = (pr) => setPresetEdit(pr
+    ? { id: pr.id, name: pr.name, rows: Object.entries(pr.params || {}).map(([name, value]) => ({ name, value })) }
+    : { id: null, name: '', rows: [] });
+  const liveVal = (name) => {
+    const p = state.params[name];
+    const n = p ? parseFloat(p.value) : NaN;
+    return isNaN(n) ? 0 : n;
+  };
+  // Add params to the draft (deduplicated), prefilled with their live values
+  const addPresetRows = (names) => setPresetEdit(pe => {
+    const have = new Set(pe.rows.map(r => r.name));
+    return { ...pe, rows: [...pe.rows, ...names.filter(n => !have.has(n) && state.params[n]).map(n => ({ name: n, value: liveVal(n) }))] };
+  });
+  const changedFromDefault = () => Object.keys(state.params).filter(n => {
+    const p = state.params[n];
+    return p.default !== undefined && parseFloat(p.value) !== parseFloat(p.default);
+  });
+  const savePreset = () => {
+    const name = (presetEdit.name || '').trim();
+    if (!name) { alert('Give the preset a name.'); return; }
+    const rows = presetEdit.rows.filter(r => r.name);
+    if (!rows.length) { alert('Add at least one parameter.'); return; }
+    const params = {};
+    rows.forEach(r => { params[r.name] = r.value; });
+    const id = presetEdit.id != null ? presetEdit.id : Math.max(0, ...state.presets.map(p => p.id || 0)) + 1;
+    const next = presetEdit.id != null
+      ? state.presets.map(p => p.id === presetEdit.id ? { id, name, params } : p)
+      : [...state.presets, { id, name, params }];
+    dispatch({ type: 'SET_PRESETS', payload: next });
+    savePresetsToDevice(next);
+    setPresetEdit(null);
+  };
+
   return html`
     <div id="parameters" class="tabdiv main-content" style="display:flex">
       <div class="main-right">
@@ -949,6 +1045,17 @@ const Parameters = () => {
           </div>
           <p id="progress-msg">${applyMsg}</p>
         `}
+        <h3 class="underline">Presets</h3>
+        ${state.presets.map(pr => html`
+          <div class="preset-row" key=${pr.id}>
+            <span class="preset-name" title=${Object.keys(pr.params || {}).length + ' parameter(s)'}>${pr.name}</span>
+            <button onclick=${() => applyPreset(pr)} title="Apply this preset now" style="width:auto;padding:3px 9px"><${Icon} n="check" size=${11} /></button>
+            <button onclick=${() => openPresetEditor(pr)} title="Edit" style="width:auto;padding:3px 9px"><${Icon} n="edit" size=${11} /></button>
+            <button onclick=${() => deletePreset(pr.id)} title="Delete" style="width:auto;padding:3px 9px;color:var(--red)">×</button>
+          </div>
+        `)}
+        <button onclick=${() => openPresetEditor(null)}><${Icon} n="plus" />New preset</button>
+        ${state.presets.length === 0 && html`<p style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">A preset is a named set of parameter values you can apply in one tap — here, or from an Action button on a gauges page.</p>`}
         <h3 class="underline">Parameter Database</h3>
         <button onclick=${submitToDatabase}><${Icon} n="cloud" />Submit parameters</button>
         <button onclick=${() => setShowSubscribe(true)}><${Icon} n="rss" />Subscribe to parameter set</button>
@@ -1011,6 +1118,46 @@ const Parameters = () => {
         <div style="display:flex;gap:8px;align-items:center;margin-top:.5rem">
           <input type="text" placeholder="Subscription token" value=${subToken} oninput=${e => setSubToken(e.target.value)} style="flex:1" />
           <button onclick=${doSubscribe}>Subscribe</button>
+        </div>
+      </${Modal}>
+    `}
+    ${presetEdit && html`
+      <${Modal} id="preset-editor" title=${presetEdit.id != null ? 'Edit preset' : 'New preset'} onClose=${() => setPresetEdit(null)}>
+        <div style="display:flex;flex-direction:column;gap:10px;font-size:.85rem">
+          <div style="display:flex;gap:8px;align-items:center">
+            <label style="width:4em">Name</label>
+            <input type="text" value=${presetEdit.name} placeholder="e.g. Track day" maxlength="24"
+              oninput=${e => setPresetEdit(pe => ({ ...pe, name: e.target.value }))} style="flex:1;padding:5px 8px" />
+          </div>
+          <div style="display:flex;gap:8px;align-items:center">
+            <label style="width:4em">Add</label>
+            <${FieldPicker} value="" spotNames=${Object.keys(state.params).sort()} onChange=${n => addPresetRows([n])} />
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            ${hasFavs && html`<button onclick=${() => addPresetRows(state.paramFavorites)} style="width:auto;font-size:.72rem;padding:3px 10px">★ Add favourites</button>`}
+            <button onclick=${() => addPresetRows(changedFromDefault())} style="width:auto;font-size:.72rem;padding:3px 10px" title="Every parameter that differs from its default — usually 'your tune'">Add changed-from-default</button>
+            <button onclick=${() => addPresetRows(Object.keys(state.params))} style="width:auto;font-size:.72rem;padding:3px 10px">Add all current</button>
+            ${presetEdit.rows.length > 0 && html`<button onclick=${() => setPresetEdit(pe => ({ ...pe, rows: [] }))} style="width:auto;font-size:.72rem;padding:3px 10px;color:var(--red)">Clear</button>`}
+          </div>
+          <p style="font-size:.72rem;color:var(--text3);margin:0">${presetEdit.rows.length} parameter(s) — values are captured now and editable below; remove any you don't want in the preset.</p>
+          ${presetEdit.rows.length > 0 && html`
+            <div style="max-height:40vh;overflow-y:auto;display:flex;flex-direction:column;gap:4px;border:1px solid var(--border2);border-radius:var(--radius-xs);padding:6px">
+              ${presetEdit.rows.map((r, idx) => html`
+                <div key=${r.name} style="display:flex;gap:8px;align-items:center">
+                  <span style="flex:1;font-family:var(--mono);font-size:.78rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${r.name}</span>
+                  <input type="number" step="any" value=${r.value}
+                    oninput=${e => { const n = parseFloat(e.target.value); setPresetEdit(pe => ({ ...pe, rows: pe.rows.map((x, i) => i === idx ? { ...x, value: isNaN(n) ? 0 : n } : x) })); }}
+                    style="width:7em;padding:3px 6px" />
+                  <button onclick=${() => setPresetEdit(pe => ({ ...pe, rows: pe.rows.filter((x, i) => i !== idx) }))}
+                    style="width:auto;padding:2px 8px;color:var(--red)">×</button>
+                </div>
+              `)}
+            </div>
+          `}
+          <div style="display:flex;gap:8px;margin-top:4px">
+            <button onclick=${savePreset} style="width:auto"><${Icon} n="save" />Save preset</button>
+            <button onclick=${() => setPresetEdit(null)} style="width:auto">Cancel</button>
+          </div>
         </div>
       </${Modal}>
     `}
@@ -1209,7 +1356,7 @@ const SpotValues = () => {
 // values, UI prefs) as one JSON bundle. Shared by the Settings and Update tabs.
 const exportUiSettings = async () => {
   const grab = (url) => fetch(url).then(r => r.json()).catch(() => null);
-  const [favorites, gauges, plots, virtualvals] = await Promise.all([grab('/favorites.json'), grab('/gauges.json'), grab('/plots.json'), grab('/virtualvals.json')]);
+  const [favorites, gauges, plots, virtualvals, presets] = await Promise.all([grab('/favorites.json'), grab('/gauges.json'), grab('/plots.json'), grab('/virtualvals.json'), grab('/presets.json')]);
   const prefs = {};
   try {
     ['theme', 'accentColor', 'spotSparks', 'keepAwake', 'dashMetrics'].forEach(k => {
@@ -1217,7 +1364,7 @@ const exportUiSettings = async () => {
       if (v != null) prefs[k] = v;
     });
   } catch (e) {}
-  const bundle = { type: 'openinverter-ui-settings', version: 1, exported: new Date().toISOString(), favorites, gauges, plots, virtualvals, prefs };
+  const bundle = { type: 'openinverter-ui-settings', version: 1, exported: new Date().toISOString(), favorites, gauges, plots, virtualvals, presets, prefs };
   const a = document.createElement('a');
   a.href = 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(bundle, null, 2));
   a.download = 'ui-settings.json';
@@ -2484,6 +2631,7 @@ const Settings = () => {
       if (bundle.favorites) await up('favorites.json', bundle.favorites);
       if (bundle.gauges) await up('gauges.json', bundle.gauges);
       if (bundle.plots) await up('plots.json', bundle.plots);
+      if (bundle.presets) await up('presets.json', bundle.presets);
       if (bundle.virtualvals) { await up('virtualvals.json', bundle.virtualvals); fetch('/virtual-reload').catch(() => {}); }
       try { for (const k in (bundle.prefs || {})) localStorage.setItem(k, bundle.prefs[k]); } catch (err) {}
       // Theme/accent/dashboard metrics also live on the device — restore
@@ -3229,17 +3377,22 @@ const TextTile = ({ value, unit, enums, text, decimals, w, h }) => {
 // dashboard CAN sender. The tile flashes green/red with the outcome; the
 // last reply lives in the tooltip. In edit mode the button goes inert so the
 // tap opens the tile's settings instead of firing.
-const actionSummary = (g) => (g.act === 'can')
-  ? 'CAN ' + (g.canId || '?')
-  : 'set ' + (g.param || '?') + ' ' + (g.value != null ? g.value : '?');
-const ActionTile = ({ g, canMode, editing, w, h }) => {
+const actionSummary = (g, presets) => {
+  if (g.act === 'can') return 'CAN ' + (g.canId || '?');
+  if (g.act === 'preset') {
+    const pr = (presets || []).find(p => p.id === g.presetId);
+    return 'preset: ' + (pr ? pr.name : '?');
+  }
+  return 'set ' + (g.param || '?') + ' ' + (g.value != null ? g.value : '?');
+};
+const ActionTile = ({ g, canMode, editing, presets, w, h }) => {
   const [flash, setFlash] = useState(''); // '' | 'busy' | 'ok' | 'fail'
   const [lastMsg, setLastMsg] = useState('');
   const fire = async () => {
     if (editing || flash === 'busy') return;
     // confirm defaults ON (g.confirm undefined = ask) — these buttons write
     // to the inverter, so silence must be opted into
-    if (g.confirm !== false && !window.confirm('Fire "' + (g.label || actionSummary(g)) + '"?')) return;
+    if (g.confirm !== false && !window.confirm('Fire "' + (g.label || actionSummary(g, presets)) + '"?')) return;
     setFlash('busy');
     let ok = false, msg = '';
     try {
@@ -3250,6 +3403,13 @@ const ActionTile = ({ g, canMode, editing, w, h }) => {
         const j = await r.json().catch(() => ({}));
         ok = r.ok && !j.error;
         msg = j.error || 'sent';
+      } else if (g.act === 'preset') {
+        const pr = (presets || []).find(p => p.id === g.presetId);
+        if (!pr) throw new Error('Preset not found — pick one in the tile settings');
+        const res = await applyParamMap(pr.params);
+        ok = res.total > 0 && res.failed.length === 0;
+        msg = 'applied ' + res.ok + ' of ' + res.total +
+          (res.failed.length ? ' — failed: ' + res.failed.join(', ') : '');
       } else {
         if (!g.param) throw new Error('No parameter configured');
         const res = await api.setParam(g.param, g.value != null ? g.value : 0);
@@ -3261,7 +3421,7 @@ const ActionTile = ({ g, canMode, editing, w, h }) => {
     setFlash(ok ? 'ok' : 'fail');
     setTimeout(() => setFlash(f => (f === 'ok' || f === 'fail') ? '' : f), 1200);
   };
-  const label = g.label || actionSummary(g);
+  const label = g.label || actionSummary(g, presets);
   // Fit the label: long labels wrap to two lines when there's height for it
   // (halving the characters per line nearly doubles the fittable font),
   // then shrink, then ellipsise as the last resort
@@ -3270,7 +3430,7 @@ const ActionTile = ({ g, canMode, editing, w, h }) => {
   const maxByH = twoLine ? Math.floor((h - 4) / 2.3) : Math.floor((h - 4) / 1.4);
   const fs = Math.max(8, Math.min(18, maxByH, Math.round((w * 1.7) / Math.max(3, perLine))));
   return html`
-    <button class="action-tile-btn ${flash}" onclick=${fire} title=${actionSummary(g) + (lastMsg ? ' — ' + lastMsg : '')}
+    <button class="action-tile-btn ${flash}" onclick=${fire} title=${actionSummary(g, presets) + (lastMsg ? ' — ' + lastMsg : '')}
       style=${'font-size:' + fs + 'px;pointer-events:' + (editing ? 'none' : 'auto')}>
       <span class="action-label">${flash === 'busy' ? '…' : label}</span>
     </button>`;
@@ -3357,7 +3517,7 @@ const SliderTile = ({ g, value, editing, w, h }) => {
 // Fills the tile under the name label and measures itself with a
 // ResizeObserver, so gauges rescale live while a tile is being resized
 // (GridStack changes the DOM size continuously during the drag).
-const GaugeTileBody = ({ g, title, value, unit, enums, editing, canMode }) => {
+const GaugeTileBody = ({ g, title, value, unit, enums, editing, canMode, presets }) => {
   const ref = useRef(null);
   const [dim, setDim] = useState({ w: 0, h: 0 });
   // Layout effect: measure before first paint so a freshly mounted page
@@ -3416,7 +3576,7 @@ const GaugeTileBody = ({ g, title, value, unit, enums, editing, canMode }) => {
         ? html`<${TextTile} value=${value} unit=${unit} enums=${enums} text=${g.text || ''}
             decimals=${g.decimals != null ? g.decimals : 1} w=${w - 6} h=${gh - 4} />`
         : (g.type === 'action')
-        ? html`<${ActionTile} g=${g} canMode=${canMode} editing=${editing} w=${w - 10} h=${gh - 8} />`
+        ? html`<${ActionTile} g=${g} canMode=${canMode} editing=${editing} presets=${presets} w=${w - 10} h=${gh - 8} />`
         : (g.type === 'bar')
         ? html`<${BarGauge} value=${value} unit=${unit} enums=${enums} color=${g.color || ''}
             decimals=${g.decimals != null ? g.decimals : 1} min=${g.min != null ? g.min : 0}
@@ -3869,14 +4029,15 @@ const Gauges = () => {
                     label on the button itself (no name row) */ ''}
                 ${(() => {
                   const configured = g.type === 'text' ? !!(g.name || g.label || (g.text && String(g.text).trim()))
-                    : (g.type === 'action' || g.type === 'toggle') ? !!(g.label || g.param || g.canId)
+                    : g.type === 'action' ? !!(g.label || g.param || g.canId || g.presetId != null)
+                    : g.type === 'toggle' ? !!(g.label || g.param || g.canId)
                     : g.type === 'slider' ? !!(g.label || g.param)
                     : !!(g.name || g.label);
                   const title = g.type === 'action' ? (editing && !configured ? 'tap to set up' : '—')
                     : (g.label || g.name || ((g.type === 'toggle' || g.type === 'slider') && g.param)
                        || (editing && !configured ? 'tap to set up' : '—'));
                   return html`<${GaugeTileBody} g=${g} title=${title} value=${lineVals[g.id]} unit=${unit} enums=${enums}
-                    editing=${editing} canMode=${state.canMode} />`;
+                    editing=${editing} canMode=${state.canMode} presets=${state.presets} />`;
                 })()}
               </div>
             </div>`;
@@ -3975,10 +4136,22 @@ const Gauges = () => {
                   <select value=${cfg.act || 'set'} onchange=${e => updateGaugeConfig(cfg.id, 'act', e.target.value)}
                     style="width:auto;min-width:11em;padding:5px 30px 5px 8px">
                     <option value="set">Set parameter</option>
+                    <option value="preset">Apply preset</option>
                     <option value="can">Send CAN frame</option>
                   </select>
                 </div>
-                ${(cfg.act || 'set') === 'set' ? html`
+                ${(cfg.act || 'set') === 'preset' ? html`
+                  <div style="display:flex;gap:8px;align-items:center">
+                    <label style="width:4.5em">Preset</label>
+                    <select value=${cfg.presetId != null ? String(cfg.presetId) : ''}
+                      onchange=${e => updateGaugeConfig(cfg.id, 'presetId', parseInt(e.target.value))}
+                      style="width:auto;min-width:11em;padding:5px 30px 5px 8px">
+                      <option value="" disabled>${state.presets.length ? 'Choose…' : '(no presets yet)'}</option>
+                      ${state.presets.map(pr => html`<option value=${String(pr.id)}>${pr.name} (${Object.keys(pr.params || {}).length})</option>`)}
+                    </select>
+                  </div>
+                  <p style="font-size:.72rem;color:var(--text3);margin:0">Applies every parameter in the preset, live (not saved to flash). Create and edit presets on the Parameters tab.</p>
+                ` : (cfg.act || 'set') === 'set' ? html`
                   <div style="display:flex;gap:8px;align-items:center">
                     <label style="width:4.5em">Param</label>
                     <${FieldPicker} value=${cfg.param || ''} spotNames=${Object.keys(state.params || {}).sort()}
@@ -4249,10 +4422,13 @@ const App = () => {
     return () => clearInterval(tick);
   }, []);
 
-  // Load WiFi tab, file list, and favorites
+  // Load WiFi tab, file list, favorites and parameter presets
   useEffect(() => {
     api.getFileList().then(list => dispatch({ type: 'SET_FILE_LIST', payload: list }));
     api.loadFavorites().then(favs => dispatch({ type: 'SET_FAVORITES', payload: favs }));
+    fetch('/presets.json').then(r => r.ok ? r.json() : null).then(p => {
+      if (p && Array.isArray(p.presets)) dispatch({ type: 'SET_PRESETS', payload: p.presets });
+    }).catch(() => {});
   }, []);
 
   const tab = state.activeTab;

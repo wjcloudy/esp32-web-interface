@@ -389,6 +389,13 @@ button:disabled:hover { background: var(--surface); border-color: var(--border2)
   font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
   color: var(--text3); margin: .6rem 0 .35rem;
 }
+/* preset rows in the Parameters action rail */
+.preset-row { display: flex; align-items: center; gap: 4px; width: 100%; }
+.preset-row .preset-name {
+  flex: 1; min-width: 0; font-size: .8rem; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
 /* action gauge tile: a button that fills its tile and flashes the outcome.
    Minimal padding (the base button's 8/15px ate a third of a phone tile)
    and labels may wrap onto two clamped lines before ellipsising. */
