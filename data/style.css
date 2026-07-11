@@ -812,6 +812,9 @@ td { font-variant-numeric: tabular-nums; }
 /* transparent tiles: the gauge floats on the page with no card chrome
    (the edit-mode dashed outline still shows, so they stay manipulable) */
 .gauge-tile.tile-clear { background: transparent; border-color: transparent; }
+/* view-mode gauge area: no text selection, so a mouse/touch page-swipe drag
+   doesn't highlight tile labels/values as it moves */
+.gauge-swipe { user-select: none; -webkit-user-select: none; }
 /* gauge settings modal: section headers group the (long) option list */
 .modal-sect {
   font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;

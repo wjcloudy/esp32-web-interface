@@ -4140,6 +4140,7 @@ const Gauges = () => {
   const dragBusyRef = useRef(false); // true during (and briefly after) a drag/resize
   const lastHitRef = useRef(null); // page whose condition matched last tick
   const editSnapshotRef = useRef(null); // pages/autoPage captured on entering edit, for Cancel
+  const swipeRef = useRef(null); // touch start {x,y,t} for page swiping
   // Session min/max per tile id, for peak-hold markers (resets when the
   // Gauges tab is left — a browsing "session", not a persisted one)
   const peaksRef = useRef({});
@@ -4463,6 +4464,34 @@ const Gauges = () => {
   const updateGaugeConfig = (id, field, value) =>
     setPageItems(activePage, prev => prev.map(g => g.id !== id ? g : { ...g, [field]: value }));
 
+  // Swipe (mouse or touch) left/right to flip pages in view mode. Pointer
+  // events cover both. Ignored in edit mode and when the gesture starts on an
+  // interactive control (slider/toggle/button/select/input) so those keep
+  // their own gestures. Needs a clearly horizontal, brisk swipe so a vertical
+  // scroll or a tap never triggers it. Text selection during a drag is
+  // suppressed in CSS (.main-left user-select:none in view mode).
+  const switchPageBy = (delta) => {
+    const idx = pages.findIndex(p => p.id === activePage);
+    const ni = idx + delta;
+    if (ni >= 0 && ni < pages.length) setActivePage(pages[ni].id);
+  };
+  const onSwipeStart = (e) => {
+    swipeRef.current = null;
+    if (editing || pages.length < 2) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return; // left button only
+    if (e.target.closest('input, button, select, textarea, .action-tile-btn, .toggle-tile, .slider-tile, a')) return;
+    swipeRef.current = { x: e.clientX, y: e.clientY, t: performance.now() };
+  };
+  const onSwipeEnd = (e) => {
+    const s = swipeRef.current;
+    swipeRef.current = null;
+    if (!s) return;
+    const dx = e.clientX - s.x, dy = e.clientY - s.y;
+    if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.8 && performance.now() - s.t < 800) {
+      switchPageBy(dx < 0 ? 1 : -1); // swipe left → next page, right → previous
+    }
+  };
+
   // --- pages ---
   const addPage = () => {
     const name = (prompt('Page name (e.g. Driving, Debug)') || '').trim();
@@ -4677,7 +4706,7 @@ const Gauges = () => {
         <p class="edit-help" style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">Six example pages (Driving, Battery, Temps, Charging, Debug, Controls) using standard value names — every gauge type included. Replaces your current gauges after confirmation.</p>
       </div>
       `}
-      <div class="main-left">
+      <div class="main-left ${editing ? '' : 'gauge-swipe'}" onpointerdown=${onSwipeStart} onpointerup=${onSwipeEnd}>
         ${kiosk && html`<button class="kiosk-exit" title="Exit full screen" onclick=${() => setKiosk(false)}>✕</button>`}
         <div id="gauges-head" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem;gap:8px;flex-wrap:wrap">
           <h2 style="margin:0">Gauges</h2>

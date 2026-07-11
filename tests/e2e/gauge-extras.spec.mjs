@@ -257,6 +257,32 @@ test.describe('Gauge extras', () => {
     expect(Math.abs(box.width - box.height)).toBeLessThanOrEqual(3);
   });
 
+  test('swipe flips between gauge pages in view mode', async ({ page, mock }) => {
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', {
+      method: 'POST', body: JSON.stringify({ v: 3, pages: [
+        { id: 1, name: 'Drive', items: [{ id: 1, name: 'udc', type: 'radial', min: 0, max: 500, x: 0, y: 0, w: 3, h: 3 }] },
+        { id: 2, name: 'Batt', items: [{ id: 2, name: 'tmphs', type: 'radial', min: 0, max: 100, x: 0, y: 0, w: 3, h: 3 }] },
+      ] }),
+    });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await expect(page.locator('.page-pill.active')).toHaveText('Drive');
+    // Drag left over the gauge area → next page
+    const area = await page.locator('#gauges .main-left').boundingBox();
+    const y = area.y + area.height - 40;
+    await page.mouse.move(area.x + area.width - 60, y);
+    await page.mouse.down();
+    await page.mouse.move(area.x + 40, y, { steps: 8 });
+    await page.mouse.up();
+    await expect(page.locator('.page-pill.active')).toHaveText('Batt');
+    // Drag right → back to the previous page
+    await page.mouse.move(area.x + 40, y);
+    await page.mouse.down();
+    await page.mouse.move(area.x + area.width - 60, y, { steps: 8 });
+    await page.mouse.up();
+    await expect(page.locator('.page-pill.active')).toHaveText('Drive');
+  });
+
   test('full-screen mode hides the chrome and the exit button restores it', async ({ page, mock }) => {
     await seedLayout(mock, [
       { id: 1, name: 'udc', type: 'radial', min: 0, max: 500, x: 0, y: 0, w: 3, h: 3 },
