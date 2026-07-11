@@ -3213,7 +3213,10 @@ const hueShift = (hex, deg) => {
 // A custom colour keeps the gradient look, centered on the chosen colour.
 // An explicit warn threshold turns the arc (and the value) the warn colour
 // at/above it, replacing the implicit red-past-92%-of-range behaviour.
-const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decimals = 1, warn, warnColor }) => {
+// A centre point makes the arc sweep FROM that value: above it draws
+// forward, below it draws backward — a 0-centred power gauge shows drive
+// one way and regen the other, pivoting on a tick at the centre mark.
+const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decimals = 1, warn, warnColor, center }) => {
   const size = px || 230, c = size / 2, r = Math.round(size * 0.4);
   const sw = Math.max(8, Math.round(size * 0.057));
   const SWEEP = 270; // degrees, gap centered at the bottom
@@ -3222,6 +3225,10 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decim
   const frac = v == null ? 0 : Math.min(1, Math.max(0, (v - min) / span));
   const circ = 2 * Math.PI * r;
   const arc = circ * SWEEP / 360;
+  const hasCenter = center != null && center > min && center < max;
+  const cFrac = hasCenter ? (center - min) / span : 0;
+  const startFrac = hasCenter ? Math.min(frac, cFrac) : 0;
+  const lenFrac = hasCenter ? Math.abs(frac - cFrac) : frac;
   const grad = 'ggrad' + id;
   const custom = color && /^#[0-9a-fA-F]{6}$/.test(color);
   const warned = warn != null && v != null && v >= warn;
@@ -3246,8 +3253,17 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decim
         <g transform=${'rotate(135 ' + c + ' ' + c + ')'}>
           <circle class="g-track" cx=${c} cy=${c} r=${r} stroke-dasharray=${arc + ' ' + circ} style=${'stroke-width:' + sw + 'px'} />
           <circle class="g-value ${legacyOver ? 'over' : ''}" cx=${c} cy=${c} r=${r}
-            stroke=${stroke} opacity=${frac > 0.004 ? 1 : 0}
-            stroke-dasharray=${(arc * frac) + ' ' + circ} style=${'stroke-width:' + sw + 'px'} />
+            stroke=${stroke} opacity=${lenFrac > 0.004 ? 1 : 0}
+            stroke-dasharray=${(arc * lenFrac) + ' ' + circ}
+            stroke-dashoffset=${-(arc * startFrac)} style=${'stroke-width:' + sw + 'px'} />
+          ${hasCenter && (() => {
+            // Tick marking the pivot, drawn radially across the track
+            const a = cFrac * SWEEP * Math.PI / 180;
+            const r1 = r - sw / 2 - 2, r2 = r + sw / 2 + 2;
+            return html`<line class="g-center-tick"
+              x1=${(c + r1 * Math.cos(a)).toFixed(1)} y1=${(c + r1 * Math.sin(a)).toFixed(1)}
+              x2=${(c + r2 * Math.cos(a)).toFixed(1)} y2=${(c + r2 * Math.sin(a)).toFixed(1)} />`;
+          })()}
         </g>
       </svg>
       <div class="g-center">
@@ -3383,11 +3399,16 @@ const IndicatorLamp = ({ value, min, max, color, enums, invert, px }) => {
 // level bar or a column depending on the tile's shape (wider = horizontal,
 // taller = vertical). Same range/gradient/over-range behaviour as the
 // radial; value overlaid in the centre, min/max in the corners.
-const BarGauge = ({ value, min = 0, max = 100, unit, color, enums, decimals = 1, w, h, warn, warnColor }) => {
+const BarGauge = ({ value, min = 0, max = 100, unit, color, enums, decimals = 1, w, h, warn, warnColor, center }) => {
   const v = (value == null || isNaN(value)) ? null : value;
   const lo = min != null ? min : 0;
   const hi = (max == null || max === lo) ? lo + 100 : max;
   const frac = v == null ? 0 : Math.min(1, Math.max(0, (v - lo) / (hi - lo)));
+  // Centre point: the fill grows FROM this value in either direction
+  const hasCenter = center != null && center > lo && center < hi;
+  const cFrac = hasCenter ? (center - lo) / (hi - lo) : 0;
+  const startFrac = hasCenter ? Math.min(frac, cFrac) : 0;
+  const lenFrac = hasCenter ? Math.abs(frac - cFrac) : frac;
   const horiz = w >= h;
   const custom = color && /^#[0-9a-fA-F]{6}$/.test(color);
   const dir = horiz ? '90deg' : '0deg';
@@ -3407,7 +3428,10 @@ const BarGauge = ({ value, min = 0, max = 100, unit, color, enums, decimals = 1,
   return html`
     <div class="bar-gauge ${horiz ? 'horiz' : 'vert'}" style=${'width:' + w + 'px;height:' + h + 'px'}>
       <div class="bar-fill ${over ? 'over' : ''}"
-        style=${(horiz ? 'width:' : 'height:') + (frac * 100).toFixed(1) + '%;' + (warned ? 'background:' + wc : over ? '' : 'background:' + grad)}></div>
+        style=${(horiz ? 'left:' : 'bottom:') + (startFrac * 100).toFixed(1) + '%;'
+          + (horiz ? 'width:' : 'height:') + (lenFrac * 100).toFixed(1) + '%;'
+          + (warned ? 'background:' + wc : over ? '' : 'background:' + grad)}></div>
+      ${hasCenter && html`<div class="bar-center-tick" style=${(horiz ? 'left:' : 'bottom:') + (cFrac * 100).toFixed(1) + '%'}></div>`}
       <div class="bar-val g-val" style=${'font-size:' + vfs + 'px'}>
         ${disp}${!enums && unit ? html`<span class="g-unit" style="display:inline;margin-left:4px;font-size:.5em">${unit}</span>` : ''}
       </div>
@@ -3656,7 +3680,7 @@ const GaugeTileBody = ({ g, title, value, unit, enums, editing, canMode, presets
         ? html`<${BarGauge} value=${value} unit=${unit} enums=${enums} color=${g.color || ''}
             decimals=${g.decimals != null ? g.decimals : 1} min=${g.min != null ? g.min : 0}
             max=${(g.max == null || g.max === 0) ? 4000 : g.max} w=${w - 8} h=${gh - 4}
-            warn=${g.warn} warnColor=${g.warnColor} />`
+            warn=${g.warn} warnColor=${g.warnColor} center=${g.center} />`
         : (g.type === 'toggle')
         ? html`<${ToggleTile} g=${g} value=${value} canMode=${canMode} editing=${editing} px=${Math.max(20, Math.min(w, gh) - 4)} />`
         : (g.type === 'slider')
@@ -3664,7 +3688,7 @@ const GaugeTileBody = ({ g, title, value, unit, enums, editing, canMode, presets
         : html`<${SvgGauge} id=${g.id} value=${value} unit=${unit} color=${g.color || ''} enums=${enums}
             px=${Math.max(40, Math.min(w, gh) - 4)} decimals=${g.decimals != null ? g.decimals : 1}
             min=${g.min != null ? g.min : 0} max=${(g.max == null || g.max === 0) ? 4000 : g.max}
-            warn=${g.warn} warnColor=${g.warnColor} />`)}
+            warn=${g.warn} warnColor=${g.warnColor} center=${g.center} />`)}
       </div>
     </div>`;
 };
@@ -4175,6 +4199,13 @@ const Gauges = () => {
                 <input type="number" value=${cfg.max} oninput=${e => updateGaugeConfig(cfg.id, 'max', parseFloat(e.target.value) || 0)} style="width:6em;padding:5px 6px" step="any" />
               </div>`}
               ${((cfg.type || 'radial') === 'radial' || cfg.type === 'bar') && html`
+                <div style="display:flex;gap:8px;align-items:center">
+                  <label style="width:4.5em">Centre</label>
+                  <input type="number" step="any" value=${cfg.center != null ? cfg.center : ''} placeholder="(min)"
+                    oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'center', isNaN(n) ? undefined : n); }}
+                    style="width:6em;padding:5px 6px" />
+                  <span style="font-size:.72rem;color:var(--text3)">gauge sweeps from this value both ways — e.g. 0 on a power gauge</span>
+                </div>
                 <div style="display:flex;gap:8px;align-items:center">
                   <label style="width:4.5em">Warn ≥</label>
                   <input type="number" step="any" value=${cfg.warn != null ? cfg.warn : ''} placeholder="(off)"

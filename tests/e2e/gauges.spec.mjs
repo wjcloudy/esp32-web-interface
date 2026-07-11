@@ -704,6 +704,32 @@ test.describe('Gauges grid', () => {
     await expect(arc).toHaveAttribute('stroke', /url\(/, { timeout: 5000 });
   });
 
+  test('centre point makes radial and bar sweep from the pivot both ways', async ({ page, mock }) => {
+    const layout = { v: 3, pages: [{ id: 1, name: 'Main', items: [
+      { id: 1, name: 'speed', type: 'radial', min: -8000, max: 8000, center: 0, decimals: 0, x: 0, y: 0, w: 3, h: 3 },
+      { id: 2, name: 'speed', type: 'bar', min: -8000, max: 8000, center: 0, decimals: 0, x: 3, y: 0, w: 5, h: 1 },
+    ] }] };
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(layout) });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    const fill = page.locator('.bar-gauge .bar-fill');
+    // Pivot ticks render on both gauges
+    await expect(page.locator('.g-center-tick')).toBeVisible();
+    await expect(page.locator('.bar-center-tick')).toBeVisible();
+    // Above centre: the bar fills from 50% forward
+    await fetch(mock.url + '/__test/spot?name=speed&value=4000');
+    await expect(fill).toHaveAttribute('style', /left:\s*50(\.0)?%.*width:\s*25(\.0)?%/, { timeout: 5000 });
+    // Below centre: it fills BACKWARD from the pivot
+    await fetch(mock.url + '/__test/spot?name=speed&value=-4000');
+    await expect(fill).toHaveAttribute('style', /left:\s*25(\.0)?%.*width:\s*25(\.0)?%/, { timeout: 5000 });
+    // The radial arc mirrors the same geometry via its dash offset: the
+    // below-centre arc starts a quarter in, the above-centre arc at half
+    const arcOffset = async () => Math.abs(parseFloat(await page.locator('circle.g-value').getAttribute('stroke-dashoffset')));
+    const below = await arcOffset();
+    await fetch(mock.url + '/__test/spot?name=speed&value=4000');
+    await expect.poll(arcOffset, { timeout: 5000 }).toBeGreaterThan(below * 1.5);
+  });
+
   test('toggle tile flips a parameter and follows its live value', async ({ page, mock }) => {
     const layout = { v: 3, pages: [{ id: 1, name: 'Main', items: [
       { id: 1, type: 'toggle', param: 'potmin', onValue: 100, offValue: 0, label: 'Heat', onLabel: 'Heating', offLabel: 'Idle', x: 0, y: 0, w: 2, h: 2 },

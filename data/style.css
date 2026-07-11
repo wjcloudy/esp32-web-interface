@@ -426,9 +426,13 @@ button:disabled:hover { background: var(--surface); border-color: var(--border2)
 
 /* bar gauge: a tile-filling linear meter, level or column */
 .bar-gauge { position: relative; border: 1px solid var(--border2); border-radius: var(--radius-xs); background: var(--surface); overflow: hidden; }
-.bar-gauge .bar-fill { position: absolute; transition: width .3s ease, height .3s ease; }
-.bar-gauge.horiz .bar-fill { left: 0; top: 0; bottom: 0; }
-.bar-gauge.vert .bar-fill { left: 0; right: 0; bottom: 0; }
+.bar-gauge .bar-fill { position: absolute; transition: width .3s ease, height .3s ease, left .3s ease, bottom .3s ease; }
+.bar-gauge.horiz .bar-fill { top: 0; bottom: 0; }
+.bar-gauge.vert .bar-fill { left: 0; right: 0; }
+/* centre-point tick: marks the pivot a centred bar fills from */
+.bar-gauge .bar-center-tick { position: absolute; background: var(--text3); opacity: .7; }
+.bar-gauge.horiz .bar-center-tick { top: 0; bottom: 0; width: 2px; margin-left: -1px; }
+.bar-gauge.vert .bar-center-tick { left: 0; right: 0; height: 2px; margin-bottom: -1px; }
 .bar-gauge .bar-fill.over { background: var(--red); }
 .bar-gauge .bar-val { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-shadow: 0 1px 4px rgba(0,0,0,.35); overflow: hidden; }
 .bar-gauge .bar-end { position: absolute; font-size: .62rem; color: var(--text2); }
@@ -626,9 +630,11 @@ td { font-variant-numeric: tabular-nums; }
 .g-track { fill: none; stroke: var(--surface3); stroke-width: 13; stroke-linecap: round; }
 .g-value {
   fill: none; stroke-width: 13; stroke-linecap: round;
-  transition: stroke-dasharray .14s linear, opacity .2s;
+  transition: stroke-dasharray .14s linear, stroke-dashoffset .14s linear, opacity .2s;
   filter: drop-shadow(0 0 8px var(--accent-glow));
 }
+/* centre-point tick: marks the pivot a centred gauge sweeps from */
+.g-center-tick { stroke: var(--text3); stroke-width: 2; opacity: .8; }
 .g-value.over { stroke: var(--red) !important; filter: drop-shadow(0 0 8px var(--tone-danger-bg)); }
 .g-center {
   position: absolute; inset: 0;
