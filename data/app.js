@@ -4490,13 +4490,9 @@ const Gauges = () => {
     // tile to their own gestures — only the gauge grid area starts a swipe
     if (e.target.closest('#gauges-head, #gauge-pages, input, button, select, textarea, label, .action-tile-btn, .toggle-tile, .slider-tile, a')) return;
     swipeRef.current = { x: e.clientX, y: e.clientY, t: performance.now() };
-    // Capture to this stable element NOW, at touch-down. On touch the pointer
-    // is otherwise implicitly captured to the target under the finger — a
-    // gauge's SVG/canvas — which the 100ms stream re-renders mid-drag,
-    // detaching the capture so move/up stop arriving (swipe worked over empty
-    // space but not over a live tile, only on touch). Capturing here beats
-    // that race. View-mode content is height-capped to fit, so giving up
-    // native vertical scroll for the gesture costs nothing.
+    // Capture to this stable element so move/up keep arriving even as the
+    // finger crosses tiles (the actual gesture-grab is prevented by
+    // touch-action: none on the tiles — see style.css).
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {}
   };
   // Live feedback: a gradient grows from the edge you're dragging toward, only
@@ -4768,7 +4764,8 @@ const Gauges = () => {
       </div>
       `}
       <div class="main-left ${editing ? '' : 'gauge-swipe'}" onpointerdown=${onSwipeStart}
-        onpointermove=${onSwipeMove} onpointerup=${onSwipeEnd} onpointercancel=${() => { swipeRef.current = null; clearSwipeHint(); }}>
+        onpointermove=${onSwipeMove} onpointerup=${onSwipeEnd}
+        onpointercancel=${() => { swipeRef.current = null; clearSwipeHint(); }}>
         ${!editing && html`<div class="swipe-hint" ref=${swipeHintRef}></div>`}
         ${kiosk && html`<button class="kiosk-exit" title="Exit full screen" onclick=${() => setKiosk(false)}>✕</button>`}
         <div id="gauges-head" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem;gap:8px;flex-wrap:wrap">

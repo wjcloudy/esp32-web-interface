@@ -817,7 +817,14 @@ td { font-variant-numeric: tabular-nums; }
    vertical scrolling but hands HORIZONTAL touch gestures to our swipe handler
    — without it the browser claims the drag as a scroll and fires
    pointercancel (not pointerup), so swipe worked with a mouse but not on touch. */
-.gauge-swipe { user-select: none; -webkit-user-select: none; touch-action: pan-y; position: relative; }
+.gauge-swipe { user-select: none; -webkit-user-select: none; touch-action: none; position: relative; }
+/* Android Chrome doesn't reliably honour an ancestor's touch-action on inline
+   SVG/canvas, so set it directly on the swipe surfaces (leaving interactive
+   tiles to their own handling) */
+.gauge-swipe .grid-stack, .gauge-swipe .grid-stack-item, .gauge-swipe .gauge-tile,
+.gauge-swipe .svg-gauge, .gauge-swipe .bar-gauge, .gauge-swipe svg, .gauge-swipe canvas,
+.gauge-swipe .ind-wrap { touch-action: none; }
+.gauge-swipe .toggle-tile, .gauge-swipe .slider-tile, .gauge-swipe .action-tile-btn { touch-action: auto; }
 /* swipe feedback: a gradient that grows from the edge being dragged toward.
    Opacity is set live from JS during the drag; pointer-events none so it never
    intercepts the gesture it's visualising. */
