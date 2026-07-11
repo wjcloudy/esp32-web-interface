@@ -2240,8 +2240,9 @@ static void handleWifiStatus()
 // no HTTP round-trip per sample. Served by a minimal raw-TCP listener on
 // its own port because the synchronous WebServer can't hold a connection
 // open without blocking every other request. One client at a time (a new
-// stream replaces the old); UART mode only — the browser falls back to
-// polling whenever the connection fails or is refused.
+// stream replaces the old). UART mode reads over the serial link, CAN
+// mode via the same SDO path /cmd uses; the browser falls back to polling
+// whenever the connection fails.
 static WiFiServer sseServer(SSE_PORT);
 static WiFiClient sseClient;
 static String sseNames = "";
@@ -2281,7 +2282,7 @@ static void sseAccept()
     char ch = names[i];
     if (!isalnum(ch) && ch != '_' && ch != ',' && ch != '.' && ch != '-') namesOk = false;
   }
-  if (reqLine.indexOf("GET /stream") != 0 || canMode || !namesOk) {
+  if (reqLine.indexOf("GET /stream") != 0 || !namesOk) {
     nc.print("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
     nc.stop();
     return;
@@ -2304,9 +2305,19 @@ static void sseTick()
   sseAccept();
   if (!sseClient) return;
   if (!sseClient.connected()) { sseClient.stop(); sseNames = ""; return; }
-  if (canMode || sseNames.length() == 0) return;
+  if (sseNames.length() == 0) return;
   if (millis() - sseLastSend < sseIntervalMs) return;
   sseLastSend = millis();
+  if (canMode) {
+    // Same SDO read path /cmd uses — never while a firmware update owns the bus
+    if (canFwBusy()) return;
+    String out = canExecuteCommand("get " + sseNames, 0);
+    if (out.length() == 0 || out == "update in progress") return;
+    out.replace('\r', ' ');
+    out.replace('\n', ' ');
+    sseClient.print("data: " + out + "\n\n");
+    return;
+  }
   // One plain 'get' transaction on the UART — loop() runs this and the web
   // server sequentially, so it never races a /cmd request. Baud negotiation
   // stays handleCommand's job; the regular json poll keeps it settled.

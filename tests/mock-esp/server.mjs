@@ -267,7 +267,6 @@ export function createMockEsp({ port = 0 } = {}) {
       // SSE value stream, like the firmware's port-81 listener (served on
       // the mock's own port — settings.sse_port points here)
       if (p === '/stream') {
-        if (settings.can_mode) { res.writeHead(404); return res.end(); }
         const names = (url.searchParams.get('names') || '').split(',').filter(Boolean);
         const ms = Math.min(5000, Math.max(20, parseInt(url.searchParams.get('ms') || '100')));
         commandLog.push('stream ' + names.join(','));

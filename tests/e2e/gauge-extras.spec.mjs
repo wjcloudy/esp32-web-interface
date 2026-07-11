@@ -104,6 +104,22 @@ test.describe('Gauge extras', () => {
     expect((await mock.commands()).filter(c => c === 'get udc').length).toBe(getsBefore);
   });
 
+  test('values stream over SSE in CAN mode too', async ({ page, mock }) => {
+    await fetch(mock.url + '/settings?can_mode=1', { method: 'POST' });
+    await seedLayout(mock, [
+      { id: 1, name: 'udc', type: 'radial', min: 0, max: 500, x: 0, y: 0, w: 3, h: 3 },
+    ]);
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await expect(page.locator('.svg-gauge .g-val')).toContainText('398.5');
+    await expect.poll(async () => await mock.commands()).toContain('stream udc');
+    // Live updates flow over the stream, not fresh polls
+    const getsBefore = (await mock.commands()).filter(c => c === 'get udc').length;
+    await setSpot(mock, 'udc', 320);
+    await expect(page.locator('.svg-gauge .g-val')).toContainText('320.0');
+    expect((await mock.commands()).filter(c => c === 'get udc').length).toBe(getsBefore);
+  });
+
   test('falls back to polling when the stream is unavailable (old firmware)', async ({ page, mock }) => {
     await seedLayout(mock, [
       { id: 1, name: 'udc', type: 'radial', min: 0, max: 500, x: 0, y: 0, w: 3, h: 3 },

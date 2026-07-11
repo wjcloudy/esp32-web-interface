@@ -4520,10 +4520,11 @@ const Gauges = () => {
       }
     };
     // Prefer server push when the firmware offers it (sse_port in /settings):
-    // one long-lived connection instead of an HTTP round-trip per sample.
-    // Any error — old firmware, blocked port, CAN-mode refusal — falls back
-    // to the polling loop, which is always available.
-    if (!state.canMode && state.ssePort && window.EventSource) {
+    // one long-lived connection instead of an HTTP round-trip per sample,
+    // whichever backend (UART or CAN) is behind it. Any error — old
+    // firmware, blocked port — falls back to the polling loop, which is
+    // always available.
+    if (state.ssePort && window.EventSource) {
       const url = location.protocol + '//' + location.hostname + ':' + state.ssePort +
         '/stream?names=' + names.join(',') + '&ms=' + interval;
       es = new EventSource(url);
