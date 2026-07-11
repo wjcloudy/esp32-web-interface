@@ -143,13 +143,13 @@ test.describe('Gauge extras', () => {
     expect(csv.some(l => l.endsWith(',123'))).toBe(true);
   });
 
-  test('drive mode hides the chrome and the exit button restores it', async ({ page, mock }) => {
+  test('full-screen mode hides the chrome and the exit button restores it', async ({ page, mock }) => {
     await seedLayout(mock, [
       { id: 1, name: 'udc', type: 'radial', min: 0, max: 500, x: 0, y: 0, w: 3, h: 3 },
     ]);
     await openApp(page, mock);
     await gotoTab(page, 'Gauges');
-    await page.locator('#drive-mode-btn').click();
+    await page.locator('#fullscreen-btn').click();
     await expect(page.locator('body')).toHaveClass(/kiosk/);
     await expect(page.locator('#navbar')).toBeHidden();
     await expect(page.locator('#gauges-head')).toBeHidden();

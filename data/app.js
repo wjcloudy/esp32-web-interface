@@ -4157,7 +4157,7 @@ const Gauges = () => {
     a.download = 'gauges-' + new Date(started).toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.csv';
     a.click();
   };
-  // Drive mode: full-screen gauges, all chrome hidden
+  // Full-screen mode: gauges only, all chrome hidden
   const [kiosk, setKiosk] = useState(false);
   useEffect(() => {
     document.body.classList.toggle('kiosk', kiosk);
@@ -4169,7 +4169,7 @@ const Gauges = () => {
     return () => document.body.classList.remove('kiosk');
   }, [kiosk]);
   useEffect(() => {
-    // Leaving fullscreen (Esc, system gesture) exits drive mode too
+    // Leaving browser fullscreen (Esc, system gesture) exits the mode too
     const onFs = () => { if (!document.fullscreenElement) setKiosk(false); };
     document.addEventListener('fullscreenchange', onFs);
     return () => document.removeEventListener('fullscreenchange', onFs);
@@ -4594,7 +4594,7 @@ const Gauges = () => {
       </div>
       `}
       <div class="main-left">
-        ${kiosk && html`<button class="kiosk-exit" title="Exit drive mode" onclick=${() => setKiosk(false)}>✕</button>`}
+        ${kiosk && html`<button class="kiosk-exit" title="Exit full screen" onclick=${() => setKiosk(false)}>✕</button>`}
         <div id="gauges-head" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem;gap:8px;flex-wrap:wrap">
           <h2 style="margin:0">Gauges</h2>
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
@@ -4615,7 +4615,7 @@ const Gauges = () => {
               title=${recording ? 'Stop and review the recording' : 'Record the streamed values for CSV export'}
               style=${'font-size:.75rem;padding:4px 12px' + (recording ? ';color:var(--red);border-color:var(--red)' : '')}>
               ${recording ? '■ Stop' : '● Record'}</button>`}
-            ${!editing && html`<button id="drive-mode-btn" onclick=${() => setKiosk(true)} title="Drive mode — full-screen gauges, chrome hidden" style="font-size:.75rem;padding:4px 12px">⛶ Drive</button>`}
+            ${!editing && html`<button id="fullscreen-btn" onclick=${() => setKiosk(true)} title="Full screen — gauges only, all chrome hidden" style="font-size:.75rem;padding:4px 12px">⛶ Full screen</button>`}
             ${!editing && html`<button onclick=${() => setEditing(true)} style="font-size:.75rem;padding:4px 12px"><${Icon} n="edit" />Edit Layout</button>`}
           </div>
         </div>
