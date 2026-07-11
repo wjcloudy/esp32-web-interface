@@ -159,6 +159,28 @@ test.describe('Gauge extras', () => {
     expect(csv.some(l => l.endsWith(',123'))).toBe(true);
   });
 
+  test('transparent tiles drop the card background and outline', async ({ page, mock }) => {
+    await seedLayout(mock, [
+      { id: 1, name: 'udc', type: 'radial', transparent: true, min: 0, max: 500, x: 0, y: 0, w: 3, h: 3 },
+      { id: 2, name: 'udc', type: 'radial', min: 0, max: 500, x: 3, y: 0, w: 3, h: 3 },
+    ]);
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    const clear = page.locator('.gauge-tile').first();
+    const normal = page.locator('.gauge-tile').nth(1);
+    await expect(clear).toHaveClass(/tile-clear/);
+    await expect(normal).not.toHaveClass(/tile-clear/);
+    expect(await clear.evaluate(el => getComputedStyle(el).backgroundColor)).toBe('rgba(0, 0, 0, 0)');
+    expect(await normal.evaluate(el => getComputedStyle(el).backgroundColor)).not.toBe('rgba(0, 0, 0, 0)');
+    // The option round-trips through the settings modal
+    await page.locator('button', { hasText: 'Edit Layout' }).click();
+    await clear.click();
+    const modal = page.locator('.modal-content');
+    await expect(modal.locator('#gauge-transparent')).toBeChecked();
+    await modal.locator('#gauge-transparent').uncheck();
+    await expect(clear).not.toHaveClass(/tile-clear/);
+  });
+
   test('full-screen mode hides the chrome and the exit button restores it', async ({ page, mock }) => {
     await seedLayout(mock, [
       { id: 1, name: 'udc', type: 'radial', min: 0, max: 500, x: 0, y: 0, w: 3, h: 3 },

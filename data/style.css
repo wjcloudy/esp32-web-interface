@@ -806,6 +806,9 @@ td { font-variant-numeric: tabular-nums; }
   overflow: hidden;
 }
 .gauge-tile-name { font-weight: 600; font-size: .82rem; margin: 2px 0; max-width: 95%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* transparent tiles: the gauge floats on the page with no card chrome
+   (the edit-mode dashed outline still shows, so they stay manipulable) */
+.gauge-tile.tile-clear { background: transparent; border-color: transparent; }
 /* edit mode affordances: dashed outline + grab cursor, like a layout editor */
 .gauges-editing .gauge-tile { outline: 1.5px dashed var(--accent); cursor: grab; }
 .gauges-editing .grid-stack-item.ui-draggable-dragging .gauge-tile { cursor: grabbing; opacity: .85; }

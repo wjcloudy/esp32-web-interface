@@ -4641,7 +4641,7 @@ const Gauges = () => {
               ${/* In edit mode a tap opens the tile's settings (no overlay
                   buttons — on a 1x1 mobile tile they'd all overlap the
                   resize handle); drags are filtered by dragBusyRef */ ''}
-              <div class="grid-stack-item-content gauge-tile ${alarming ? 'alarming' : ''}" title=${g.label || g.name || ''}
+              <div class="grid-stack-item-content gauge-tile ${alarming ? 'alarming' : ''} ${g.transparent ? 'tile-clear' : ''}" title=${g.label || g.name || ''}
                 style=${alarming ? '--alarmc:' + ((g.warnColor && /^#[0-9a-fA-F]{6}$/.test(g.warnColor)) ? g.warnColor : '#ef4444') : ''}
                 onclick=${editing ? (() => { if (!dragBusyRef.current) setConfigId(g.id); }) : undefined}>
                 ${/* 'tap to set up' only for truly unconfigured tiles — a
@@ -4722,6 +4722,12 @@ const Gauges = () => {
                 <input type="text" value=${cfg.label || ''} placeholder="(shows the value name)" maxlength="24"
                   oninput=${e => updateGaugeConfig(cfg.id, 'label', e.target.value)} style="flex:1;padding:5px 8px" />
               </div>
+              <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+                <span style="width:4.5em">Clear</span>
+                <input id="gauge-transparent" type="checkbox" checked=${!!cfg.transparent}
+                  onchange=${e => updateGaugeConfig(cfg.id, 'transparent', e.target.checked || undefined)} style="width:auto" />
+                <span style="font-size:.72rem;color:var(--text3)">transparent tile — no card background or outline</span>
+              </label>
               ${!['text', 'action', 'toggle'].includes(cfg.type) && html`<div style="display:flex;gap:8px;align-items:center">
                 <label style="width:4.5em">Min</label>
                 <input type="number" value=${cfg.min} oninput=${e => updateGaugeConfig(cfg.id, 'min', parseFloat(e.target.value) || 0)} style="width:6em;padding:5px 6px" step="any" />
