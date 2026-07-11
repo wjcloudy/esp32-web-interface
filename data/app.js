@@ -3216,7 +3216,9 @@ const hueShift = (hex, deg) => {
 // A centre point makes the arc sweep FROM that value: above it draws
 // forward, below it draws backward — a 0-centred power gauge shows drive
 // one way and regen the other, pivoting on a tick at the centre mark.
-const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decimals = 1, warn, warnColor, center }) => {
+// invertScale mirrors the whole scale (max at the arc's start, min at its
+// end), fill and labels included.
+const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decimals = 1, warn, warnColor, center, invertScale }) => {
   const size = px || 230, c = size / 2, r = Math.round(size * 0.4);
   const sw = Math.max(8, Math.round(size * 0.057));
   const SWEEP = 270; // degrees, gap centered at the bottom
@@ -3227,8 +3229,13 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decim
   const arc = circ * SWEEP / 360;
   const hasCenter = center != null && center > min && center < max;
   const cFrac = hasCenter ? (center - min) / span : 0;
-  const startFrac = hasCenter ? Math.min(frac, cFrac) : 0;
+  let startFrac = hasCenter ? Math.min(frac, cFrac) : 0;
   const lenFrac = hasCenter ? Math.abs(frac - cFrac) : frac;
+  // Inverted scale: mirror the fill segment along the sweep
+  if (invertScale) startFrac = 1 - (startFrac + lenFrac);
+  const tickFrac = invertScale ? 1 - cFrac : cFrac;
+  const loLabel = invertScale ? max : min;
+  const hiLabel = invertScale ? min : max;
   const grad = 'ggrad' + id;
   const custom = color && /^#[0-9a-fA-F]{6}$/.test(color);
   const warned = warn != null && v != null && v >= warn;
@@ -3258,7 +3265,7 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decim
             stroke-dashoffset=${-(arc * startFrac)} style=${'stroke-width:' + sw + 'px'} />
           ${hasCenter && (() => {
             // Tick marking the pivot, drawn radially across the track
-            const a = cFrac * SWEEP * Math.PI / 180;
+            const a = tickFrac * SWEEP * Math.PI / 180;
             const r1 = r - sw / 2 - 2, r2 = r + sw / 2 + 2;
             return html`<line class="g-center-tick"
               x1=${(c + r1 * Math.cos(a)).toFixed(1)} y1=${(c + r1 * Math.sin(a)).toFixed(1)}
@@ -3284,8 +3291,8 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decim
           and ~22% up, so pushing the labels out AND down clears the track
           on both axes even at ~100px phone dials */ ''}
       ${size >= 90 && html`
-        <div class="g-min" style=${'left:' + Math.round(size * 0.07) + 'px;bottom:' + Math.round(size * 0.03) + 'px;font-size:' + Math.max(0.62, size / 230 * 0.68).toFixed(2) + 'rem'}>${min}</div>
-        <div class="g-max" style=${'right:' + Math.round(size * 0.07) + 'px;bottom:' + Math.round(size * 0.03) + 'px;font-size:' + Math.max(0.62, size / 230 * 0.68).toFixed(2) + 'rem'}>${max}</div>
+        <div class="g-min" style=${'left:' + Math.round(size * 0.07) + 'px;bottom:' + Math.round(size * 0.03) + 'px;font-size:' + Math.max(0.62, size / 230 * 0.68).toFixed(2) + 'rem'}>${loLabel}</div>
+        <div class="g-max" style=${'right:' + Math.round(size * 0.07) + 'px;bottom:' + Math.round(size * 0.03) + 'px;font-size:' + Math.max(0.62, size / 230 * 0.68).toFixed(2) + 'rem'}>${hiLabel}</div>
       `}
     </div>`;
 };
@@ -3399,7 +3406,7 @@ const IndicatorLamp = ({ value, min, max, color, enums, invert, px }) => {
 // level bar or a column depending on the tile's shape (wider = horizontal,
 // taller = vertical). Same range/gradient/over-range behaviour as the
 // radial; value overlaid in the centre, min/max in the corners.
-const BarGauge = ({ value, min = 0, max = 100, unit, color, enums, decimals = 1, w, h, warn, warnColor, center }) => {
+const BarGauge = ({ value, min = 0, max = 100, unit, color, enums, decimals = 1, w, h, warn, warnColor, center, invertScale }) => {
   const v = (value == null || isNaN(value)) ? null : value;
   const lo = min != null ? min : 0;
   const hi = (max == null || max === lo) ? lo + 100 : max;
@@ -3407,8 +3414,13 @@ const BarGauge = ({ value, min = 0, max = 100, unit, color, enums, decimals = 1,
   // Centre point: the fill grows FROM this value in either direction
   const hasCenter = center != null && center > lo && center < hi;
   const cFrac = hasCenter ? (center - lo) / (hi - lo) : 0;
-  const startFrac = hasCenter ? Math.min(frac, cFrac) : 0;
+  let startFrac = hasCenter ? Math.min(frac, cFrac) : 0;
   const lenFrac = hasCenter ? Math.abs(frac - cFrac) : frac;
+  // Inverted scale: mirror the fill segment (max at the bar's start)
+  if (invertScale) startFrac = 1 - (startFrac + lenFrac);
+  const tickFrac = invertScale ? 1 - cFrac : cFrac;
+  const loLabel = invertScale ? hi : lo;
+  const hiLabel = invertScale ? lo : hi;
   const horiz = w >= h;
   const custom = color && /^#[0-9a-fA-F]{6}$/.test(color);
   const dir = horiz ? '90deg' : '0deg';
@@ -3431,13 +3443,13 @@ const BarGauge = ({ value, min = 0, max = 100, unit, color, enums, decimals = 1,
         style=${(horiz ? 'left:' : 'bottom:') + (startFrac * 100).toFixed(1) + '%;'
           + (horiz ? 'width:' : 'height:') + (lenFrac * 100).toFixed(1) + '%;'
           + (warned ? 'background:' + wc : over ? '' : 'background:' + grad)}></div>
-      ${hasCenter && html`<div class="bar-center-tick" style=${(horiz ? 'left:' : 'bottom:') + (cFrac * 100).toFixed(1) + '%'}></div>`}
+      ${hasCenter && html`<div class="bar-center-tick" style=${(horiz ? 'left:' : 'bottom:') + (tickFrac * 100).toFixed(1) + '%'}></div>`}
       <div class="bar-val g-val" style=${'font-size:' + vfs + 'px'}>
         ${disp}${!enums && unit ? html`<span class="g-unit" style="display:inline;margin-left:4px;font-size:.5em">${unit}</span>` : ''}
       </div>
       ${showEnds && html`
-        <span class="bar-end bar-lo">${lo}</span>
-        <span class="bar-end bar-hi">${hi}</span>
+        <span class="bar-end bar-lo">${loLabel}</span>
+        <span class="bar-end bar-hi">${hiLabel}</span>
       `}
     </div>`;
 };
@@ -3680,7 +3692,7 @@ const GaugeTileBody = ({ g, title, value, unit, enums, editing, canMode, presets
         ? html`<${BarGauge} value=${value} unit=${unit} enums=${enums} color=${g.color || ''}
             decimals=${g.decimals != null ? g.decimals : 1} min=${g.min != null ? g.min : 0}
             max=${(g.max == null || g.max === 0) ? 4000 : g.max} w=${w - 8} h=${gh - 4}
-            warn=${g.warn} warnColor=${g.warnColor} center=${g.center} />`
+            warn=${g.warn} warnColor=${g.warnColor} center=${g.center} invertScale=${!!g.invertScale} />`
         : (g.type === 'toggle')
         ? html`<${ToggleTile} g=${g} value=${value} canMode=${canMode} editing=${editing} px=${Math.max(20, Math.min(w, gh) - 4)} />`
         : (g.type === 'slider')
@@ -3688,7 +3700,7 @@ const GaugeTileBody = ({ g, title, value, unit, enums, editing, canMode, presets
         : html`<${SvgGauge} id=${g.id} value=${value} unit=${unit} color=${g.color || ''} enums=${enums}
             px=${Math.max(40, Math.min(w, gh) - 4)} decimals=${g.decimals != null ? g.decimals : 1}
             min=${g.min != null ? g.min : 0} max=${(g.max == null || g.max === 0) ? 4000 : g.max}
-            warn=${g.warn} warnColor=${g.warnColor} center=${g.center} />`)}
+            warn=${g.warn} warnColor=${g.warnColor} center=${g.center} invertScale=${!!g.invertScale} />`)}
       </div>
     </div>`;
 };
@@ -4216,6 +4228,11 @@ const Gauges = () => {
                     style="width:34px;height:28px;padding:0;border:1px solid var(--border2);border-radius:6px;background:none;cursor:pointer" />
                 </div>
                 <p style="font-size:.72rem;color:var(--text3);margin:0">The gauge switches to the warn colour at/above this value — e.g. 80 on a coolant dial. Blank keeps the default (red past 92% of range).</p>
+                <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+                  <span style="width:4.5em">Invert</span>
+                  <input type="checkbox" checked=${!!cfg.invertScale} onchange=${e => updateGaugeConfig(cfg.id, 'invertScale', e.target.checked)} style="width:auto" />
+                  <span style="font-size:.72rem;color:var(--text3)">reverse the scale — Max at the start, Min at the end</span>
+                </label>
               `}
               ${cfg.type === 'text' && html`
                 <div style="display:flex;gap:8px;align-items:center">

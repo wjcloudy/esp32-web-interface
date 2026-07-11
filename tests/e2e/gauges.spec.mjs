@@ -730,6 +730,27 @@ test.describe('Gauges grid', () => {
     await expect.poll(arcOffset, { timeout: 5000 }).toBeGreaterThan(below * 1.5);
   });
 
+  test('inverted scale mirrors radial and bar (max at the start)', async ({ page, mock }) => {
+    const layout = { v: 3, pages: [{ id: 1, name: 'Main', items: [
+      { id: 1, name: 'udc', type: 'radial', min: 0, max: 500, invertScale: true, x: 0, y: 0, w: 3, h: 3 },
+      { id: 2, name: 'udc', type: 'bar', min: 0, max: 500, invertScale: true, x: 3, y: 0, w: 5, h: 1 },
+    ] }] };
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(layout) });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    // udc 398.5 of 0..500 = 79.7%: inverted, the bar fills the LAST 79.7%
+    const fill = page.locator('.bar-gauge .bar-fill');
+    await expect(fill).toHaveAttribute('style', /left:\s*20\.3%.*width:\s*79\.7%/, { timeout: 5000 });
+    // The end labels swap: 500 sits at the start, 0 at the end
+    await expect(page.locator('.bar-gauge .bar-lo')).toHaveText('500');
+    await expect(page.locator('.bar-gauge .bar-hi')).toHaveText('0');
+    // The radial mirrors via its dash offset (nonzero = not anchored at start)
+    const off = Math.abs(parseFloat(await page.locator('circle.g-value').getAttribute('stroke-dashoffset')));
+    expect(off).toBeGreaterThan(0);
+    await expect(page.locator('.g-min')).toHaveText('500');
+    await expect(page.locator('.g-max')).toHaveText('0');
+  });
+
   test('toggle tile flips a parameter and follows its live value', async ({ page, mock }) => {
     const layout = { v: 3, pages: [{ id: 1, name: 'Main', items: [
       { id: 1, type: 'toggle', param: 'potmin', onValue: 100, offValue: 0, label: 'Heat', onLabel: 'Heating', offLabel: 'Idle', x: 0, y: 0, w: 2, h: 2 },
