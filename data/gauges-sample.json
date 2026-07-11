@@ -31,7 +31,8 @@
           "y": 0,
           "w": 4,
           "h": 4,
-          "center": 0
+          "center": 0,
+          "invertScale": true
         },
         {
           "id": 3,
