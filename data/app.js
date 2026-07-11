@@ -3473,7 +3473,10 @@ const TextTile = ({ value, unit, enums, text, decimals, w, h }) => {
   const inline = showUnit && h < 40;
   const budget = (showUnit && !inline) ? h - Math.max(10, Math.round(h * 0.24)) : h;
   const fitLen = Math.max(2, disp.length + (inline ? Math.ceil(String(unit).length * 0.6) + 1 : 0));
-  const fs = Math.max(11, Math.min(Math.round(budget * 0.52), Math.round((w * 1.5) / fitLen)));
+  // Height cap keeps compact-titled phone tiles from clipping; 9px floor is
+  // the readability limit for the tiniest tiles
+  let fs = Math.min(Math.round(budget * 0.52), Math.round((w * 1.5) / fitLen), Math.max(9, h - 1));
+  fs = Math.max(9, fs);
   return html`
     <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;max-width:100%;overflow:hidden">
       <div class="g-val" style=${'font-size:' + fs + 'px;line-height:1.15;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%'}>
@@ -3657,12 +3660,13 @@ const GaugeTileBody = ({ g, title, value, unit, enums, editing, canMode, presets
   // Small tiles (1x1, or 2x2 on a phone) drop the name row so the gauge
   // itself always gets the space — the tile's title attribute still names it.
   // Unnamed tiles (static text captions) don't render the placeholder dash.
-  // Indicators keep their title down to 18px (a phone 1x1 measures ~23px):
-  // the lamp is small enough that a compact name row still fits above it.
-  // Other types need the space for the gauge itself, so they drop the name
-  // below 48px — and above that every tile uses the SAME fixed name row, so
-  // titles read as one consistent size across a page of mixed tile types.
-  const compactName = g.type === 'indicator' && h < 48 && h >= 18;
+  // Indicators and text tiles keep their title down to 18px (a phone 1x1
+  // measures ~23px, a 2x1 ~30px): their content is compact enough that a
+  // small name row still fits above it. Other types need the space for the
+  // gauge itself, so they drop the name below 48px — and above that every
+  // tile uses the SAME fixed name row, so titles read as one consistent
+  // size across a page of mixed tile types.
+  const compactName = (g.type === 'indicator' || g.type === 'text') && h < 48 && h >= 18;
   const showName = title !== '—' && (h >= 48 || compactName);
   const nameH = !showName ? 0
     : compactName ? Math.max(8, Math.min(12, Math.round(h * 0.32)))
@@ -3676,7 +3680,9 @@ const GaugeTileBody = ({ g, title, value, unit, enums, editing, canMode, presets
     <div ref=${ref} style="flex:1;width:100%;min-height:0;display:flex;flex-direction:column;align-items:center;overflow:hidden">
       ${showName && html`<div class="gauge-tile-name" style=${'font-size:' + nameFs + 'px;line-height:' + nameH + 'px;margin:0'}>${title}</div>`}
       <div style="flex:1;width:100%;min-height:0;display:flex;align-items:center;justify-content:center;overflow:hidden">
-      ${w > 12 && gh > 12 && ((g.type === 'line')
+      ${/* text tiles render down to ~8px of gauge area — a compact title on
+          a phone 2x1 leaves just that, and short text still reads */ ''}
+      ${w > 12 && (g.type === 'text' ? gh > 7 : gh > 12) && ((g.type === 'line')
         ? html`<${GaugeLine} key=${g.id} name=${g.name} min=${g.min} max=${g.max} value=${value} unit=${unit} color=${g.color || ''} enums=${enums}
             points=${g.points || 20} sampleMs=${g.sampleMs || 100} decimals=${g.decimals != null ? g.decimals : 1}
             w=${w - 4} h=${gh - 2} />`
@@ -3685,7 +3691,7 @@ const GaugeTileBody = ({ g, title, value, unit, enums, editing, canMode, presets
             invert=${!!g.invert} px=${Math.max(14, Math.min(w, gh) - 4)} />`
         : (g.type === 'text')
         ? html`<${TextTile} value=${value} unit=${unit} enums=${enums} text=${g.text || ''}
-            decimals=${g.decimals != null ? g.decimals : 1} w=${w - 6} h=${gh - 4} />`
+            decimals=${g.decimals != null ? g.decimals : 1} w=${w - 6} h=${gh - (gh < 20 ? 0 : 4)} />`
         : (g.type === 'action')
         ? html`<${ActionTile} g=${g} canMode=${canMode} editing=${editing} presets=${presets} w=${w - 10} h=${gh - 8} />`
         : (g.type === 'bar')

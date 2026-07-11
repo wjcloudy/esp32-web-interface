@@ -177,8 +177,10 @@ test.describe('Settings tab', () => {
     await expect.poll(async () => (await mock.state()).files).toContain('gauges.json');
     const saved = await fetch(mock.url + '/gauges.json').then(r => r.json());
     expect(saved.pages[0].name).toBe('Restored');
-    // A wrong-shaped file is refused: a presets file can't restore as gauges
-    await page.reload();
+    // A wrong-shaped file is refused: a presets file can't restore as gauges.
+    // (The app reloads ITSELF after a successful restore — our reload may
+    // race it and abort; either way a loaded page follows.)
+    await page.reload().catch(() => {});
     await expect(page.locator('#version')).toContainText('Web: v0.1-mock');
     await gotoTab(page, 'Settings');
     await gotoSubTab(page, 'Configuration');

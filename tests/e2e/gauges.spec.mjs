@@ -417,6 +417,19 @@ test.describe('Gauges grid', () => {
     await expect.poll(async () => (await savedLayout(mock)).pages[0].items[0].w).toBe(3);
   });
 
+  test('2x1 text tiles keep their label at a phone viewport', async ({ page, mock }) => {
+    const layout = { v: 3, pages: [{ id: 1, name: 'Main', items: [
+      { id: 1, name: 'udc', label: 'Battery', type: 'text', decimals: 1, x: 0, y: 0, w: 2, h: 1 },
+    ] }] };
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(layout) });
+    await page.setViewportSize({ width: 390, height: 780 });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    // Compact title row fits above the value even on a ~30px-tall tile
+    await expect(page.locator('.gauge-tile-name', { hasText: 'Battery' })).toBeVisible();
+    await expect(page.locator('.gauge-tile .g-val')).toContainText('398.5');
+  });
+
   test('editing works at a mobile viewport', async ({ page, mock }) => {
     await page.setViewportSize({ width: 390, height: 780 });
     await openApp(page, mock);
