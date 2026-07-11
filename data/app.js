@@ -954,25 +954,29 @@ const Parameters = () => {
   };
 
   // --- presets ---
-  const applyPreset = async (pr) => {
+  const applyPreset = async (pr, alsoSave) => {
     const total = Object.keys(pr.params || {}).length;
     if (!total) { alert('Preset "' + pr.name + '" is empty.'); return; }
     if (applying) return;
-    if (!confirm('Apply preset "' + pr.name + '" (' + total + ' parameter' + (total === 1 ? '' : 's') + ')?')) return;
+    if (!confirm('Apply preset "' + pr.name + '" (' + total + ' parameter' + (total === 1 ? '' : 's') + ')' +
+      (alsoSave ? ' and save to flash?' : '?\n(Live only — values revert on reboot unless saved to flash.)'))) return;
     setApplying(true); setApplyPct(0); setApplyMsg('Applying ' + pr.name + '...');
     const res = await applyParamMap(pr.params, (name, i, t) => {
       setApplyMsg('Setting ' + name + ' (' + (i + 1) + ' / ' + t + ')');
       setApplyPct(Math.round(100 * (i + 1) / t));
     });
+    let saved = false;
+    if (alsoSave && res.ok > 0) {
+      setApplyMsg('Saving to flash...');
+      try { await api.getText('save'); saved = true; } catch (err) {}
+    }
     setApplyMsg('Refreshing...');
     try { dispatch({ type: 'SET_PARAMS', payload: await api.getJSON('json') }); } catch (err) {}
     setApplying(false);
-    const summary = 'Applied ' + res.ok + ' of ' + res.total + ' from "' + pr.name + '".' +
-      (res.failed.length ? '\nFailed: ' + res.failed.join(', ') : '');
-    // OK = persist to flash, Cancel = keep the values live-only
-    if (confirm(summary + '\n\nSave parameters to flash now?\n(Cancel keeps them live only — they revert on reboot.)')) {
-      api.getText('save').then(r => alert(r || 'Parameters saved'));
-    }
+    alert('Applied ' + res.ok + ' of ' + res.total + ' from "' + pr.name + '".' +
+      (res.failed.length ? '\nFailed: ' + res.failed.join(', ') : '') +
+      (alsoSave ? (saved ? '\nSaved to flash.' : '\nFlash save FAILED — values are live only.')
+                : '\nLive only — use Apply & save (or Save parameters to flash) to keep them.'));
   };
   const deletePreset = (id) => {
     const pr = state.presets.find(p => p.id === id);
@@ -1053,9 +1057,10 @@ const Parameters = () => {
         ${state.presets.map(pr => html`
           <div class="preset-row" key=${pr.id}>
             <span class="preset-name" title=${Object.keys(pr.params || {}).length + ' parameter(s)'}>${pr.name}</span>
-            <button onclick=${() => applyPreset(pr)} title="Apply this preset now" style="width:auto;padding:3px 9px"><${Icon} n="check" size=${11} /></button>
-            <button onclick=${() => openPresetEditor(pr)} title="Edit" style="width:auto;padding:3px 9px"><${Icon} n="edit" size=${11} /></button>
-            <button onclick=${() => deletePreset(pr.id)} title="Delete" style="width:auto;padding:3px 9px;color:var(--red)">×</button>
+            <button onclick=${() => applyPreset(pr, false)} title="Apply now — live only, reverts on reboot">Apply</button>
+            <button onclick=${() => applyPreset(pr, true)} title="Apply now and save to flash">Apply & save</button>
+            <button onclick=${() => openPresetEditor(pr)} title="Edit"><${Icon} n="edit" size=${11} /></button>
+            <button onclick=${() => deletePreset(pr.id)} title="Delete" style="color:var(--red)">×</button>
           </div>
         `)}
         <button onclick=${() => openPresetEditor(null)}><${Icon} n="plus" />New preset</button>
@@ -1089,18 +1094,25 @@ const Parameters = () => {
                   <td>${p.i !== undefined ? p.i : '-'}</td>
                   <td><div class="tooltip">${p.name}<span class="tooltiptext ${docstrings.get(p.name) ? '' : 'tooltiptext-empty'}">${docstrings.get(p.name) || 'No description available.'}</span></div></td>
                   <td>
-                    ${editing === p.name ? html`
-                      <input type="number" min=${p.minimum} max=${p.maximum} step="0.05" value=${editValue} 
-                        oninput=${e => setEditValue(e.target.value)}
-                        onblur=${() => saveParam(p.name, editValue)}
-                        onkeyup=${e => e.keyCode === 13 && saveParam(p.name, editValue)}
-                        autofocus />
-                    ` : p.enums ? html`
+                    ${p.enums ? html`
                       <select class="styled" value=${String(p.value)} onchange=${e => saveParam(p.name, e.target.value)}>
                         ${Object.keys(p.enums).map(k => html`<option value=${k}>${p.enums[k]}</option>`)}
                       </select>
                     ` : html`
-                      <span onclick=${() => { setEditing(p.name); setEditValue(p.value); }} style="cursor:pointer">${p.value}</span>
+                      ${/* Always-editable: focusing snapshots the value so the
+                          poll can't revert keystrokes; Enter/blur commit only
+                          when the value actually changed, Escape reverts */ ''}
+                      <input type="number" min=${p.minimum} max=${p.maximum} step="0.05"
+                        value=${editing === p.name ? editValue : p.value}
+                        onfocus=${() => { setEditing(p.name); setEditValue(String(p.value)); }}
+                        oninput=${e => setEditValue(e.target.value)}
+                        onblur=${() => { if (editing !== p.name) return;
+                          if (editValue !== '' && parseFloat(editValue) !== parseFloat(p.value)) saveParam(p.name, editValue);
+                          else setEditing(null); }}
+                        onkeyup=${e => { if (editing !== p.name) return;
+                          if (e.keyCode === 13 && editValue !== '' && parseFloat(editValue) !== parseFloat(p.value)) saveParam(p.name, editValue);
+                          if (e.keyCode === 27) { setEditValue(String(p.value)); setEditing(null); e.target.blur(); } }}
+                        style="width:6.5em;padding:3px 6px" />
                     `}
                   </td>
                   <td>${p.unit && p.unit.indexOf('=') === -1 ? p.unit : ''}</td>

@@ -31,30 +31,28 @@ test.describe('Parameter presets', () => {
     await openApp(page, mock);
     await gotoTab(page, 'Parameters');
     const dialogs = [];
-    page.on('dialog', d => {
-      dialogs.push(d.message());
-      // Accept the apply confirm; DECLINE the save-to-flash offer
-      if (d.message().includes('Save parameters to flash now?')) d.dismiss();
-      else d.accept();
-    });
-    await page.locator('.preset-row', { hasText: 'Track' }).locator('button').first().click();
+    page.on('dialog', d => { dialogs.push(d.message()); d.accept(); });
+    // Plain Apply: live-only, never touches flash
+    await page.locator('.preset-row', { hasText: 'Track' }).locator('button', { hasText: /^Apply$/ }).click();
     await expect.poll(() => dialogs.length, { timeout: 15000 }).toBeGreaterThanOrEqual(2);
-    expect(dialogs[0]).toContain('Apply preset "Track" (2 parameters)?');
+    expect(dialogs[0]).toContain('Apply preset "Track" (2 parameters)');
     expect(dialogs[1]).toContain('Applied 1 of 2');
     expect(dialogs[1]).toContain('doesnotexist');
     expect(await mock.commands()).toContain('set fweak 72');
     expect((await mock.state()).inverter.params.fweak.value).toBe(72);
-    // Declined the flash save -> no 'save' command
     expect((await mock.commands()).filter(c => c === 'save')).toEqual([]);
   });
 
-  test('accepting the flash-save offer runs save', async ({ page, mock }) => {
+  test('Apply & save applies then saves to flash', async ({ page, mock }) => {
     await seedPresets(mock, [{ id: 1, name: 'Street', params: { fweak: 70 } }]);
     await openApp(page, mock);
     await gotoTab(page, 'Parameters');
-    page.on('dialog', d => d.accept());
-    await page.locator('.preset-row', { hasText: 'Street' }).locator('button').first().click();
+    const dialogs = [];
+    page.on('dialog', d => { dialogs.push(d.message()); d.accept(); });
+    await page.locator('.preset-row', { hasText: 'Street' }).locator('button', { hasText: 'Apply & save' }).click();
     await expect.poll(async () => await mock.commands(), { timeout: 15000 }).toContain('save');
+    expect(await mock.commands()).toContain('set fweak 70');
+    expect(dialogs[dialogs.length - 1]).toContain('Saved to flash');
   });
 
   test('changed-from-default captures exactly the tuned parameters', async ({ page, mock }) => {

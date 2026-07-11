@@ -12,7 +12,7 @@ test.describe('Parameters tab', () => {
     await openApp(page, mock);
     await gotoTab(page, 'Parameters');
     const row = page.locator('#params tr', { hasText: 'fweak' });
-    await expect(row).toContainText('67'); // value
+    await expect(row.locator('input[type="number"]')).toHaveValue('67'); // value, always-editable
     await expect(row).toContainText('Hz'); // unit
     await expect(row).toContainText('400'); // max
     await expect(page.locator('#params')).toContainText('Motor (sine)'); // category header
@@ -22,11 +22,11 @@ test.describe('Parameters tab', () => {
     await openApp(page, mock);
     await gotoTab(page, 'Parameters');
     const row = page.locator('#params tr', { hasText: 'fweak' });
-    await row.locator('td').nth(3).locator('span').click(); // value cell
+    // Numeric values render as always-editable inputs — no click-to-edit
     const input = row.locator('input[type="number"]');
     await input.fill('72');
     await input.press('Enter');
-    await expect(row).toContainText('72');
+    await expect(input).toHaveValue('72');
     expect(await mock.commands()).toContain('set fweak 72');
     expect((await mock.state()).inverter.params.fweak.value).toBe(72);
   });
@@ -88,7 +88,7 @@ test.describe('Parameters tab', () => {
     const inv = (await mock.state()).inverter.params;
     expect(inv.fweak.value).toBe(72.5);
     // And the UI refreshed to show the new values
-    await expect(page.locator('#params tr', { hasText: 'fweak' })).toContainText('72.5');
+    await expect(page.locator('#params tr', { hasText: 'fweak' }).locator('input[type="number"]')).toHaveValue('72.5');
   });
 
   test('load parameters accepts a flat name->value map and reports rejections', async ({ page, mock }) => {
@@ -114,14 +114,13 @@ test.describe('Parameters tab', () => {
     const dialogs = [];
     page.on('dialog', d => { dialogs.push(d.message()); d.accept(); });
     const row = page.locator('#params tr', { hasText: 'fweak' });
-    await row.locator('td').nth(3).locator('span').click();
     const input = row.locator('input[type="number"]');
     await input.fill('900'); // fweak max is 400
     await input.press('Enter');
-    // Reply "Value out of range" surfaces as an alert; the table keeps 67
+    // Reply "Value out of range" surfaces as an alert; the field keeps 67
     await expect.poll(() => dialogs.length).toBeGreaterThanOrEqual(1);
     expect(dialogs[0]).toContain('out of range');
-    await expect(row).toContainText('67');
+    await expect(input).toHaveValue('67');
     expect((await mock.state()).inverter.params.fweak.value).toBe(67);
   });
 
