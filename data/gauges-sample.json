@@ -33,7 +33,8 @@
           "w": 4,
           "h": 4,
           "center": 0,
-          "transparent": true
+          "transparent": true,
+          "invertScale": true
         },
         {
           "id": 3,
