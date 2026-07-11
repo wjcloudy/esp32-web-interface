@@ -56,6 +56,25 @@ test.describe('Gauges grid', () => {
     expect(layout.pages[0].items[0].name).toBe('udc');
   });
 
+  test('pages reorder by dragging their pills in edit mode', async ({ page, mock }) => {
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', {
+      method: 'POST', body: JSON.stringify({ v: 3, pages: [
+        { id: 1, name: 'Alpha', items: [] },
+        { id: 2, name: 'Bravo', items: [] },
+        { id: 3, name: 'Charlie', items: [] },
+      ] }),
+    });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await enterEdit(page);
+    // Drag Charlie onto Alpha's slot → Charlie moves to the front
+    await page.locator('#gauge-pages .page-pill', { hasText: 'Charlie' })
+      .dragTo(page.locator('#gauge-pages .page-pill', { hasText: 'Alpha' }));
+    await page.locator('button', { hasText: 'Save & Done' }).click();
+    await expect.poll(async () => (await savedLayout(mock)).pages.map(p => p.name))
+      .toEqual(['Charlie', 'Alpha', 'Bravo']);
+  });
+
   test('tiles can be moved by dragging (position round-trips)', async ({ page, mock }) => {
     await openApp(page, mock);
     await gotoTab(page, 'Gauges');
