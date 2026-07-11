@@ -26,21 +26,43 @@ test.describe('Parameter presets', () => {
     expect(saved.presets[0].params).toEqual({ fweak: 72 });
   });
 
-  test('apply a preset with progress, rejection reporting, and optional flash save declined', async ({ page, mock }) => {
+  test('apply opens a dry-run diff, then applies with rejection reporting (no flash save)', async ({ page, mock }) => {
     await seedPresets(mock, [{ id: 1, name: 'Track', params: { fweak: 72, doesnotexist: 5 } }]);
     await openApp(page, mock);
     await gotoTab(page, 'Parameters');
     const dialogs = [];
     page.on('dialog', d => { dialogs.push(d.message()); d.accept(); });
-    // Plain Apply: live-only, never touches flash
+    // Plain Apply: shows the diff first — nothing is sent yet
     await page.locator('.preset-row', { hasText: 'Track' }).locator('button', { hasText: /^Apply$/ }).click();
-    await expect.poll(() => dialogs.length, { timeout: 15000 }).toBeGreaterThanOrEqual(2);
-    expect(dialogs[0]).toContain('Apply preset "Track" (2 parameters)');
-    expect(dialogs[1]).toContain('Applied 1 of 2');
-    expect(dialogs[1]).toContain('doesnotexist');
+    const modal = page.locator('.modal-content');
+    await expect(modal).toContainText('2 of 2 value(s) will change');
+    await expect(modal).toContainText('not reported by this inverter');
+    const fweakRow = modal.locator('#preset-diff-table tr', { hasText: 'fweak' });
+    await expect(fweakRow).toContainText('67'); // current value alongside the preset's 72
+    expect(await mock.commands()).not.toContain('set fweak 72');
+    // Confirm the apply; the summary alert reports the unknown param's rejection
+    await modal.locator('button', { hasText: 'Apply 2 changes' }).click();
+    await expect.poll(() => dialogs.length, { timeout: 15000 }).toBeGreaterThanOrEqual(1);
+    expect(dialogs[0]).toContain('Applied 1 of 2');
+    expect(dialogs[0]).toContain('doesnotexist');
     expect(await mock.commands()).toContain('set fweak 72');
     expect((await mock.state()).inverter.params.fweak.value).toBe(72);
     expect((await mock.commands()).filter(c => c === 'save')).toEqual([]);
+  });
+
+  test('dry-run skips values that already match the inverter', async ({ page, mock }) => {
+    // fweak already sits at its live value 67 — only potmin should be sent
+    await seedPresets(mock, [{ id: 1, name: 'Mixed', params: { fweak: 67, potmin: 100 } }]);
+    await openApp(page, mock);
+    await gotoTab(page, 'Parameters');
+    page.on('dialog', d => d.accept());
+    await page.locator('.preset-row', { hasText: 'Mixed' }).locator('button', { hasText: /^Apply$/ }).click();
+    const modal = page.locator('.modal-content');
+    await expect(modal).toContainText('1 of 2 value(s) will change');
+    await modal.locator('button', { hasText: 'Apply 1 change' }).click();
+    await expect.poll(async () => (await mock.state()).inverter.params.potmin.value).toBe(100);
+    expect(await mock.commands()).toContain('set potmin 100');
+    expect(await mock.commands()).not.toContain('set fweak 67');
   });
 
   test('Apply & save applies then saves to flash', async ({ page, mock }) => {
@@ -50,9 +72,12 @@ test.describe('Parameter presets', () => {
     const dialogs = [];
     page.on('dialog', d => { dialogs.push(d.message()); d.accept(); });
     await page.locator('.preset-row', { hasText: 'Street' }).locator('button', { hasText: 'Apply & save' }).click();
+    const modal = page.locator('.modal-content');
+    await expect(modal).toContainText('1 of 1 value(s) will change');
+    await modal.locator('button', { hasText: 'Apply 1 change & save' }).click();
     // Wait for the SUMMARY dialog — the save command lands before it opens
-    await expect.poll(() => dialogs.length, { timeout: 15000 }).toBeGreaterThanOrEqual(2);
-    expect(dialogs[1]).toContain('Saved to flash');
+    await expect.poll(() => dialogs.length, { timeout: 15000 }).toBeGreaterThanOrEqual(1);
+    expect(dialogs[0]).toContain('Saved to flash');
     expect(await mock.commands()).toContain('save');
     expect(await mock.commands()).toContain('set fweak 70');
   });

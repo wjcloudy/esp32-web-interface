@@ -84,6 +84,7 @@
 //HardwareSerial Inverter(INVERTER_PORT);
 
 const char* host = "inverter";
+String deviceName = ""; // friendly nickname (Settings → Device Name); also drives the hostname
 bool fastUart = false;
 bool fastUartAvailable = true;
 uint8_t fastUartAttempts = 0; // negotiation storms per boot are bounded — wrong-baud bytes can upset some inverter consoles
@@ -2004,11 +2005,14 @@ static String readSavedCanNodes()
   return nodes;
 }
 
+static String jsonEscape(const String& s); // defined with the wifi-status handler below
+
 static void saveSettings(const String& canNodesJson)
 {
   File f = SPIFFS.open("/settings.json", "w");
   if (f) {
-    f.printf("{\"txrx_swapped\":%s,\"ap_fallback\":%s,\"can_mode\":%s,\"can_node_id\":%d,\"can_speed\":%d,\"can_rx_pin\":%d,\"can_tx_pin\":%d,\"can_nodes\":%s}",
+    f.printf("{\"dev_name\":\"%s\",\"txrx_swapped\":%s,\"ap_fallback\":%s,\"can_mode\":%s,\"can_node_id\":%d,\"can_speed\":%d,\"can_rx_pin\":%d,\"can_tx_pin\":%d,\"can_nodes\":%s}",
+             jsonEscape(deviceName).c_str(),
              txrxSwapped ? "true" : "false",
              apFallback ? "true" : "false",
              canMode ? "true" : "false",
@@ -2031,6 +2035,19 @@ static void loadSettings()
       txrxSwapped = json.indexOf("\"txrx_swapped\":false") < 0;
 
       apFallback = json.indexOf("\"ap_fallback\":true") >= 0;
+
+      // dev_name is a quoted string — read to the closing quote, honouring escapes
+      int dn = json.indexOf("\"dev_name\":\"");
+      if (dn >= 0) {
+        String nm = "";
+        for (unsigned int i = dn + 12; i < json.length(); i++) {
+          char ch = json[i];
+          if (ch == '\\' && i + 1 < json.length()) nm += json[++i];
+          else if (ch == '"') break;
+          else nm += ch;
+        }
+        deviceName = nm.substring(0, 32);
+      }
 
       canMode = json.indexOf("\"can_mode\":true") >= 0;
 
@@ -2071,6 +2088,11 @@ static void handleSettings()
     txrxSwapped = (server.arg("txrx_swap") == "1");
     saveSettings();
     initUART(true);
+    server.send(200, "text/json", "{\"result\":\"ok\"}");
+  } else if (server.hasArg("dev_name")) {
+    deviceName = server.arg("dev_name").substring(0, 32);
+    saveSettings();
+    // The mDNS/OTA hostname picks the new name up on the next boot
     server.send(200, "text/json", "{\"result\":\"ok\"}");
   } else if (server.hasArg("ap_fallback")) {
     apFallback = (server.arg("ap_fallback") == "1");
@@ -2114,7 +2136,8 @@ static void handleSettings()
     }
     server.send(200, "text/json", "{\"result\":\"ok\"}");
   } else {
-    String json = "{\"txrx_swapped\":";
+    String json = "{\"dev_name\":\"" + jsonEscape(deviceName) + "\"";
+    json += ",\"txrx_swapped\":";
     json += txrxSwapped ? "true" : "false";
     json += ",\"ap_fallback\":";
     json += apFallback ? "true" : "false";
@@ -2291,21 +2314,36 @@ void setup(void){
   #ifdef WIFI_IS_OFF_AT_BOOT
     enableWiFiAtBootTime();
   #endif
+  // The device nickname doubles as the network hostname (sanitised to
+  // hostname-safe characters); without one the classic "inverter" stands
+  String mdnsHost = host;
+  if (deviceName.length()) {
+    String hn = "";
+    for (unsigned int i = 0; i < deviceName.length(); i++) {
+      char ch = tolower(deviceName[i]);
+      if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')) hn += ch;
+      else if ((ch == ' ' || ch == '-' || ch == '_') && hn.length() && hn[hn.length() - 1] != '-') hn += '-';
+    }
+    while (hn.length() && hn[hn.length() - 1] == '-') hn.remove(hn.length() - 1);
+    if (hn.length()) mdnsHost = hn;
+  }
+
   // AP-fallback boots station-only: the AP appears (via staCheck) only if the
   // station can't connect within its grace period
   WiFi.mode(apFallback ? WIFI_STA : WIFI_AP_STA);
   //WiFi.setPhyMode(WIFI_PHY_MODE_11B);
   WiFi.setSleep(false);
   WiFi.setTxPower(WIFI_POWER_19_5dBm);//25); //dbm
+  WiFi.setHostname(mdnsHost.c_str());
   WiFi.begin();
   sta_tick.attach(10, staCheck);
-  
-  MDNS.begin(host);
+
+  MDNS.begin(mdnsHost.c_str());
 
   updater.setup(&server);
-  
+
   //SERVER INIT
-  ArduinoOTA.setHostname(host);
+  ArduinoOTA.setHostname(mdnsHost.c_str());
   ArduinoOTA.begin();
   //list directory
   server.on("/list", HTTP_GET, handleFileList);

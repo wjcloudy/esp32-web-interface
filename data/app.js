@@ -66,6 +66,9 @@ const api = {
   async setParam(name, value) {
     const reply = (await this.getText('set ' + name + ' ' + value)).trim();
     const ok = !/out of range|unknown param|set failed|error/i.test(reply);
+    // Every UI-issued 'set' flows through here — the one place the change
+    // log can see them all (table edits, presets, action/toggle/slider tiles)
+    try { logParamSet(name, value, ok); } catch (e) {}
     return { ok, reply };
   },
 
@@ -225,6 +228,7 @@ const initialState = {
   webVersion: '',
   updateTag: null, // newest GitHub release tag, when newer than webVersion
   presets: [], // named parameter sets ({id, name, params: {name: value}})
+  deviceName: '', // friendly nickname for this module (Settings → Device)
   history: {}, // recent numeric samples for dashboard sparklines
 };
 
@@ -256,6 +260,41 @@ async function applyParamMap(params, onProgress) {
     } catch (e) { failed.push(name); }
   }
   return { ok, total: entries.length, failed };
+}
+
+// ==================== Parameter change log ====================
+// Every 'set' issued through the UI lands in a ring buffer persisted on the
+// device (paramlog.json) — an audit trail of what was changed and when.
+// Writes are debounced so a preset apply (dozens of sets) is one file write.
+const PARAM_LOG_MAX = 200;
+let _paramLog = null; // in-memory entries once loaded
+let _paramLogTimer;
+async function loadParamLog() {
+  if (_paramLog) return _paramLog;
+  try {
+    const r = await fetch('/paramlog.json');
+    const d = r.ok ? await r.json() : null;
+    _paramLog = (d && Array.isArray(d.entries)) ? d.entries : [];
+  } catch (e) { _paramLog = []; }
+  return _paramLog;
+}
+function writeParamLog(entries) {
+  const fd = new FormData();
+  fd.append('updatefile', new Blob([JSON.stringify({ v: 1, entries })], { type: 'application/json' }), 'paramlog.json');
+  return fetch('/edit', { method: 'POST', body: fd }).catch(() => {});
+}
+function logParamSet(name, value, ok) {
+  loadParamLog().then(list => {
+    list.push({ t: Date.now(), name, value, ok });
+    if (list.length > PARAM_LOG_MAX) list.splice(0, list.length - PARAM_LOG_MAX);
+    clearTimeout(_paramLogTimer);
+    _paramLogTimer = setTimeout(() => writeParamLog(list), 1500);
+  });
+}
+function clearParamLog() {
+  _paramLog = [];
+  clearTimeout(_paramLogTimer);
+  writeParamLog([]);
 }
 
 // Friendly display names for common spot values on the dashboard hero card
@@ -382,6 +421,8 @@ function reducer(state, action) {
       return { ...state, updateTag: action.payload };
     case 'SET_PRESETS':
       return { ...state, presets: action.payload };
+    case 'SET_DEVICE_NAME':
+      return { ...state, deviceName: action.payload };
     case 'SET_FILE_LIST':
       return { ...state, fileList: action.payload };
     case 'SET_ALL_CATEGORIES': {
@@ -501,6 +542,8 @@ const ICONS = {
   expand: '<polyline points="7 6 12 11 17 6"/><polyline points="7 13 12 18 17 13"/>',
   collapse: '<polyline points="17 11 12 6 7 11"/><polyline points="17 18 12 13 7 18"/>',
   life: '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="4"/><line x1="4.93" y1="4.93" x2="9.17" y2="9.17"/><line x1="14.83" y1="14.83" x2="19.07" y2="19.07"/><line x1="14.83" y1="9.17" x2="19.07" y2="4.93"/><line x1="4.93" y1="19.07" x2="9.17" y2="14.83"/>',
+  compare: '<polyline points="8 7 3 12 8 17"/><polyline points="16 7 21 12 16 17"/><line x1="3" y1="12" x2="21" y2="12"/>',
+  clock: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
 };
 const Icon = ({ n, size = 13 }) => html`<span class="btn-ic" dangerouslySetInnerHTML=${{
   __html: '<svg width="' + size + '" height="' + size + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + (ICONS[n] || '') + '</svg>'
@@ -602,7 +645,8 @@ const Navbar = () => {
           <span class="navbar-text">${t.label}</span>
         </div>
       `)}
-      <div id="version">
+      ${state.deviceName && html`<div id="device-name" title="Device name — set in Settings">${state.deviceName}</div>`}
+      <div id="version" style=${state.deviceName ? 'margin-top:6px' : ''}>
         ${state.firmwareVersion && html`F/W: ${state.firmwareVersion}<br/>`}Web: ${state.webVersion || '—'}
       </div>
       ${(() => {
@@ -825,6 +869,12 @@ const Parameters = () => {
   const [applyMsg, setApplyMsg] = useState('');
   // Preset editor draft: { id, name, rows: [{name, value}] } (null = closed)
   const [presetEdit, setPresetEdit] = useState(null);
+  // Preset dry-run: { pr, alsoSave, rows } shown before anything is sent
+  const [presetDiff, setPresetDiff] = useState(null);
+  // Compare-to-file result: { fileName, rows } (null = closed)
+  const [compare, setCompare] = useState(null);
+  // Parameter change log entries, newest first (null = closed)
+  const [logView, setLogView] = useState(null);
 
   if (!state.params) return html`<div class="tabdiv main-content" style="display:flex"><p>Loading...</p></div>`;
 
@@ -954,29 +1004,90 @@ const Parameters = () => {
   };
 
   // --- presets ---
-  const applyPreset = async (pr, alsoSave) => {
-    const total = Object.keys(pr.params || {}).length;
-    if (!total) { alert('Preset "' + pr.name + '" is empty.'); return; }
+  // Applying starts with a dry-run diff: preset vs live values, so the user
+  // sees exactly what will change before anything is sent. Only differing
+  // rows are applied (each 'set' is a serial round-trip).
+  const openApplyPreset = (pr, alsoSave) => {
+    if (!Object.keys(pr.params || {}).length) { alert('Preset "' + pr.name + '" is empty.'); return; }
     if (applying) return;
-    if (!confirm('Apply preset "' + pr.name + '" (' + total + ' parameter' + (total === 1 ? '' : 's') + ')' +
-      (alsoSave ? ' and save to flash?' : '?\n(Live only — values revert on reboot unless saved to flash.)'))) return;
+    const rows = Object.entries(pr.params).map(([name, value]) => {
+      const p = state.params[name];
+      return { name, value, cur: p ? p.value : null, known: !!p,
+        same: p != null && parseFloat(p.value) === parseFloat(value) };
+    }).sort((a, b) => (a.same === b.same ? a.name.localeCompare(b.name) : a.same ? 1 : -1));
+    setPresetDiff({ pr, alsoSave, rows });
+  };
+  const runPresetApply = async () => {
+    const { pr, alsoSave, rows } = presetDiff;
+    setPresetDiff(null);
+    const params = {};
+    rows.filter(r => !r.same).forEach(r => { params[r.name] = r.value; });
+    const total = Object.keys(params).length;
+    let res = { ok: 0, total: 0, failed: [] };
     setApplying(true); setApplyPct(0); setApplyMsg('Applying ' + pr.name + '...');
-    const res = await applyParamMap(pr.params, (name, i, t) => {
-      setApplyMsg('Setting ' + name + ' (' + (i + 1) + ' / ' + t + ')');
-      setApplyPct(Math.round(100 * (i + 1) / t));
-    });
+    if (total) {
+      res = await applyParamMap(params, (name, i, t) => {
+        setApplyMsg('Setting ' + name + ' (' + (i + 1) + ' / ' + t + ')');
+        setApplyPct(Math.round(100 * (i + 1) / t));
+      });
+    }
     let saved = false;
-    if (alsoSave && res.ok > 0) {
+    if (alsoSave && (res.ok > 0 || total === 0)) {
       setApplyMsg('Saving to flash...');
       try { await api.getText('save'); saved = true; } catch (err) {}
     }
     setApplyMsg('Refreshing...');
     try { dispatch({ type: 'SET_PARAMS', payload: await api.getJSON('json') }); } catch (err) {}
     setApplying(false);
-    alert('Applied ' + res.ok + ' of ' + res.total + ' from "' + pr.name + '".' +
+    alert('Applied ' + res.ok + ' of ' + res.total + ' from "' + pr.name + '"' +
+      (rows.length - total ? ' (' + (rows.length - total) + ' already matched)' : '') + '.' +
       (res.failed.length ? '\nFailed: ' + res.failed.join(', ') : '') +
       (alsoSave ? (saved ? '\nSaved to flash.' : '\nFlash save FAILED — values are live only.')
                 : '\nLive only — use Apply & save (or Save parameters to flash) to keep them.'));
+  };
+
+  // --- compare parameters to a file (nothing is applied) ---
+  const compareParamsFile = async (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    let parsed;
+    try { parsed = JSON.parse(await file.text()); } catch (err) { alert('Could not read parameter file: ' + err.message); return; }
+    const rows = [];
+    for (const name in parsed) {
+      const v = parsed[name];
+      const value = (v !== null && typeof v === 'object') ? v.value : v;
+      if (value === undefined || value === null || value === '' || typeof value === 'object') continue;
+      const p = state.params[name];
+      rows.push({ name, file: value, cur: p ? p.value : null, known: !!p,
+        same: p != null && parseFloat(p.value) === parseFloat(value) });
+    }
+    if (!rows.length) { alert('No parameters found in that file'); return; }
+    rows.sort((a, b) => (a.same === b.same ? a.name.localeCompare(b.name) : a.same ? 1 : -1));
+    setCompare({ fileName: file.name, rows });
+  };
+  const saveDiffAsPreset = () => {
+    const rows = compare.rows.filter(r => !r.same && r.known).map(r => ({ name: r.name, value: parseFloat(r.file) }));
+    if (!rows.length) { alert('No usable differences to capture.'); return; }
+    const name = compare.fileName.replace(/\.json$/i, '').slice(0, 24);
+    setCompare(null);
+    setPresetEdit({ id: null, name, rows });
+  };
+
+  // --- parameter change log ---
+  const openChangeLog = async () => setLogView([...(await loadParamLog())].reverse());
+  const clearChangeLog = () => {
+    if (!confirm('Clear the parameter change log?')) return;
+    clearParamLog();
+    setLogView([]);
+  };
+  const downloadChangeLog = () => {
+    const lines = ['time,parameter,value,ok',
+      ...logView.slice().reverse().map(en => new Date(en.t).toISOString() + ',' + en.name + ',' + en.value + ',' + (en.ok ? 1 : 0))];
+    const a = document.createElement('a');
+    a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(lines.join('\n'));
+    a.download = 'paramlog.csv';
+    a.click();
   };
   const deletePreset = (id) => {
     const pr = state.presets.find(p => p.id === id);
@@ -1046,6 +1157,10 @@ const Parameters = () => {
         ${/* No accept filter: Android pickers report .json as octet-stream/plain and grey it out; we validate JSON in loadParamsFromFile instead. */ ''}
         <input id="paramfile" type="file" hidden onchange=${loadParamsFromFile} />
         <label class="butt" for="paramfile"><${Icon} n="upload" />Load parameters from file</label>
+        ${/* Compare: a read-only diff of a params file against the live values */ ''}
+        <input id="comparefile" type="file" hidden onchange=${compareParamsFile} />
+        <label class="butt" for="comparefile"><${Icon} n="compare" />Compare to file</label>
+        <button onclick=${openChangeLog}><${Icon} n="clock" />Change log</button>
         ${applying && html`
           <div id="progress" class="graph">
             <div id="bar" style=${{ width: applyPct + '%' }}></div>
@@ -1057,8 +1172,8 @@ const Parameters = () => {
         ${state.presets.map(pr => html`
           <div class="preset-row" key=${pr.id}>
             <span class="preset-name" title=${Object.keys(pr.params || {}).length + ' parameter(s)'}>${pr.name}</span>
-            <button onclick=${() => applyPreset(pr, false)} title="Apply now — live only, reverts on reboot">Apply</button>
-            <button onclick=${() => applyPreset(pr, true)} title="Apply now and save to flash">Apply & save</button>
+            <button onclick=${() => openApplyPreset(pr, false)} title="Review the changes, then apply — live only, reverts on reboot">Apply</button>
+            <button onclick=${() => openApplyPreset(pr, true)} title="Review the changes, then apply and save to flash">Apply & save</button>
             <button onclick=${() => openPresetEditor(pr)} title="Edit"><${Icon} n="edit" size=${11} /></button>
             <button onclick=${() => deletePreset(pr.id)} title="Delete" style="color:var(--red)">×</button>
           </div>
@@ -1174,6 +1289,102 @@ const Parameters = () => {
             <button onclick=${savePreset} style="width:auto"><${Icon} n="save" />Save preset</button>
             <button onclick=${() => setPresetEdit(null)} style="width:auto">Cancel</button>
           </div>
+        </div>
+      </${Modal}>
+    `}
+    ${presetDiff && (() => {
+      const changing = presetDiff.rows.filter(r => !r.same);
+      const unknown = presetDiff.rows.filter(r => !r.known);
+      return html`
+      <${Modal} id="preset-diff" title=${'Apply preset "' + presetDiff.pr.name + '"'} onClose=${() => setPresetDiff(null)}>
+        <p style="font-size:.8rem;margin:0 0 .5rem">
+          <b>${changing.length}</b> of ${presetDiff.rows.length} value(s) will change — the rest already match and are skipped.
+          ${unknown.length > 0 && html`<span style="color:var(--amber)"> ${unknown.length} not reported by this inverter; they'll be attempted anyway.</span>`}
+        </p>
+        <div style="max-height:45vh;overflow-y:auto;border:1px solid var(--border2);border-radius:var(--radius-xs)">
+          <table id="preset-diff-table" style="width:100%">
+            <thead><tr><th>Parameter</th><th>Current</th><th>Preset</th></tr></thead>
+            <tbody>
+              ${presetDiff.rows.map(r => html`
+                <tr key=${r.name} class=${r.same ? 'diff-same' : 'diff-change'}>
+                  <td style="font-family:var(--mono);font-size:.78rem">${r.name}</td>
+                  <td>${r.known ? r.cur : '—'}</td>
+                  <td style=${r.same ? '' : 'color:var(--accent);font-weight:600'}>${r.value}</td>
+                </tr>
+              `)}
+            </tbody>
+          </table>
+        </div>
+        <p style="font-size:.72rem;color:var(--text3);margin:.5rem 0 0">
+          ${presetDiff.alsoSave ? 'Values are applied live, then saved to flash.' : 'Live only — values revert on reboot unless saved to flash.'}
+        </p>
+        <div style="display:flex;gap:8px;margin-top:.75rem">
+          <button onclick=${runPresetApply} style="width:auto" disabled=${!changing.length && !presetDiff.alsoSave}>
+            <${Icon} n="check" />Apply ${changing.length} change${changing.length === 1 ? '' : 's'}${presetDiff.alsoSave ? ' & save' : ''}
+          </button>
+          <button onclick=${() => setPresetDiff(null)} style="width:auto">Cancel</button>
+        </div>
+      </${Modal}>`;
+    })()}
+    ${compare && (() => {
+      const diff = compare.rows.filter(r => !r.same && r.known);
+      const match = compare.rows.filter(r => r.same);
+      const unknown = compare.rows.filter(r => !r.known);
+      return html`
+      <${Modal} id="param-compare" title=${'Compare: ' + compare.fileName} onClose=${() => setCompare(null)}>
+        <p style="font-size:.8rem;margin:0 0 .5rem">
+          <b>${diff.length}</b> value(s) differ, ${match.length} match${unknown.length ? ', ' + unknown.length + ' in the file only (not on this inverter)' : ''}.
+          Nothing has been applied.
+        </p>
+        <div style="max-height:45vh;overflow-y:auto;border:1px solid var(--border2);border-radius:var(--radius-xs)">
+          <table id="param-compare-table" style="width:100%">
+            <thead><tr><th>Parameter</th><th>Inverter</th><th>File</th></tr></thead>
+            <tbody>
+              ${compare.rows.map(r => html`
+                <tr key=${r.name} class=${r.same ? 'diff-same' : 'diff-change'}>
+                  <td style="font-family:var(--mono);font-size:.78rem">${r.name}</td>
+                  <td>${r.known ? r.cur : '—'}</td>
+                  <td style=${r.same ? '' : 'color:var(--accent);font-weight:600'}>${r.file}</td>
+                </tr>
+              `)}
+            </tbody>
+          </table>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:.75rem;flex-wrap:wrap">
+          <button onclick=${saveDiffAsPreset} style="width:auto" disabled=${!diff.length} title="Capture the differing values (at the file's values) as a new preset">
+            <${Icon} n="save" />Save differences as preset
+          </button>
+          <button onclick=${() => setCompare(null)} style="width:auto">Close</button>
+        </div>
+      </${Modal}>`;
+    })()}
+    ${logView && html`
+      <${Modal} id="param-log" title="Parameter change log" onClose=${() => setLogView(null)}>
+        ${logView.length === 0 ? html`
+          <p style="font-size:.85rem;color:var(--text3)">No parameter changes recorded yet. Every value set through this interface — table edits, presets, gauge buttons — is logged here (last ${PARAM_LOG_MAX}).</p>
+        ` : html`
+          <div style="max-height:50vh;overflow-y:auto;border:1px solid var(--border2);border-radius:var(--radius-xs)">
+            <table id="param-log-table" style="width:100%">
+              <thead><tr><th>Time</th><th>Parameter</th><th>Value</th><th></th></tr></thead>
+              <tbody>
+                ${logView.map((en, i) => html`
+                  <tr key=${i}>
+                    <td style="font-size:.72rem;white-space:nowrap">${new Date(en.t).toLocaleString()}</td>
+                    <td style="font-family:var(--mono);font-size:.78rem">${en.name}</td>
+                    <td>${en.value}</td>
+                    <td title=${en.ok ? 'accepted' : 'rejected by the inverter'} style=${'color:' + (en.ok ? 'var(--green)' : 'var(--red)')}>${en.ok ? '✓' : '✗'}</td>
+                  </tr>
+                `)}
+              </tbody>
+            </table>
+          </div>
+        `}
+        <div style="display:flex;gap:8px;margin-top:.75rem;flex-wrap:wrap">
+          ${logView.length > 0 && html`
+            <button onclick=${downloadChangeLog} style="width:auto"><${Icon} n="download" />Download CSV</button>
+            <button onclick=${clearChangeLog} style="width:auto;color:var(--red)"><${Icon} n="trash" />Clear log</button>
+          `}
+          <button onclick=${() => setLogView(null)} style="width:auto">Close</button>
         </div>
       </${Modal}>
     `}
@@ -2706,6 +2917,17 @@ const Settings = () => {
   const [wifiMsg, setWifiMsg] = useState('');
   const [wifiStatus, setWifiStatus] = useState(null); // live /wifi-status (rssi etc.)
   const [apFb, setApFb] = useState(false); // AP broadcasts only as fallback
+  const [devName, setDevName] = useState(''); // friendly device nickname
+  const [devMsg, setDevMsg] = useState('');
+  const saveDevName = async () => {
+    const name = devName.trim();
+    try {
+      await fetch('/settings?dev_name=' + encodeURIComponent(name), { method: 'POST' });
+      dispatch({ type: 'SET_DEVICE_NAME', payload: name });
+      setDevMsg('Saved');
+      setTimeout(() => setDevMsg(''), 2500);
+    } catch (e) { setDevMsg('Save failed'); }
+  };
 
   // Live link state for the WiFi card — refreshed while Settings is open so
   // the signal reading tracks antenna position/moving the device around
@@ -2745,6 +2967,7 @@ const Settings = () => {
           const data = await r.json();
           setTxrxSwapped(data.txrx_swapped !== false);
           setApFb(data.ap_fallback === true);
+          if (typeof data.dev_name === 'string') setDevName(data.dev_name);
           setCanMode(data.can_mode === true);
           if (data.can_node_id) setCanNodeId(data.can_node_id);
           if (data.can_speed !== undefined) setCanSpeed(data.can_speed);
@@ -2979,6 +3202,18 @@ const Settings = () => {
           </p>
         </div>
 
+        <div class="dash-box compact">
+          <h3>Device Name</h3>
+          <p style="color:var(--text2);font-size:.8rem;margin:0 0 .5rem">A friendly name for this module — shown in the sidebar and the browser tab, and used as its network hostname.</p>
+          <div style="display:flex;gap:8px;max-width:350px">
+            <input id="dev-name" type="text" value=${devName} maxlength="32" placeholder="e.g. Landy"
+              oninput=${e => setDevName(e.target.value)} style="flex:1" autocomplete="off" data-lpignore="true" data-1p-ignore />
+            <button onclick=${saveDevName} style="font-size:.75rem;padding:4px 14px;white-space:nowrap"><${Icon} n="save" />Save</button>
+          </div>
+          ${devMsg && html`<p id="dev-name-msg" style="color:var(--accent);font-size:.78rem;font-weight:600;margin:.5rem 0 0">${devMsg}</p>`}
+          <p style="font-size:.72rem;color:var(--text3);margin:.35rem 0 0;max-width:350px">The hostname (<b>${(devName.trim().toLowerCase().replace(/[^a-z0-9 _-]/g, '').replace(/[ _]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'inverter')}.local</b>) applies after the next reboot.</p>
+        </div>
+
         `}
         ${subTab === 'web' && html`
 
@@ -3097,20 +3332,24 @@ const Support = () => html`
 // remounts it (which would drop the accumulated history). `points` sets the
 // visible history length and `sampleMs` how often a sample is taken from the
 // ~100ms stream — together they control the scroll rate/time window.
-const GaugeLine = ({ name, min, max, value, unit, color, enums, w = 230, h = 175, points = 20, sampleMs = 100, decimals = 1 }) => {
+const GaugeLine = ({ name, name2, min, max, value, value2, unit, color, color2, enums, w = 230, h = 175, points = 20, sampleMs = 100, decimals = 1 }) => {
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
   const lastSampleRef = useRef(0);
   const valueH = Math.max(22, Math.round(Math.min(w, h) * 0.16)); // value strip below the chart
   const chartW = Math.max(30, w), chartH = Math.max(24, h - valueH);
+  const dual = !!name2; // second series (the tile remounts when it's toggled)
 
   useEffect(() => {
     if (canvasRef.current && !chartRef.current && typeof Chart !== 'undefined') {
       const yMin = min != null ? min : 0;
       const yMax = max != null && max !== 0 ? max : 4000;
       const col = color || colours[0];
+      const col2 = color2 || colours[2];
+      const datasets = [{ label: name, data: [], borderColor: col, backgroundColor: col + '22', fill: !dual, pointRadius: 0, tension: 0.3 }];
+      if (dual) datasets.push({ label: name2, data: [], borderColor: col2, backgroundColor: col2 + '22', fill: false, pointRadius: 0, tension: 0.3 });
       chartRef.current = new Chart(canvasRef.current, {
-        type: 'line', data: { datasets: [{ label: name, data: [], borderColor: col, backgroundColor: col + '22', fill: true, pointRadius: 0, tension: 0.3 }] },
+        type: 'line', data: { datasets },
         options: {
           animation: false, parsing: false,
           responsive: false, // sized explicitly via chart.resize below
@@ -3148,8 +3387,13 @@ const GaugeLine = ({ name, min, max, value, unit, color, enums, w = 230, h = 175
       chart.data.datasets[0].borderColor = col;
       chart.data.datasets[0].backgroundColor = col + '22';
     }
+    const col2 = color2 || colours[2];
+    if (chart.data.datasets[1]) {
+      chart.data.datasets[1].borderColor = col2;
+      chart.data.datasets[1].backgroundColor = col2 + '22';
+    }
     chart.update('none');
-  }, [min, max, color]);
+  }, [min, max, color, color2]);
 
   // Shrinking the history trims the tail immediately
   useEffect(() => {
@@ -3167,23 +3411,33 @@ const GaugeLine = ({ name, min, max, value, unit, color, enums, w = 230, h = 175
     if (now - lastSampleRef.current < sampleMs) return; // decimate to the sample rate
     lastSampleRef.current = now;
     const chart = chartRef.current;
-    const ds = chart.data.datasets[0];
-    if (!ds) return;
-    ds.data.push({ x: ds.data.length, y: value });
-    while (ds.data.length > points) ds.data.shift();
-    // Renumber x values so they remain contiguous from 0
-    ds.data.forEach((pt, i) => { pt.x = i; });
+    const push = (ds, val) => {
+      if (!ds || val == null || isNaN(val)) return;
+      ds.data.push({ x: ds.data.length, y: val });
+      while (ds.data.length > points) ds.data.shift();
+      // Renumber x values so they remain contiguous from 0
+      ds.data.forEach((pt, i) => { pt.x = i; });
+    };
+    push(chart.data.datasets[0], value);
+    if (dual) push(chart.data.datasets[1], value2);
     chart.update('none');
-  }, [value]);
+  }, [value, value2]);
 
   return html`
     <div style=${'width:' + w + 'px;height:' + h + 'px;display:flex;flex-direction:column;align-items:center;overflow:hidden'}>
       <canvas ref=${canvasRef}></canvas>
-      <div class="g-val" style=${'font-size:' + Math.max(0.8, Math.min(w, h) / 230 * 1.6).toFixed(2) + 'rem;margin-top:2px;line-height:1'}>
-        ${value != null ? (enums ? String(Math.round(value)) : value.toFixed(decimals)) : '—'}
+      <div class="g-val" style=${'font-size:' + (Math.max(0.8, Math.min(w, h) / 230 * 1.6) * (dual ? 0.78 : 1)).toFixed(2) + 'rem;margin-top:2px;line-height:1'}>
+        ${dual ? html`
+          ${/* Two series: both live values, tinted to their lines */ ''}
+          <span style=${'color:' + (color || colours[0])}>${value != null ? value.toFixed(decimals) : '—'}</span>
+          <span style="opacity:.45;margin:0 4px;font-weight:400">/</span>
+          <span style=${'color:' + (color2 || colours[2])}>${value2 != null && !isNaN(value2) ? value2.toFixed(decimals) : '—'}</span>
+        ` : html`
+          ${value != null ? (enums ? String(Math.round(value)) : value.toFixed(decimals)) : '—'}
+        `}
         ${/* unit rides the value's font via em so it scales with tile size
             (floored near the stylesheet default for small tiles) */ ''}
-        ${enums
+        ${enums && !dual
           ? (value != null && html`<span class="g-unit g-enum" style=${'display:inline;margin-left:6px;font-size:' + Math.max(0.7, Math.max(0.8, Math.min(w, h) / 230 * 1.6) * 0.42).toFixed(2) + 'rem'}>${enumLabel(enums, value)}</span>`)
           : (unit && html`<span class="g-unit" style=${'display:inline;margin-left:4px;font-size:' + Math.max(0.7, Math.max(0.8, Math.min(w, h) / 230 * 1.6) * 0.42).toFixed(2) + 'rem'}>${unit}</span>`)}
       </div>
@@ -3218,7 +3472,7 @@ const hueShift = (hex, deg) => {
 // one way and regen the other, pivoting on a tick at the centre mark.
 // invertScale mirrors the whole scale (max at the arc's start, min at its
 // end), fill and labels included.
-const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decimals = 1, warn, warnColor, center, invertScale }) => {
+const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decimals = 1, warn, warnColor, center, invertScale, peaks, gstyle }) => {
   const size = px || 230, c = size / 2, r = Math.round(size * 0.4);
   const sw = Math.max(8, Math.round(size * 0.057));
   const SWEEP = 270; // degrees, gap centered at the bottom
@@ -3242,6 +3496,22 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decim
   const wc = (warnColor && /^#[0-9a-fA-F]{6}$/.test(warnColor)) ? warnColor : '#f59e0b';
   const stroke = warned ? wc : 'url(#' + grad + ')';
   const legacyOver = warn == null && frac >= 0.92;
+  // Needle dial: pointer over the track instead of a fill arc; the value
+  // moves into the arc's bottom gap, out of the pointer's way
+  const needle = gstyle === 'needle';
+  const pointFrac = invertScale ? 1 - frac : frac;
+  // Fraction along the DISPLAYED sweep for an arbitrary value (peak ticks)
+  const dispFrac = (val) => {
+    const f = Math.min(1, Math.max(0, (val - min) / span));
+    return invertScale ? 1 - f : f;
+  };
+  const tickLine = (fr, cls, key) => {
+    const a = fr * SWEEP * Math.PI / 180;
+    const r1 = r - sw / 2 - (cls === 'g-peak-tick' ? 6 : 2), r2 = r + sw / 2 + (cls === 'g-peak-tick' ? 0 : 2);
+    return html`<line key=${key} class=${cls}
+      x1=${(c + r1 * Math.cos(a)).toFixed(1)} y1=${(c + r1 * Math.sin(a)).toFixed(1)}
+      x2=${(c + r2 * Math.cos(a)).toFixed(1)} y2=${(c + r2 * Math.sin(a)).toFixed(1)} />`;
+  };
   return html`
     <div class="svg-gauge" style=${'width:' + size + 'px;height:' + size + 'px'}>
       <svg width=${size} height=${size} viewBox=${'0 0 ' + size + ' ' + size}>
@@ -3260,25 +3530,30 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decim
         <g transform=${'rotate(135 ' + c + ' ' + c + ')'}>
           <circle class="g-track" cx=${c} cy=${c} r=${r} stroke-dasharray=${arc + ' ' + circ} style=${'stroke-width:' + sw + 'px'} />
           <circle class="g-value ${legacyOver ? 'over' : ''}" cx=${c} cy=${c} r=${r}
-            stroke=${stroke} opacity=${lenFrac > 0.004 ? 1 : 0}
+            stroke=${stroke} opacity=${!needle && lenFrac > 0.004 ? 1 : 0}
             stroke-dasharray=${(arc * lenFrac) + ' ' + circ}
             stroke-dashoffset=${-(arc * startFrac)} style=${'stroke-width:' + sw + 'px'} />
-          ${hasCenter && (() => {
-            // Tick marking the pivot, drawn radially across the track
-            const a = tickFrac * SWEEP * Math.PI / 180;
-            const r1 = r - sw / 2 - 2, r2 = r + sw / 2 + 2;
-            return html`<line class="g-center-tick"
-              x1=${(c + r1 * Math.cos(a)).toFixed(1)} y1=${(c + r1 * Math.sin(a)).toFixed(1)}
-              x2=${(c + r2 * Math.cos(a)).toFixed(1)} y2=${(c + r2 * Math.sin(a)).toFixed(1)} />`;
-          })()}
+          ${hasCenter && tickLine(tickFrac, 'g-center-tick', 'ct')}
+          ${/* Peak-hold: markers at the session's highest (and, for centred
+              gauges, lowest) value seen so far */ ''}
+          ${peaks && tickLine(dispFrac(peaks.max), 'g-peak-tick', 'pmax')}
+          ${peaks && hasCenter && tickLine(dispFrac(peaks.min), 'g-peak-tick', 'pmin')}
+          ${needle && v != null && html`
+            <g class="g-needle" style=${'transform-origin:' + c + 'px ' + c + 'px;transform:rotate(' + (pointFrac * SWEEP).toFixed(2) + 'deg)'}>
+              <line x1=${c + Math.round(r * 0.25)} y1=${c} x2=${c + r - Math.round(sw * 0.4)} y2=${c}
+                stroke=${warned ? wc : (custom ? color : '#ff6b6b')}
+                stroke-width=${Math.max(2, Math.round(size * 0.016))} stroke-linecap="round" />
+            </g>
+            <circle class="g-hub" cx=${c} cy=${c} r=${Math.max(3, Math.round(size * 0.032))} />`}
         </g>
       </svg>
-      <div class="g-center">
+      <div class="g-center" style=${needle ? 'padding-top:' + Math.round(size * 0.52) + 'px' : ''}>
         ${(() => {
           // Unit stays proportional to the VALUE font (never bigger, as the
           // old .8rem floor became on small dials) with a small readable
-          // floor — so it shows at every size without overflowing the centre
-          const vfs = Math.max(0.62, size / 230 * 2.1);
+          // floor — so it shows at every size without overflowing the centre.
+          // Needle dials squeeze the value into the arc's bottom gap.
+          const vfs = Math.max(0.62, size / 230 * 2.1) * (needle ? 0.72 : 1);
           const ufs = Math.max(0.5, Math.min(vfs * 0.45, Math.max(0.8, size / 230 * 0.8))).toFixed(2) + 'rem';
           return html`
             <div class="g-val" style=${'font-size:' + vfs.toFixed(2) + 'rem' + (warned ? ';color:' + wc : '')}>${v == null ? '—' : (enums ? String(Math.round(v)) : v.toFixed(decimals))}</div>
@@ -3334,6 +3609,62 @@ const condMatch = (cond, val) => {
   const inside = val >= lo && val <= hi;
   return cond.invert ? !inside : inside;
 };
+
+// ==================== Computed (formula) tiles ====================
+// A tile can derive its value from an arithmetic formula over spot values,
+// e.g. "udc*idc/1000" for power in kW. The expression is the user's own
+// config, but it's still validated against a character whitelist and
+// compiled once; identifiers resolve to streamed values (plus a few Math
+// helpers), and anything unresolvable just reads NaN → "—".
+const CALC_FUNCS = { abs: 1, min: 1, max: 1, sqrt: 1, round: 1, floor: 1, ceil: 1, pow: 1 };
+const calcNames = (expr) => [...new Set((String(expr || '').match(/[A-Za-z_]\w*/g) || []).filter(w => !CALC_FUNCS[w]))];
+const _calcCache = {};
+function calcEval(expr, vals) {
+  let c = _calcCache[expr];
+  if (c === undefined) {
+    c = null;
+    if (/^[\w\s+\-*/().,]+$/.test(expr)) {
+      try {
+        const ids = calcNames(expr);
+        const body = String(expr).replace(/[A-Za-z_]\w*/g, w => CALC_FUNCS[w] ? 'Math.' + w : w);
+        c = { ids, f: new Function(...ids, '"use strict";return (' + body + ')') };
+      } catch (e) { c = null; }
+    }
+    _calcCache[expr] = c;
+  }
+  if (!c) return NaN;
+  try {
+    const args = c.ids.map(n => vals[n]);
+    if (args.some(a => a == null || isNaN(a))) return NaN;
+    const v = c.f(...args);
+    return (typeof v === 'number' && isFinite(v)) ? v : NaN;
+  } catch (e) { return NaN; }
+}
+
+// ==================== Gauge alarms ====================
+// A short WebAudio beep (lazy context — browsers hold audio until a user
+// gesture has happened, so the very first alarm may be silent) and an
+// optional browser notification (permission is requested when the option
+// is picked in the tile settings).
+let _alarmCtx = null;
+function alarmBeep() {
+  try {
+    _alarmCtx = _alarmCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (_alarmCtx.state === 'suspended') _alarmCtx.resume().catch(() => {});
+    const o = _alarmCtx.createOscillator(), gn = _alarmCtx.createGain();
+    o.type = 'square'; o.frequency.value = 880;
+    gn.gain.setValueAtTime(0.12, _alarmCtx.currentTime);
+    gn.gain.exponentialRampToValueAtTime(0.0001, _alarmCtx.currentTime + 0.45);
+    o.connect(gn); gn.connect(_alarmCtx.destination);
+    o.start(); o.stop(_alarmCtx.currentTime + 0.5);
+  } catch (e) { /* no audio available */ }
+}
+function alarmNotify(title, body) {
+  try {
+    if (window.Notification && window.Notification.permission === 'granted')
+      new window.Notification(title, { body });
+  } catch (e) { /* notifications unavailable */ }
+}
 
 function migrateGauges(data) {
   if (data && Array.isArray(data.pages)) {
@@ -3406,7 +3737,7 @@ const IndicatorLamp = ({ value, min, max, color, enums, invert, px }) => {
 // level bar or a column depending on the tile's shape (wider = horizontal,
 // taller = vertical). Same range/gradient/over-range behaviour as the
 // radial; value overlaid in the centre, min/max in the corners.
-const BarGauge = ({ value, min = 0, max = 100, unit, color, enums, decimals = 1, w, h, warn, warnColor, center, invertScale }) => {
+const BarGauge = ({ value, min = 0, max = 100, unit, color, enums, decimals = 1, w, h, warn, warnColor, center, invertScale, peaks }) => {
   const v = (value == null || isNaN(value)) ? null : value;
   const lo = min != null ? min : 0;
   const hi = (max == null || max === lo) ? lo + 100 : max;
@@ -3444,6 +3775,15 @@ const BarGauge = ({ value, min = 0, max = 100, unit, color, enums, decimals = 1,
           + (horiz ? 'width:' : 'height:') + (lenFrac * 100).toFixed(1) + '%;'
           + (warned ? 'background:' + wc : over ? '' : 'background:' + grad)}></div>
       ${hasCenter && html`<div class="bar-center-tick" style=${(horiz ? 'left:' : 'bottom:') + (tickFrac * 100).toFixed(1) + '%'}></div>`}
+      ${/* Peak-hold markers: session max (and min on centred bars) */ ''}
+      ${peaks && (() => {
+        const pf = (val) => {
+          const f = Math.min(1, Math.max(0, (val - lo) / (hi - lo)));
+          return invertScale ? 1 - f : f;
+        };
+        const marks = hasCenter ? [peaks.max, peaks.min] : [peaks.max];
+        return marks.map((val, i) => html`<div key=${'pk' + i} class="bar-peak-tick" style=${(horiz ? 'left:' : 'bottom:') + (pf(val) * 100).toFixed(1) + '%'}></div>`);
+      })()}
       <div class="bar-val g-val" style=${'font-size:' + vfs + 'px'}>
         ${disp}${!enums && unit ? html`<span class="g-unit" style="display:inline;margin-left:4px;font-size:.5em">${unit}</span>` : ''}
       </div>
@@ -3631,9 +3971,23 @@ const SliderTile = ({ g, value, editing, w, h }) => {
 // Fills the tile under the name label and measures itself with a
 // ResizeObserver, so gauges rescale live while a tile is being resized
 // (GridStack changes the DOM size continuously during the drag).
-const GaugeTileBody = ({ g, title, value, unit, enums, editing, canMode, presets }) => {
+const GaugeTileBody = ({ g, title, value, value2, unit, enums, editing, canMode, presets, peaks }) => {
   const ref = useRef(null);
   const [dim, setDim] = useState({ w: 0, h: 0 });
+  // Alarm: fires once when the value crosses INTO the warn zone (the visual
+  // flash is the parent tile's `alarming` class); re-arms when it drops out
+  const alarmArmed = useRef(true);
+  const alarmOn = !!(g.alarm && g.warn != null && value != null && !isNaN(value) && value >= g.warn);
+  useEffect(() => {
+    if (alarmOn && alarmArmed.current) {
+      alarmArmed.current = false;
+      if (g.alarm === 'beep' || g.alarm === 'notify') alarmBeep();
+      if (g.alarm === 'notify') alarmNotify((g.label || g.name || 'Gauge') + ' alarm',
+        (g.label || g.name || 'Value') + ' is ' + value + ' (warn ≥ ' + g.warn + ')');
+    } else if (!alarmOn) {
+      alarmArmed.current = true;
+    }
+  }, [alarmOn]);
   // Layout effect: measure before first paint so a freshly mounted page
   // renders at full size in one frame instead of zooming in from nothing
   useLayoutEffect(() => {
@@ -3683,7 +4037,8 @@ const GaugeTileBody = ({ g, title, value, unit, enums, editing, canMode, presets
       ${/* text tiles render down to ~8px of gauge area — a compact title on
           a phone 2x1 leaves just that, and short text still reads */ ''}
       ${w > 12 && (g.type === 'text' ? gh > 7 : gh > 12) && ((g.type === 'line')
-        ? html`<${GaugeLine} key=${g.id} name=${g.name} min=${g.min} max=${g.max} value=${value} unit=${unit} color=${g.color || ''} enums=${enums}
+        ? html`<${GaugeLine} key=${g.id + '-' + (g.name2 || '')} name=${g.name} name2=${g.name2 || ''} min=${g.min} max=${g.max}
+            value=${value} value2=${value2} unit=${unit} color=${g.color || ''} color2=${g.color2 || ''} enums=${enums}
             points=${g.points || 20} sampleMs=${g.sampleMs || 100} decimals=${g.decimals != null ? g.decimals : 1}
             w=${w - 4} h=${gh - 2} />`
         : (g.type === 'indicator')
@@ -3698,7 +4053,7 @@ const GaugeTileBody = ({ g, title, value, unit, enums, editing, canMode, presets
         ? html`<${BarGauge} value=${value} unit=${unit} enums=${enums} color=${g.color || ''}
             decimals=${g.decimals != null ? g.decimals : 1} min=${g.min != null ? g.min : 0}
             max=${(g.max == null || g.max === 0) ? 4000 : g.max} w=${w - 8} h=${gh - 4}
-            warn=${g.warn} warnColor=${g.warnColor} center=${g.center} invertScale=${!!g.invertScale} />`
+            warn=${g.warn} warnColor=${g.warnColor} center=${g.center} invertScale=${!!g.invertScale} peaks=${peaks} />`
         : (g.type === 'toggle')
         ? html`<${ToggleTile} g=${g} value=${value} canMode=${canMode} editing=${editing} px=${Math.max(20, Math.min(w, gh) - 4)} />`
         : (g.type === 'slider')
@@ -3706,7 +4061,8 @@ const GaugeTileBody = ({ g, title, value, unit, enums, editing, canMode, presets
         : html`<${SvgGauge} id=${g.id} value=${value} unit=${unit} color=${g.color || ''} enums=${enums}
             px=${Math.max(40, Math.min(w, gh) - 4)} decimals=${g.decimals != null ? g.decimals : 1}
             min=${g.min != null ? g.min : 0} max=${(g.max == null || g.max === 0) ? 4000 : g.max}
-            warn=${g.warn} warnColor=${g.warnColor} center=${g.center} invertScale=${!!g.invertScale} />`)}
+            warn=${g.warn} warnColor=${g.warnColor} center=${g.center} invertScale=${!!g.invertScale}
+            peaks=${peaks} gstyle=${g.gstyle || ''} />`)}
       </div>
     </div>`;
 };
@@ -3734,6 +4090,26 @@ const Gauges = () => {
   const gridApi = useRef(null);  // GridStack instance
   const dragBusyRef = useRef(false); // true during (and briefly after) a drag/resize
   const lastHitRef = useRef(null); // page whose condition matched last tick
+  // Session min/max per tile id, for peak-hold markers (resets when the
+  // Gauges tab is left — a browsing "session", not a persisted one)
+  const peaksRef = useRef({});
+  // Drive mode: full-screen gauges, all chrome hidden
+  const [kiosk, setKiosk] = useState(false);
+  useEffect(() => {
+    document.body.classList.toggle('kiosk', kiosk);
+    if (kiosk) {
+      try { document.documentElement.requestFullscreen().catch(() => {}); } catch (e) {}
+    } else if (document.fullscreenElement) {
+      try { document.exitFullscreen().catch(() => {}); } catch (e) {}
+    }
+    return () => document.body.classList.remove('kiosk');
+  }, [kiosk]);
+  useEffect(() => {
+    // Leaving fullscreen (Esc, system gesture) exits drive mode too
+    const onFs = () => { if (!document.fullscreenElement) setKiosk(false); };
+    document.addEventListener('fullscreenchange', onFs);
+    return () => document.removeEventListener('fullscreenchange', onFs);
+  }, []);
   const activeRef = useRef(activePage);
   activeRef.current = activePage;
 
@@ -4004,8 +4380,14 @@ const Gauges = () => {
     // conditional page display sees them even from a page with no gauges.
     const condNames = (autoPage && !configId)
       ? pages.map(p => p.cond && p.cond.name).filter(Boolean) : [];
+    // Formula tiles stream every identifier in their expression; line tiles
+    // with a second series stream that name too
     const names = configId ? []
-      : [...new Set([...items.map(tileStreamName).filter(Boolean), ...condNames])];
+      : [...new Set([
+          ...items.flatMap(g => g.calc ? calcNames(g.calc) : [tileStreamName(g)]),
+          ...items.map(g => (g.type === 'line' && g.name2) || ''),
+          ...condNames,
+        ].filter(Boolean))];
     if (names.length === 0) {
       dispatch({ type: 'SET_LOGGING', payload: false });
       return;
@@ -4027,9 +4409,22 @@ const Gauges = () => {
         names.forEach((n, i) => { byName[n] = parseFloat(vals[i]); });
         const next = {};
         items.forEach(g => {
-          const n = tileStreamName(g);
-          if (n && !isNaN(byName[n])) next[g.id] = byName[n];
+          if (g.calc) {
+            const cv = calcEval(g.calc, byName);
+            if (!isNaN(cv)) next[g.id] = cv;
+          } else {
+            const n = tileStreamName(g);
+            if (n && !isNaN(byName[n])) next[g.id] = byName[n];
+          }
+          // Second line series rides along under a ':2' key
+          if (g.type === 'line' && g.name2 && !isNaN(byName[g.name2])) next[g.id + ':2'] = byName[g.name2];
         });
+        // Peak-hold bookkeeping: session min/max per tile
+        for (const k in next) {
+          const p = peaksRef.current[k] || (peaksRef.current[k] = { min: next[k], max: next[k] });
+          if (next[k] < p.min) p.min = next[k];
+          if (next[k] > p.max) p.max = next[k];
+        }
         setLineVals(prev => ({ ...prev, ...next }));
         // Conditional page display: when a page's condition STARTS matching,
         // switch to it. A persisting match doesn't re-trigger, so the user can
@@ -4108,7 +4503,8 @@ const Gauges = () => {
       </div>
       `}
       <div class="main-left">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem;gap:8px;flex-wrap:wrap">
+        ${kiosk && html`<button class="kiosk-exit" title="Exit drive mode" onclick=${() => setKiosk(false)}>✕</button>`}
+        <div id="gauges-head" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem;gap:8px;flex-wrap:wrap">
           <h2 style="margin:0">Gauges</h2>
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
             ${pages.some(p => p.cond && p.cond.name) && html`
@@ -4124,6 +4520,7 @@ const Gauges = () => {
                   <span class="slider"></span>
                 </span>
               </label>`}
+            ${!editing && html`<button id="drive-mode-btn" onclick=${() => setKiosk(true)} title="Drive mode — full-screen gauges, chrome hidden" style="font-size:.75rem;padding:4px 12px">⛶ Drive</button>`}
             ${!editing && html`<button onclick=${() => setEditing(true)} style="font-size:.75rem;padding:4px 12px"><${Icon} n="edit" />Edit Layout</button>`}
           </div>
         </div>
@@ -4137,30 +4534,36 @@ const Gauges = () => {
         <div class="grid-stack" ref=${gridRef} key=${'page-' + activePage + '-g' + layoutGen}>
           ${items.map(g => {
             const sv = state.spotValues && state.spotValues[g.name];
-            const unit = (sv && sv.unit && sv.unit.indexOf('=') === -1) ? sv.unit : '';
-            const enums = (sv && sv.enums) || null;
+            // Formula tiles carry their own unit text (there's no spot value
+            // to inherit one from) and never resolve enums
+            const unit = g.calc ? (g.unit || '') : ((sv && sv.unit && sv.unit.indexOf('=') === -1) ? sv.unit : '');
+            const enums = g.calc ? null : ((sv && sv.enums) || null);
+            const tv = lineVals[g.id];
+            const alarming = !!(g.alarm && g.warn != null && tv != null && tv >= g.warn);
             return html`
             <div class="grid-stack-item" key=${g.id} gs-id=${g.id} gs-x=${g.x} gs-y=${g.y} gs-w=${g.w} gs-h=${g.h}>
               ${/* In edit mode a tap opens the tile's settings (no overlay
                   buttons — on a 1x1 mobile tile they'd all overlap the
                   resize handle); drags are filtered by dragBusyRef */ ''}
-              <div class="grid-stack-item-content gauge-tile" title=${g.label || g.name || ''}
+              <div class="grid-stack-item-content gauge-tile ${alarming ? 'alarming' : ''}" title=${g.label || g.name || ''}
+                style=${alarming ? '--alarmc:' + ((g.warnColor && /^#[0-9a-fA-F]{6}$/.test(g.warnColor)) ? g.warnColor : '#ef4444') : ''}
                 onclick=${editing ? (() => { if (!dragBusyRef.current) setConfigId(g.id); }) : undefined}>
                 ${/* 'tap to set up' only for truly unconfigured tiles — a
                     static-text tile is fully configured without a value or
                     label (its body IS the text), and an action tile shows its
                     label on the button itself (no name row) */ ''}
                 ${(() => {
-                  const configured = g.type === 'text' ? !!(g.name || g.label || (g.text && String(g.text).trim()))
+                  const configured = g.type === 'text' ? !!(g.name || g.label || g.calc || (g.text && String(g.text).trim()))
                     : g.type === 'action' ? !!(g.label || g.param || g.canId || g.presetId != null)
                     : g.type === 'toggle' ? !!(g.label || g.param || g.canId)
                     : g.type === 'slider' ? !!(g.label || g.param)
-                    : !!(g.name || g.label);
+                    : !!(g.name || g.label || g.calc);
                   const title = g.type === 'action' ? (editing && !configured ? 'tap to set up' : '—')
-                    : (g.label || g.name || ((g.type === 'toggle' || g.type === 'slider') && g.param)
+                    : (g.label || g.name || ((g.type === 'toggle' || g.type === 'slider') && g.param) || g.calc
                        || (editing && !configured ? 'tap to set up' : '—'));
-                  return html`<${GaugeTileBody} g=${g} title=${title} value=${lineVals[g.id]} unit=${unit} enums=${enums}
-                    editing=${editing} canMode=${state.canMode} presets=${state.presets} />`;
+                  return html`<${GaugeTileBody} g=${g} title=${title} value=${lineVals[g.id]} value2=${lineVals[g.id + ':2']} unit=${unit} enums=${enums}
+                    editing=${editing} canMode=${state.canMode} presets=${state.presets}
+                    peaks=${g.peak ? peaksRef.current[g.id] : undefined} />`;
                 })()}
               </div>
             </div>`;
@@ -4204,7 +4607,20 @@ const Gauges = () => {
               ${!['action', 'toggle', 'slider'].includes(cfg.type) && html`<div style="display:flex;gap:8px;align-items:center">
                 <label style="width:4.5em">Value</label>
                 <${FieldPicker} value=${cfg.name} spotNames=${spotNames} onChange=${name => updateGaugeConfig(cfg.id, 'name', name)} />
-              </div>`}
+              </div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <label style="width:4.5em">Formula</label>
+                <input id="gauge-calc" type="text" value=${cfg.calc || ''} placeholder="(optional — e.g. udc*idc/1000)" maxlength="60"
+                  oninput=${e => updateGaugeConfig(cfg.id, 'calc', e.target.value || undefined)} style="flex:1;padding:5px 8px;font-family:var(--mono)" />
+              </div>
+              ${cfg.calc ? html`
+                <div style="display:flex;gap:8px;align-items:center">
+                  <label style="width:4.5em">Unit</label>
+                  <input type="text" value=${cfg.unit || ''} placeholder="kW" maxlength="8"
+                    oninput=${e => updateGaugeConfig(cfg.id, 'unit', e.target.value || undefined)} style="width:6em;padding:5px 8px" />
+                  <span style="font-size:.72rem;color:var(--text3)">computed from spot values — overrides Value</span>
+                </div>
+              ` : ''}`}
               <div style="display:flex;gap:8px;align-items:center">
                 <label style="width:4.5em">Label</label>
                 <input type="text" value=${cfg.label || ''} placeholder="(shows the value name)" maxlength="24"
@@ -4234,11 +4650,43 @@ const Gauges = () => {
                     style="width:34px;height:28px;padding:0;border:1px solid var(--border2);border-radius:6px;background:none;cursor:pointer" />
                 </div>
                 <p style="font-size:.72rem;color:var(--text3);margin:0">The gauge switches to the warn colour at/above this value — e.g. 80 on a coolant dial. Blank keeps the default (red past 92% of range).</p>
+                <div style="display:flex;gap:8px;align-items:center">
+                  <label style="width:4.5em">Alert</label>
+                  <select id="gauge-alarm" value=${cfg.alarm || ''} onchange=${e => {
+                    const v = e.target.value || undefined;
+                    updateGaugeConfig(cfg.id, 'alarm', v);
+                    // Notifications need permission — ask while we still have the click
+                    if (v === 'notify' && window.Notification && window.Notification.permission === 'default') {
+                      try { window.Notification.requestPermission().catch(() => {}); } catch (err) {}
+                    }
+                  }} style="width:auto;min-width:11em;padding:5px 30px 5px 8px">
+                    <option value="">Off</option>
+                    <option value="flash">Flash the tile</option>
+                    <option value="beep">Flash + beep</option>
+                    <option value="notify">Flash + beep + notification</option>
+                  </select>
+                </div>
+                <p style="font-size:.72rem;color:var(--text3);margin:0">Fires each time the value crosses the Warn threshold — set one above for this to do anything.</p>
                 <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
                   <span style="width:4.5em">Invert</span>
                   <input type="checkbox" checked=${!!cfg.invertScale} onchange=${e => updateGaugeConfig(cfg.id, 'invertScale', e.target.checked)} style="width:auto" />
                   <span style="font-size:.72rem;color:var(--text3)">reverse the scale — Max at the start, Min at the end</span>
                 </label>
+                <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+                  <span style="width:4.5em">Peak</span>
+                  <input id="gauge-peak" type="checkbox" checked=${!!cfg.peak} onchange=${e => updateGaugeConfig(cfg.id, 'peak', e.target.checked || undefined)} style="width:auto" />
+                  <span style="font-size:.72rem;color:var(--text3)">hold a marker at the session's highest value (and lowest, on centred gauges)</span>
+                </label>
+                ${(cfg.type || 'radial') === 'radial' && html`
+                  <div style="display:flex;gap:8px;align-items:center">
+                    <label style="width:4.5em">Style</label>
+                    <select id="gauge-style" value=${cfg.gstyle || 'arc'} onchange=${e => updateGaugeConfig(cfg.id, 'gstyle', e.target.value === 'needle' ? 'needle' : undefined)}
+                      style="width:auto;min-width:9.5em;padding:5px 30px 5px 8px">
+                      <option value="arc">Filled arc</option>
+                      <option value="needle">Needle dial</option>
+                    </select>
+                  </div>
+                `}
               `}
               ${cfg.type === 'text' && html`
                 <div style="display:flex;gap:8px;align-items:center">
@@ -4250,7 +4698,7 @@ const Gauges = () => {
               `}
               ${!['indicator', 'action', 'toggle'].includes(cfg.type) && html`<div style="display:flex;gap:8px;align-items:center">
                 <label style="width:4.5em">Decimals</label>
-                <select value=${String(cfg.decimals != null ? cfg.decimals : 1)} onchange=${e => updateGaugeConfig(cfg.id, 'decimals', parseInt(e.target.value))}
+                <select id="gauge-decimals" value=${String(cfg.decimals != null ? cfg.decimals : 1)} onchange=${e => updateGaugeConfig(cfg.id, 'decimals', parseInt(e.target.value))}
                   style="width:auto;min-width:5em;padding:5px 30px 5px 8px">
                   <option value="0">0</option>
                   <option value="1">1</option>
@@ -4402,6 +4850,15 @@ const Gauges = () => {
               </div>
               ${cfg.type === 'line' && html`
                 <div style="display:flex;gap:8px;align-items:center">
+                  <label style="width:4.5em">2nd value</label>
+                  <${FieldPicker} value=${cfg.name2 || ''} spotNames=${spotNames} onChange=${n => updateGaugeConfig(cfg.id, 'name2', n)} />
+                  <input type="color" value=${cfg.color2 || '#ffb454'} title="Second series colour"
+                    oninput=${e => updateGaugeConfig(cfg.id, 'color2', e.target.value)}
+                    style="width:34px;height:28px;padding:0;border:1px solid var(--border2);border-radius:6px;background:none;cursor:pointer" />
+                  ${cfg.name2 && html`<button onclick=${() => updateGaugeConfig(cfg.id, 'name2', undefined)} title="Remove the second series" style="width:auto;padding:2px 8px;color:var(--red)">×</button>`}
+                </div>
+                <p style="font-size:.72rem;color:var(--text3);margin:0">Optional second value plotted on the same chart — e.g. heatsink and motor temperature together.</p>
+                <div style="display:flex;gap:8px;align-items:center">
                   <label style="width:4.5em">Points</label>
                   <input type="number" min="5" max="500" value=${cfg.points || 20}
                     oninput=${e => updateGaugeConfig(cfg.id, 'points', Math.max(5, Math.min(500, parseInt(e.target.value) || 20)))}
@@ -4473,8 +4930,15 @@ const App = () => {
       dispatch({ type: 'SET_CAN_CONFIG', payload: { canMode: mode, canNodeId: nodeId } });
       if (mode) dispatch({ type: 'SET_CAN_NODE', payload: nodeId });
       if (data.can_nodes) dispatch({ type: 'SET_CAN_NODES', payload: data.can_nodes });
+      if (typeof data.dev_name === 'string' && data.dev_name) dispatch({ type: 'SET_DEVICE_NAME', payload: data.dev_name });
     }).catch(() => {});
   }, []);
+
+  // The device nickname names the browser tab too — invaluable with two
+  // inverters open side by side
+  useEffect(() => {
+    if (state.deviceName) document.title = state.deviceName + ' — OpenInverter';
+  }, [state.deviceName]);
 
   // Once-a-day new-release check (disableable on the Update tab). Silent on
   // every failure; a per-version dismiss suppresses the badge until the next

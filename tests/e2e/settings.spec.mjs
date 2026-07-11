@@ -55,6 +55,16 @@ test.describe('Settings tab', () => {
     await expect(scan).toBeDisabled();
   });
 
+  test('device nickname saves to the device and shows in the sidebar and tab title', async ({ page, mock }) => {
+    await openApp(page, mock);
+    await gotoTab(page, 'Settings');
+    await page.locator('#dev-name').fill('Bench Rig');
+    await page.locator('div', { has: page.locator('#dev-name') }).last().locator('button', { hasText: 'Save' }).click();
+    await expect.poll(async () => (await mock.state()).settings.dev_name).toBe('Bench Rig');
+    await expect(page.locator('#device-name')).toContainText('Bench Rig');
+    await expect(page).toHaveTitle(/Bench Rig/);
+  });
+
   test('WiFi card shows station signal strength and the AP-fallback toggle posts', async ({ page, mock }) => {
     await openApp(page, mock);
     await gotoTab(page, 'Settings');

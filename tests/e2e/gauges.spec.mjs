@@ -194,7 +194,7 @@ test.describe('Gauges grid', () => {
     await page.locator('.gauge-tile').click();
     const modal = page.locator('.modal-content');
     await modal.locator('input[maxlength="24"]').fill('Pack Volts'); // Label
-    await modal.locator('select').nth(1).selectOption('2'); // Decimals (select #2: type is first)
+    await modal.locator('#gauge-decimals').selectOption('2');
     await modal.locator('button', { hasText: 'Done' }).click();
     await expect(page.locator('.gauge-tile-name', { hasText: 'Pack Volts' })).toBeVisible();
     await expect(page.locator('.gauge-tile .g-val')).toContainText('398.50');
