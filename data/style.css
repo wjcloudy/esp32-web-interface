@@ -816,6 +816,10 @@ td { font-variant-numeric: tabular-nums; }
   border-bottom: 1px solid var(--border2);
 }
 .modal-sect:first-child { margin-top: 0; }
+/* Keep the first-column labels rigid so a long helper description wraps
+   instead of squeezing the label narrower (Centre/Peak were drifting left) */
+#gauge-config-modal-overlay label[style*="4.5em"],
+#gauge-config-modal-overlay span[style*="4.5em"] { flex-shrink: 0; }
 /* edit mode affordances: dashed outline + grab cursor, like a layout editor */
 .gauges-editing .gauge-tile { outline: 1.5px dashed var(--accent); cursor: grab; }
 .gauges-editing .grid-stack-item.ui-draggable-dragging .gauge-tile { cursor: grabbing; opacity: .85; }
