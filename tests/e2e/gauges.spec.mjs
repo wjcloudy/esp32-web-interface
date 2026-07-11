@@ -676,6 +676,30 @@ test.describe('Gauges grid', () => {
     await expect(horiz.locator('.bar-fill')).toHaveClass(/over/, { timeout: 5000 });
   });
 
+  test('warn threshold recolours radial and bar at/above the set value', async ({ page, mock }) => {
+    const layout = { v: 3, pages: [{ id: 1, name: 'Main', items: [
+      { id: 1, name: 'udc', type: 'radial', min: 0, max: 500, warn: 410, warnColor: '#ff00aa', x: 0, y: 0, w: 3, h: 3 },
+      { id: 2, name: 'udc', type: 'bar', min: 0, max: 500, warn: 410, warnColor: '#ff00aa', x: 3, y: 0, w: 5, h: 1 },
+    ] }] };
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(layout) });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    const arc = page.locator('circle.g-value');
+    const fill = page.locator('.bar-gauge .bar-fill');
+    // udc 398.5 < 410: normal gradient on both
+    await expect(arc).toHaveAttribute('stroke', /url\(/);
+    await expect(fill).toHaveAttribute('style', /linear-gradient/);
+    // Cross the threshold: both flip to the warn colour (and NOT the legacy
+    // .over class, which the explicit threshold replaces)
+    await fetch(mock.url + '/__test/spot?name=udc&value=430');
+    await expect(arc).toHaveAttribute('stroke', '#ff00aa', { timeout: 5000 });
+    await expect(fill).toHaveAttribute('style', /background:\s*#ff00aa|background:\s*rgb\(255, 0, 170\)/, { timeout: 5000 });
+    await expect(fill).not.toHaveClass(/over/);
+    // Back below: gradient returns
+    await fetch(mock.url + '/__test/spot?name=udc&value=200');
+    await expect(arc).toHaveAttribute('stroke', /url\(/, { timeout: 5000 });
+  });
+
   test('toggle tile flips a parameter and follows its live value', async ({ page, mock }) => {
     const layout = { v: 3, pages: [{ id: 1, name: 'Main', items: [
       { id: 1, type: 'toggle', param: 'potmin', onValue: 100, offValue: 0, label: 'Heat', onLabel: 'Heating', offLabel: 'Idle', x: 0, y: 0, w: 2, h: 2 },

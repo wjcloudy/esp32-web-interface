@@ -2977,7 +2977,9 @@ const hueShift = (hex, deg) => {
 // Modern SVG arc gauge — 270° sweep, gradient stroke, mono numerals.
 // Pure render: value changes animate via CSS transition on the dash array.
 // A custom colour keeps the gradient look, centered on the chosen colour.
-const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decimals = 1 }) => {
+// An explicit warn threshold turns the arc (and the value) the warn colour
+// at/above it, replacing the implicit red-past-92%-of-range behaviour.
+const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decimals = 1, warn, warnColor }) => {
   const size = px || 230, c = size / 2, r = Math.round(size * 0.4);
   const sw = Math.max(8, Math.round(size * 0.057));
   const SWEEP = 270; // degrees, gap centered at the bottom
@@ -2988,7 +2990,10 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decim
   const arc = circ * SWEEP / 360;
   const grad = 'ggrad' + id;
   const custom = color && /^#[0-9a-fA-F]{6}$/.test(color);
-  const stroke = 'url(#' + grad + ')';
+  const warned = warn != null && v != null && v >= warn;
+  const wc = (warnColor && /^#[0-9a-fA-F]{6}$/.test(warnColor)) ? warnColor : '#f59e0b';
+  const stroke = warned ? wc : 'url(#' + grad + ')';
+  const legacyOver = warn == null && frac >= 0.92;
   return html`
     <div class="svg-gauge" style=${'width:' + size + 'px;height:' + size + 'px'}>
       <svg width=${size} height=${size} viewBox=${'0 0 ' + size + ' ' + size}>
@@ -3006,7 +3011,7 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decim
         </defs>
         <g transform=${'rotate(135 ' + c + ' ' + c + ')'}>
           <circle class="g-track" cx=${c} cy=${c} r=${r} stroke-dasharray=${arc + ' ' + circ} style=${'stroke-width:' + sw + 'px'} />
-          <circle class="g-value ${frac >= 0.92 ? 'over' : ''}" cx=${c} cy=${c} r=${r}
+          <circle class="g-value ${legacyOver ? 'over' : ''}" cx=${c} cy=${c} r=${r}
             stroke=${stroke} opacity=${frac > 0.004 ? 1 : 0}
             stroke-dasharray=${(arc * frac) + ' ' + circ} style=${'stroke-width:' + sw + 'px'} />
         </g>
@@ -3019,7 +3024,7 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decim
           const vfs = Math.max(0.62, size / 230 * 2.1);
           const ufs = Math.max(0.5, Math.min(vfs * 0.45, Math.max(0.8, size / 230 * 0.8))).toFixed(2) + 'rem';
           return html`
-            <div class="g-val" style=${'font-size:' + vfs.toFixed(2) + 'rem'}>${v == null ? '—' : (enums ? String(Math.round(v)) : v.toFixed(decimals))}</div>
+            <div class="g-val" style=${'font-size:' + vfs.toFixed(2) + 'rem' + (warned ? ';color:' + wc : '')}>${v == null ? '—' : (enums ? String(Math.round(v)) : v.toFixed(decimals))}</div>
             ${enums
               ? (v != null && html`<div class="g-unit g-enum" style=${'font-size:' + ufs}>${enumLabel(enums, v)}</div>`)
               : (unit && html`<div class="g-unit" style=${'font-size:' + ufs}>${unit}</div>`)}`;
@@ -3144,7 +3149,7 @@ const IndicatorLamp = ({ value, min, max, color, enums, invert, px }) => {
 // level bar or a column depending on the tile's shape (wider = horizontal,
 // taller = vertical). Same range/gradient/over-range behaviour as the
 // radial; value overlaid in the centre, min/max in the corners.
-const BarGauge = ({ value, min = 0, max = 100, unit, color, enums, decimals = 1, w, h }) => {
+const BarGauge = ({ value, min = 0, max = 100, unit, color, enums, decimals = 1, w, h, warn, warnColor }) => {
   const v = (value == null || isNaN(value)) ? null : value;
   const lo = min != null ? min : 0;
   const hi = (max == null || max === lo) ? lo + 100 : max;
@@ -3155,7 +3160,10 @@ const BarGauge = ({ value, min = 0, max = 100, unit, color, enums, decimals = 1,
   const grad = custom
     ? 'linear-gradient(' + dir + ',' + hueShift(color, 21) + ',' + color + ' 50%,' + hueShift(color, -21) + ')'
     : 'linear-gradient(' + dir + ',#4cc9f0,#54e6a4)';
-  const over = frac >= 0.92;
+  // An explicit warn threshold replaces the implicit red-past-92% behaviour
+  const warned = warn != null && v != null && v >= warn;
+  const wc = (warnColor && /^#[0-9a-fA-F]{6}$/.test(warnColor)) ? warnColor : '#f59e0b';
+  const over = warn == null && frac >= 0.92;
   const disp = v == null ? '—' : (enums ? String(enumLabel(enums, v)) : v.toFixed(decimals));
   // Fit the overlay by BOTH axes — a narrow column bar must shrink the
   // value to its width, not just its shorter side
@@ -3165,7 +3173,7 @@ const BarGauge = ({ value, min = 0, max = 100, unit, color, enums, decimals = 1,
   return html`
     <div class="bar-gauge ${horiz ? 'horiz' : 'vert'}" style=${'width:' + w + 'px;height:' + h + 'px'}>
       <div class="bar-fill ${over ? 'over' : ''}"
-        style=${(horiz ? 'width:' : 'height:') + (frac * 100).toFixed(1) + '%;' + (over ? '' : 'background:' + grad)}></div>
+        style=${(horiz ? 'width:' : 'height:') + (frac * 100).toFixed(1) + '%;' + (warned ? 'background:' + wc : over ? '' : 'background:' + grad)}></div>
       <div class="bar-val g-val" style=${'font-size:' + vfs + 'px'}>
         ${disp}${!enums && unit ? html`<span class="g-unit" style="display:inline;margin-left:4px;font-size:.5em">${unit}</span>` : ''}
       </div>
@@ -3397,14 +3405,16 @@ const GaugeTileBody = ({ g, title, value, unit, enums, editing, canMode }) => {
         : (g.type === 'bar')
         ? html`<${BarGauge} value=${value} unit=${unit} enums=${enums} color=${g.color || ''}
             decimals=${g.decimals != null ? g.decimals : 1} min=${g.min != null ? g.min : 0}
-            max=${(g.max == null || g.max === 0) ? 4000 : g.max} w=${w - 8} h=${gh - 4} />`
+            max=${(g.max == null || g.max === 0) ? 4000 : g.max} w=${w - 8} h=${gh - 4}
+            warn=${g.warn} warnColor=${g.warnColor} />`
         : (g.type === 'toggle')
         ? html`<${ToggleTile} g=${g} value=${value} canMode=${canMode} editing=${editing} px=${Math.max(20, Math.min(w, gh) - 4)} />`
         : (g.type === 'slider')
         ? html`<${SliderTile} g=${g} value=${value} editing=${editing} w=${w - 18} h=${gh - 4} />`
         : html`<${SvgGauge} id=${g.id} value=${value} unit=${unit} color=${g.color || ''} enums=${enums}
             px=${Math.max(40, Math.min(w, gh) - 4)} decimals=${g.decimals != null ? g.decimals : 1}
-            min=${g.min != null ? g.min : 0} max=${(g.max == null || g.max === 0) ? 4000 : g.max} />`)}
+            min=${g.min != null ? g.min : 0} max=${(g.max == null || g.max === 0) ? 4000 : g.max}
+            warn=${g.warn} warnColor=${g.warnColor} />`)}
       </div>
     </div>`;
 };
@@ -3907,6 +3917,18 @@ const Gauges = () => {
                 <label>Max</label>
                 <input type="number" value=${cfg.max} oninput=${e => updateGaugeConfig(cfg.id, 'max', parseFloat(e.target.value) || 0)} style="width:6em;padding:5px 6px" step="any" />
               </div>`}
+              ${((cfg.type || 'radial') === 'radial' || cfg.type === 'bar') && html`
+                <div style="display:flex;gap:8px;align-items:center">
+                  <label style="width:4.5em">Warn ≥</label>
+                  <input type="number" step="any" value=${cfg.warn != null ? cfg.warn : ''} placeholder="(off)"
+                    oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'warn', isNaN(n) ? undefined : n); }}
+                    style="width:6em;padding:5px 6px" />
+                  <label>Colour</label>
+                  <input type="color" value=${cfg.warnColor || '#f59e0b'} oninput=${e => updateGaugeConfig(cfg.id, 'warnColor', e.target.value)}
+                    style="width:34px;height:28px;padding:0;border:1px solid var(--border2);border-radius:6px;background:none;cursor:pointer" />
+                </div>
+                <p style="font-size:.72rem;color:var(--text3);margin:0">The gauge switches to the warn colour at/above this value — e.g. 80 on a coolant dial. Blank keeps the default (red past 92% of range).</p>
+              `}
               ${cfg.type === 'text' && html`
                 <div style="display:flex;gap:8px;align-items:center">
                   <label style="width:4.5em">Text</label>
