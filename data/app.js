@@ -1261,24 +1261,31 @@ const Update = () => {
       setGhUrl(repo);
       if (updateNewer && !Update._autoLoaded) {
         Update._autoLoaded = true;
-        getGhReleases(repo);
+        // Pass the freshly fetched target explicitly — the otaTarget STATE in
+        // this promise's closure is still the pre-/otainfo default
+        getGhReleases(repo, info.target || 'esp32_wemos');
       }
     });
   }, []);
 
   // The OTA asset matching this board, e.g. esp32_wemos_<ver>-ota.bin (matched on
   // the '<target>_' prefix so the two targets never cross-match). undefined if none.
-  const matchTargetAsset = (assets) => assets.find(a => a.name.startsWith(otaTarget + '_'));
+  // target is an explicit parameter because the mount-time auto-load runs in a
+  // promise that captured the FIRST render's otaTarget state — the wemos
+  // default, before /otainfo answered — which pre-selected the wrong board's
+  // image on a T-2Can (the chip check refused it at activation, but only
+  // after a full download and a confusing failure).
+  const matchTargetAsset = (assets, target = otaTarget) => assets.find(a => a.name.startsWith(target + '_'));
 
   // Default-select the matching image; if none matches, fall back to the first
   // but warn so the user picks a target deliberately (any asset is still selectable).
-  const applyAssetDefault = (assets) => {
-    const match = matchTargetAsset(assets);
+  const applyAssetDefault = (assets, target = otaTarget) => {
+    const match = matchTargetAsset(assets, target);
     setGhAssetUrl((match || assets[0]).url);
-    setGhMsg(match ? '' : 'No image matches this board (' + otaTarget + ') — choose a target manually below');
+    setGhMsg(match ? '' : 'No image matches this board (' + (target || otaTarget) + ') — choose a target manually below');
   };
 
-  const getGhReleases = async (urlArg) => {
+  const getGhReleases = async (urlArg, targetArg) => {
     const m = (typeof urlArg === 'string' ? urlArg : ghUrl).match(/github\.com[/:]([^/]+)\/([^/.\s]+)/);
     if (!m) { setGhMsg('Enter a github.com repository URL'); return; }
     setGhMsg('Loading releases...');
@@ -1292,7 +1299,7 @@ const Update = () => {
       setGhReleases(list);
       if (!list.length) { setGhMsg('No OTA images (*-ota.bin) found in this repo\'s releases'); return; }
       setGhTag(list[0].tag);
-      applyAssetDefault(list[0].assets);
+      applyAssetDefault(list[0].assets, targetArg);
     } catch (e) { setGhMsg('Failed: ' + e.message); }
   };
 
@@ -1307,7 +1314,11 @@ const Update = () => {
   const installFromGithub = async () => {
     if (!ghAssetUrl) return;
     const name = ghAssetUrl.split('/').pop();
-    if (!confirm('Download and install "' + name + '"?\n\nThis erases saved settings and favourites (the whole filesystem is replaced) — export them first if you want to keep them.\n\nThe device will reboot when done.')) return;
+    // Same wrong-board guard as the file-upload path: a mismatched image is
+    // refused by the chip check anyway, but only after a full download
+    const warn = !name.startsWith(otaTarget + '_')
+      ? '\n\nWARNING: this image is not built for this board (' + otaTarget + ') — the device will refuse to activate it.' : '';
+    if (!confirm('Download and install "' + name + '"?' + warn + '\n\nThis erases saved settings and favourites (the whole filesystem is replaced) — export them first if you want to keep them.\n\nThe device will reboot when done.')) return;
     setGhMsg('');
     setUpdating(true); setProgress(0); setUpdateMsg('Device is downloading ' + name + ' — do not power off.');
     dispatch({ type: 'SET_LOGGING', payload: true });

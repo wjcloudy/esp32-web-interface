@@ -28,6 +28,28 @@ test.describe('Update availability badge', () => {
     await expect(page.locator('button', { hasText: 'Download & install' })).toBeVisible();
   });
 
+  test('badge auto-load pre-selects THIS board\'s image, not the default target', async ({ page, mock }) => {
+    // Regression: the auto-load promise captured the first render's target
+    // (the wemos default, before /otainfo answered), pre-selecting the wrong
+    // board's image on a T-2Can — refused by the chip check only after a
+    // full download
+    await fetch(mock.url + '/__test/otainfo', { method: 'POST', body: JSON.stringify({ target: 'esp32_t2can' }) });
+    await fulfillLatest(page, { tag_name: 'v99.1' });
+    await page.route(/api\.github\.com\/repos\/[^/]+\/[^/]+\/releases$/, route =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([
+        { tag_name: 'v99.1', assets: [
+          { name: 'esp32_wemos_v99.1-ota.bin', browser_download_url: 'http://example.invalid/wemos-ota.bin' },
+          { name: 'esp32_t2can_v99.1-ota.bin', browser_download_url: 'http://example.invalid/t2can-ota.bin' },
+        ] },
+      ]) }));
+    await openApp(page, mock);
+    await page.locator('#update-badge span').click();
+    const assetSel = page.locator('#update select').nth(1); // release, then asset
+    await expect(assetSel).toBeVisible();
+    await expect(assetSel).toHaveValue('http://example.invalid/t2can-ota.bin');
+    await expect(page.locator('#update')).toContainText('esp32_t2can_v99.1-ota.bin (this board)');
+  });
+
   test('a non-version tag from the API is discarded (XSS guard)', async ({ page, mock }) => {
     await fulfillLatest(page, { tag_name: '<img src=x onerror=alert(1)> v99.9' });
     await openApp(page, mock);
