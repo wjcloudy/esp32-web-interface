@@ -935,19 +935,6 @@
           "h": 1
         },
         {
-          "id": 120,
-          "name": "ChgTemp",
-          "type": "bar",
-          "min": 0,
-          "max": 90,
-          "decimals": 0,
-          "label": "Charger t",
-          "x": 7,
-          "y": 2,
-          "w": 1,
-          "h": 2
-        },
-        {
           "id": 121,
           "name": "Pwrspnt",
           "type": "text",

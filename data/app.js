@@ -3030,12 +3030,12 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decim
               : (unit && html`<div class="g-unit" style=${'font-size:' + ufs}>${unit}</div>`)}`;
         })()}
       </div>
-      ${/* 11.5% corner inset (was 17.4%): on small dials the label text was
-          reaching the arc ends — anchored outward it grows away from the
-          track instead of into it */ ''}
+      ${/* Labels hug the corners (7% in, 3% up): the arc ends sit ~22% in
+          and ~22% up, so pushing the labels out AND down clears the track
+          on both axes even at ~100px phone dials */ ''}
       ${size >= 90 && html`
-        <div class="g-min" style=${'left:' + Math.round(size * 0.115) + 'px;bottom:' + Math.round(size * 0.072) + 'px;font-size:' + Math.max(0.68, size / 230 * 0.68).toFixed(2) + 'rem'}>${min}</div>
-        <div class="g-max" style=${'right:' + Math.round(size * 0.115) + 'px;bottom:' + Math.round(size * 0.072) + 'px;font-size:' + Math.max(0.68, size / 230 * 0.68).toFixed(2) + 'rem'}>${max}</div>
+        <div class="g-min" style=${'left:' + Math.round(size * 0.07) + 'px;bottom:' + Math.round(size * 0.03) + 'px;font-size:' + Math.max(0.62, size / 230 * 0.68).toFixed(2) + 'rem'}>${min}</div>
+        <div class="g-max" style=${'right:' + Math.round(size * 0.07) + 'px;bottom:' + Math.round(size * 0.03) + 'px;font-size:' + Math.max(0.62, size / 230 * 0.68).toFixed(2) + 'rem'}>${max}</div>
       `}
     </div>`;
 };
