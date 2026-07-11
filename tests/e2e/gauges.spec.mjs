@@ -868,6 +868,36 @@ test.describe('Gauges grid', () => {
     await expect(page.locator('.slider-tile .g-val')).toContainText('300');
   });
 
+  test('slider supports negative and inverted ranges', async ({ page, mock }) => {
+    // Negative range typed by keystroke (the leading minus used to be eaten)
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await enterEdit(page);
+    await page.locator('button', { hasText: 'Add Gauge' }).click();
+    let modal = page.locator('.modal-content');
+    await modal.locator('select').first().selectOption('slider');
+    const mn = modal.locator('#gauge-min');
+    await mn.click();
+    await mn.press('Control+a');
+    await mn.pressSequentially('-10');
+    await expect(mn).toHaveValue('-10'); // minus not clobbered
+    await modal.locator('#gauge-max').fill('10');
+    await modal.locator('button', { hasText: 'Done' }).click();
+    let range = page.locator('.slider-tile input[type="range"]');
+    await expect(range).toHaveAttribute('min', '-10');
+    await expect(range).toHaveAttribute('max', '10');
+    // Now invert it to 0 -> -10: native range clamps to -10..0 and flips rtl
+    await page.locator('.gauge-tile').click();
+    modal = page.locator('.modal-content');
+    await modal.locator('#gauge-min').fill('0');
+    await modal.locator('#gauge-max').fill('-10');
+    await modal.locator('button', { hasText: 'Done' }).click();
+    range = page.locator('.slider-tile input[type="range"]');
+    await expect(range).toHaveAttribute('min', '-10');
+    await expect(range).toHaveAttribute('max', '0');
+    expect(await range.evaluate(el => getComputedStyle(el).direction)).toBe('rtl');
+  });
+
   test('page condition editor round-trips through Save & Done', async ({ page, mock }) => {
     await openApp(page, mock);
     await gotoTab(page, 'Gauges');

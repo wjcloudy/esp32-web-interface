@@ -3977,8 +3977,14 @@ const SliderTile = ({ g, value, editing, w, h }) => {
   const [flash, setFlash] = useState('');
   const min = g.min != null ? g.min : 0;
   const max = (g.max != null && g.max !== min) ? g.max : min + 100;
+  // The native range needs min < max, so drive it on lo..hi and, when the
+  // configured range is inverted (Max below Min, e.g. 0 → -10), flip the
+  // track with direction:rtl so the left end is still Min and the right Max.
+  const lo = Math.min(min, max), hi = Math.max(min, max);
+  const inverted = max < min;
   const dec = g.decimals != null ? g.decimals : 1;
   const cur = drag != null ? drag : (value != null ? value : min);
+  const clamped = Math.min(hi, Math.max(lo, cur));
   const send = async (v) => {
     setDrag(null);
     let ok = false;
@@ -3991,10 +3997,10 @@ const SliderTile = ({ g, value, editing, w, h }) => {
   const row = h != null && h < 42;
   return html`
     <div class="slider-tile ${flash} ${row ? 'row' : ''}" style=${'width:' + w + 'px;pointer-events:' + (editing ? 'none' : 'auto')} title=${g.param || ''}>
-      <input type="range" min=${min} max=${max} step=${Math.pow(10, -dec)} value=${cur}
+      <input type="range" min=${lo} max=${hi} step=${Math.pow(10, -dec)} value=${clamped}
         oninput=${e => setDrag(parseFloat(e.target.value))}
         onchange=${e => send(parseFloat(e.target.value))}
-        style=${g.color ? 'accent-color:' + g.color : ''} />
+        style=${(g.color ? 'accent-color:' + g.color + ';' : '') + (inverted ? 'direction:rtl' : '')} />
       <div class="g-val" style=${'font-size:' + (row ? '.78rem' : '.92rem')}>${Number(cur).toFixed(dec)}</div>
     </div>`;
 };
@@ -5112,10 +5118,15 @@ const Gauges = () => {
               ${!['text', 'action', 'toggle'].includes(cfg.type) && html`
                 <p class="modal-sect">Scale</p>
                 <div style="display:flex;gap:8px;align-items:center">
+                  ${/* value != null ? : '' + undefined-on-blank lets a leading
+                      minus be typed — a hard 0 fallback reset the field and ate
+                      the '-' (couldn't enter negative ranges) */ ''}
                   <label style="width:4.5em">Min</label>
-                  <input id="gauge-min" type="number" value=${cfg.min} oninput=${e => updateGaugeConfig(cfg.id, 'min', parseFloat(e.target.value) || 0)} style="width:6em;padding:5px 6px" step="any" />
+                  <input id="gauge-min" type="number" value=${cfg.min != null ? cfg.min : ''}
+                    oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'min', isNaN(n) ? undefined : n); }} style="width:6em;padding:5px 6px" step="any" />
                   <label>Max</label>
-                  <input id="gauge-max" type="number" value=${cfg.max} oninput=${e => updateGaugeConfig(cfg.id, 'max', parseFloat(e.target.value) || 0)} style="width:6em;padding:5px 6px" step="any" />
+                  <input id="gauge-max" type="number" value=${cfg.max != null ? cfg.max : ''}
+                    oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'max', isNaN(n) ? undefined : n); }} style="width:6em;padding:5px 6px" step="any" />
                 </div>
                 ${cfg.type === 'slider' ? decimalsRow : ''}
               `}
