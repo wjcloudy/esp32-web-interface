@@ -3487,7 +3487,10 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decim
   const hasCenter = center != null && center > min && center < max;
   const cFrac = hasCenter ? (center - min) / span : 0;
   let startFrac = hasCenter ? Math.min(frac, cFrac) : 0;
-  const lenFrac = hasCenter ? Math.abs(frac - cFrac) : frac;
+  // No valid value → draw no fill at all. Without this a centred gauge shows
+  // |0 - centreFrac| worth of arc (the whole below-centre segment) when the
+  // value reads "—", since frac falls back to 0.
+  const lenFrac = v == null ? 0 : (hasCenter ? Math.abs(frac - cFrac) : frac);
   // Inverted scale: mirror the fill segment along the sweep
   if (invertScale) startFrac = 1 - (startFrac + lenFrac);
   const tickFrac = invertScale ? 1 - cFrac : cFrac;
@@ -3749,7 +3752,10 @@ const BarGauge = ({ value, min = 0, max = 100, unit, color, enums, decimals = 1,
   const hasCenter = center != null && center > lo && center < hi;
   const cFrac = hasCenter ? (center - lo) / (hi - lo) : 0;
   let startFrac = hasCenter ? Math.min(frac, cFrac) : 0;
-  const lenFrac = hasCenter ? Math.abs(frac - cFrac) : frac;
+  // No valid value → draw no fill at all. Without this a centred gauge shows
+  // |0 - centreFrac| worth of arc (the whole below-centre segment) when the
+  // value reads "—", since frac falls back to 0.
+  const lenFrac = v == null ? 0 : (hasCenter ? Math.abs(frac - cFrac) : frac);
   // Inverted scale: mirror the fill segment (max at the bar's start)
   if (invertScale) startFrac = 1 - (startFrac + lenFrac);
   const tickFrac = invertScale ? 1 - cFrac : cFrac;

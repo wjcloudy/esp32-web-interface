@@ -181,6 +181,33 @@ test.describe('Gauge extras', () => {
     await expect(clear).not.toHaveClass(/tile-clear/);
   });
 
+  test('centred gauge draws no arc/fill when the value is unavailable', async ({ page, mock }) => {
+    // A name the inverter doesn't report → the tile reads "—". A centred
+    // gauge must NOT draw the below-centre segment in that state.
+    await seedLayout(mock, [
+      { id: 1, name: 'nonexistent', type: 'radial', center: 0, min: -500, max: 500, x: 0, y: 0, w: 3, h: 3 },
+      { id: 2, name: 'nonexistent', type: 'bar', center: 0, min: -500, max: 500, x: 3, y: 0, w: 4, h: 2 },
+    ]);
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await expect(page.locator('.svg-gauge .g-val').first()).toContainText('—');
+    await expect(page.locator('.svg-gauge .g-value').first()).toHaveAttribute('opacity', '0');
+    expect(await page.locator('.bar-fill').first().evaluate(el => el.style.width)).toMatch(/^0(\.0)?%$/);
+  });
+
+  test('centred gauge draws the arc/fill once a valid value arrives', async ({ page, mock }) => {
+    // udc = 398.5, above the 0 centre → arc/fill both shown
+    await seedLayout(mock, [
+      { id: 1, name: 'udc', type: 'radial', center: 0, min: -500, max: 500, x: 0, y: 0, w: 3, h: 3 },
+      { id: 2, name: 'udc', type: 'bar', center: 0, min: -500, max: 500, x: 3, y: 0, w: 4, h: 2 },
+    ]);
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await expect(page.locator('.svg-gauge .g-val').first()).toContainText('398.5');
+    await expect(page.locator('.svg-gauge .g-value').first()).toHaveAttribute('opacity', '1');
+    expect(await page.locator('.bar-fill').first().evaluate(el => parseFloat(el.style.width))).toBeGreaterThan(0);
+  });
+
   test('full-screen mode hides the chrome and the exit button restores it', async ({ page, mock }) => {
     await seedLayout(mock, [
       { id: 1, name: 'udc', type: 'radial', min: 0, max: 500, x: 0, y: 0, w: 3, h: 3 },

@@ -25,15 +25,14 @@
           "name": "power",
           "label": "Power",
           "type": "radial",
-          "min": -50,
-          "max": 300,
+          "min": -300,
+          "max": 50,
           "decimals": 1,
           "x": 4,
           "y": 0,
           "w": 4,
           "h": 4,
           "center": 0,
-          "invertScale": true,
           "transparent": true
         },
         {
