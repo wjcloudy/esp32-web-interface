@@ -589,7 +589,11 @@ td { font-variant-numeric: tabular-nums; }
 .small-modal-container { width: 400px; padding: 1.5rem 1.75rem; }
 .large-modal-container { width: 640px; padding: 2rem; }
 .can-mapping-modal-container { width: 560px; padding: 2rem; }
-.modal-close { float: right; font-size: 1.5rem; color: var(--text3); cursor: pointer; transition: color var(--transition); line-height: 1; }
+/* modal header: title left, close X pinned top-right (float dropped the X
+   below the block heading — "down by the content") */
+#large-modal-header-div { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+#large-modal-header-div h2 { margin: 0; }
+.modal-close { flex: none; font-size: 1.5rem; color: var(--text3); cursor: pointer; transition: color var(--transition); line-height: 1; }
 .modal-close:hover { color: var(--red); }
 .modal-content { margin-top: 1rem; }
 
