@@ -4141,6 +4141,7 @@ const Gauges = () => {
   const lastHitRef = useRef(null); // page whose condition matched last tick
   const editSnapshotRef = useRef(null); // pages/autoPage captured on entering edit, for Cancel
   const swipeRef = useRef(null); // touch start {x,y,t} for page swiping
+  const swipeHintRef = useRef(null); // edge-gradient overlay shown during a swipe
   // Session min/max per tile id, for peak-hold markers (resets when the
   // Gauges tab is left — a browsing "session", not a persisted one)
   const peaksRef = useRef({});
@@ -4475,21 +4476,68 @@ const Gauges = () => {
     const ni = idx + delta;
     if (ni >= 0 && ni < pages.length) setActivePage(pages[ni].id);
   };
+  const hasPageInDir = (dir) => {
+    const idx = pages.findIndex(p => p.id === activePage);
+    return idx + dir >= 0 && idx + dir < pages.length;
+  };
+  const clearSwipeHint = () => { const el = swipeHintRef.current; if (el) el.style.opacity = 0; };
   const onSwipeStart = (e) => {
     swipeRef.current = null;
+    clearSwipeHint();
     if (editing || pages.length < 2) return;
     if (e.pointerType === 'mouse' && e.button !== 0) return; // left button only
     if (e.target.closest('input, button, select, textarea, .action-tile-btn, .toggle-tile, .slider-tile, a')) return;
     swipeRef.current = { x: e.clientX, y: e.clientY, t: performance.now() };
   };
+  // Live feedback: a gradient grows from the edge you're dragging toward, only
+  // when there's a page that way. Driven straight through the ref so the drag
+  // doesn't re-render (and disturb) the streaming gauges.
+  const onSwipeMove = (e) => {
+    const s = swipeRef.current, el = swipeHintRef.current;
+    if (!s || !el) return;
+    const dx = e.clientX - s.x, dy = e.clientY - s.y;
+    const dir = dx < 0 ? 1 : -1;
+    if (Math.abs(dx) < 8 || Math.abs(dx) <= Math.abs(dy) || !hasPageInDir(dir)) { el.style.opacity = 0; return; }
+    el.className = 'swipe-hint ' + (dx < 0 ? 'left' : 'right');
+    el.style.opacity = Math.min(1, Math.abs(dx) / 120);
+  };
   const onSwipeEnd = (e) => {
     const s = swipeRef.current;
     swipeRef.current = null;
+    clearSwipeHint();
     if (!s) return;
     const dx = e.clientX - s.x, dy = e.clientY - s.y;
     if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.8 && performance.now() - s.t < 800) {
       switchPageBy(dx < 0 ? 1 : -1); // swipe left → next page, right → previous
     }
+  };
+
+  // Reorder pages by dragging their pills in edit mode (HTML5 drag/drop).
+  // dragover live-swaps for visual feedback; dragend persists the new order.
+  const dragPageRef = useRef(null);
+  const onPillDragStart = (id) => (e) => {
+    dragPageRef.current = id;
+    if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; try { e.dataTransfer.setData('text/plain', String(id)); } catch (err) {} }
+  };
+  const onPillDragOver = (id) => (e) => {
+    const from = dragPageRef.current;
+    if (from == null) return;
+    e.preventDefault(); // allow drop
+    if (from === id) return;
+    setPages(ps => {
+      const fromIdx = ps.findIndex(p => p.id === from);
+      const toIdx = ps.findIndex(p => p.id === id);
+      if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return ps;
+      const next = ps.slice();
+      const [moved] = next.splice(fromIdx, 1);
+      next.splice(toIdx, 0, moved);
+      return next;
+    });
+  };
+  const onPillDragEnd = () => {
+    if (dragPageRef.current == null) return;
+    dragPageRef.current = null;
+    persist(pagesRef.current); // pages state already reflects the new order
   };
 
   // --- pages ---
@@ -4706,7 +4754,9 @@ const Gauges = () => {
         <p class="edit-help" style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">Six example pages (Driving, Battery, Temps, Charging, Debug, Controls) using standard value names — every gauge type included. Replaces your current gauges after confirmation.</p>
       </div>
       `}
-      <div class="main-left ${editing ? '' : 'gauge-swipe'}" onpointerdown=${onSwipeStart} onpointerup=${onSwipeEnd}>
+      <div class="main-left ${editing ? '' : 'gauge-swipe'}" onpointerdown=${onSwipeStart}
+        onpointermove=${onSwipeMove} onpointerup=${onSwipeEnd} onpointercancel=${() => { swipeRef.current = null; clearSwipeHint(); }}>
+        ${!editing && html`<div class="swipe-hint" ref=${swipeHintRef}></div>`}
         ${kiosk && html`<button class="kiosk-exit" title="Exit full screen" onclick=${() => setKiosk(false)}>✕</button>`}
         <div id="gauges-head" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:.5rem;gap:8px;flex-wrap:wrap">
           <h2 style="margin:0">Gauges</h2>
@@ -4734,7 +4784,12 @@ const Gauges = () => {
         </div>
         <div id="gauge-pages" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:.6rem">
           ${pages.map(p => html`
-            <button key=${p.id} class="page-pill ${p.id === activePage ? 'active' : ''}" onclick=${() => setActivePage(p.id)}>${p.name}</button>
+            <button key=${p.id} class="page-pill ${p.id === activePage ? 'active' : ''} ${editing ? 'draggable' : ''}"
+              draggable=${editing} onclick=${() => setActivePage(p.id)}
+              ondragstart=${editing ? onPillDragStart(p.id) : undefined}
+              ondragover=${editing ? onPillDragOver(p.id) : undefined}
+              ondragend=${editing ? onPillDragEnd : undefined}
+              title=${editing ? 'Drag to reorder' : ''}>${p.name}</button>
           `)}
           ${editing && html`<button class="page-pill" title="Add page" onclick=${addPage}>+</button>`}
         </div>

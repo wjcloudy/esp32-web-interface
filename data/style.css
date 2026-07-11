@@ -813,8 +813,20 @@ td { font-variant-numeric: tabular-nums; }
    (the edit-mode dashed outline still shows, so they stay manipulable) */
 .gauge-tile.tile-clear { background: transparent; border-color: transparent; }
 /* view-mode gauge area: no text selection, so a mouse/touch page-swipe drag
-   doesn't highlight tile labels/values as it moves */
-.gauge-swipe { user-select: none; -webkit-user-select: none; }
+   doesn't highlight tile labels/values as it moves. touch-action: pan-y keeps
+   vertical scrolling but hands HORIZONTAL touch gestures to our swipe handler
+   — without it the browser claims the drag as a scroll and fires
+   pointercancel (not pointerup), so swipe worked with a mouse but not on touch. */
+.gauge-swipe { user-select: none; -webkit-user-select: none; touch-action: pan-y; position: relative; }
+/* swipe feedback: a gradient that grows from the edge being dragged toward.
+   Opacity is set live from JS during the drag; pointer-events none so it never
+   intercepts the gesture it's visualising. */
+.swipe-hint {
+  position: absolute; inset: 0; z-index: 6; pointer-events: none; opacity: 0;
+  transition: opacity .12s ease;
+}
+.swipe-hint.left  { background: linear-gradient(to left,  transparent 55%, color-mix(in srgb, var(--accent) 40%, transparent)); }
+.swipe-hint.right { background: linear-gradient(to right, transparent 55%, color-mix(in srgb, var(--accent) 40%, transparent)); }
 /* gauge settings modal: section headers group the (long) option list */
 .modal-sect {
   font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
@@ -843,6 +855,8 @@ td { font-variant-numeric: tabular-nums; }
   background: var(--surface); color: var(--text2);
 }
 .page-pill.active { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.page-pill.draggable { cursor: grab; }
+.page-pill.draggable:active { cursor: grabbing; }
 /* pills are tabs, not action buttons — no lift on hover/active/select
    (the generic button transform was nudging the selected pill up a pixel) */
 .page-pill:hover, .page-pill:active { transform: none; }

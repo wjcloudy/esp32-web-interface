@@ -273,8 +273,14 @@ test.describe('Gauge extras', () => {
     await page.mouse.move(area.x + area.width - 60, y);
     await page.mouse.down();
     await page.mouse.move(area.x + 40, y, { steps: 8 });
+    // Mid-drag the edge-gradient hint is visible on the swipe side
+    const hint = page.locator('.swipe-hint');
+    await expect(hint).toHaveClass(/left/);
+    expect(await hint.evaluate(el => parseFloat(el.style.opacity))).toBeGreaterThan(0);
     await page.mouse.up();
     await expect(page.locator('.page-pill.active')).toHaveText('Batt');
+    // Hint clears once the gesture ends
+    expect(await hint.evaluate(el => parseFloat(el.style.opacity) || 0)).toBe(0);
     // Drag right → back to the previous page
     await page.mouse.move(area.x + 40, y);
     await page.mouse.down();
