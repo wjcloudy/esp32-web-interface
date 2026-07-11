@@ -3263,7 +3263,8 @@ const ToggleTile = ({ g, value, canMode, editing, px }) => {
   const fire = async () => {
     if (editing || busy) return;
     const next = !on;
-    if (g.confirm === true && !window.confirm('Switch "' + (g.label || g.param || g.canId || 'toggle') + '" ' + (next ? 'ON' : 'OFF') + '?')) return;
+    const stateName = next ? (g.onLabel || 'ON') : (g.offLabel || 'OFF');
+    if (g.confirm === true && !window.confirm('Switch "' + (g.label || g.param || g.canId || 'toggle') + '" to ' + stateName + '?')) return;
     setBusy(true);
     let ok = false;
     try {
@@ -3290,7 +3291,7 @@ const ToggleTile = ({ g, value, canMode, editing, px }) => {
         <input type="checkbox" checked=${on} disabled=${busy} />
         <span class="slider"></span>
       </label>
-      ${px >= 46 && html`<div class="g-unit" style=${'margin-top:' + Math.round(k * 8) + 'px'}>${busy ? '…' : on ? 'ON' : 'OFF'}</div>`}
+      ${px >= 46 && html`<div class="g-unit" style=${'margin-top:' + Math.round(k * 8) + 'px'}>${busy ? '…' : on ? (g.onLabel || 'ON') : (g.offLabel || 'OFF')}</div>`}
     </div>`;
 };
 
@@ -4009,6 +4010,14 @@ const Gauges = () => {
                   </div>
                   <p style="font-size:.72rem;color:var(--text3);margin:0">One frame per flip on the same ID (hex bytes). There's no feedback over raw CAN, so the switch position is remembered, not measured.${!state.canMode ? html` <b style="color:var(--amber)">The interface is currently UART — this switch only works in CAN Bus mode.</b>` : ''}</p>
                 `}
+                <div style="display:flex;gap:8px;align-items:center">
+                  <label style="width:4.5em">Names</label>
+                  <input type="text" value=${cfg.onLabel || ''} placeholder="ON" maxlength="12"
+                    oninput=${e => updateGaugeConfig(cfg.id, 'onLabel', e.target.value)} style="width:6.5em;padding:5px 6px" title="Name of the ON state" />
+                  <input type="text" value=${cfg.offLabel || ''} placeholder="OFF" maxlength="12"
+                    oninput=${e => updateGaugeConfig(cfg.id, 'offLabel', e.target.value)} style="width:6.5em;padding:5px 6px" title="Name of the OFF state" />
+                  <span style="font-size:.72rem;color:var(--text3)">state captions</span>
+                </div>
                 <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
                   <span style="width:4.5em">Confirm</span>
                   <input type="checkbox" checked=${!!cfg.confirm}

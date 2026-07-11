@@ -678,18 +678,20 @@ test.describe('Gauges grid', () => {
 
   test('toggle tile flips a parameter and follows its live value', async ({ page, mock }) => {
     const layout = { v: 3, pages: [{ id: 1, name: 'Main', items: [
-      { id: 1, type: 'toggle', param: 'potmin', onValue: 100, offValue: 0, label: 'Heat', x: 0, y: 0, w: 2, h: 2 },
+      { id: 1, type: 'toggle', param: 'potmin', onValue: 100, offValue: 0, label: 'Heat', onLabel: 'Heating', offLabel: 'Idle', x: 0, y: 0, w: 2, h: 2 },
     ] }] };
     await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(layout) });
     await openApp(page, mock);
     await gotoTab(page, 'Gauges');
     const box = page.locator('.toggle-tile input[type="checkbox"]');
-    // potmin starts at 0 = the OFF value
+    // potmin starts at 0 = the OFF value, shown with its custom state name
     await expect(box).not.toBeChecked();
+    await expect(page.locator('.toggle-tile')).toContainText('Idle');
     // Flip on: sets the ON value, and the streamed value moves the switch
     await page.locator('.toggle-tile').click();
     await expect.poll(async () => await mock.commands()).toContain('set potmin 100');
     await expect(box).toBeChecked({ timeout: 5000 });
+    await expect(page.locator('.toggle-tile')).toContainText('Heating');
     expect((await mock.state()).inverter.params.potmin.value).toBe(100);
     // Flip off again
     await page.locator('.toggle-tile').click();
