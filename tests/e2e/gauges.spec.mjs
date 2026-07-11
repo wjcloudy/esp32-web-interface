@@ -667,8 +667,8 @@ test.describe('Gauges grid', () => {
     const horiz = page.locator('.bar-gauge.horiz');
     await expect(horiz).toHaveCount(1);
     // udc 398.5 of 0..500 = 79.7% fill, value + unit overlaid
-    await expect(horiz.locator('.bar-fill')).toHaveAttribute('style', /width:79\.7%/);
-    await expect(vert.locator('.bar-fill')).toHaveAttribute('style', /height:79\.7%/);
+    await expect(horiz.locator('.bar-fill')).toHaveAttribute('style', /width:\s*79\.7%/);
+    await expect(vert.locator('.bar-fill')).toHaveAttribute('style', /height:\s*79\.7%/);
     await expect(horiz).toContainText('398.5');
     await expect(horiz).toContainText('V');
     // Past 92% of range the fill goes to the warning colour
