@@ -1,9 +1,10 @@
 import { test, expect, openApp, gotoTab } from './fixtures.mjs';
 
-// Settings is split into two sub-tabs; Device & Connection is the default
-async function gotoWebSubTab(page) {
-  await page.locator('#settings-subtabs .page-pill', { hasText: 'Web Interface' }).click();
+// Settings is split into three sub-tabs; Device & Connection is the default
+async function gotoSubTab(page, label) {
+  await page.locator('#settings-subtabs .page-pill', { hasText: label }).click();
 }
+const gotoWebSubTab = (page) => gotoSubTab(page, 'Web Interface');
 
 test.describe('Settings tab', () => {
   test('UART TX/RX swap posts to /settings and persists in mock state', async ({ page, mock }) => {
@@ -116,7 +117,7 @@ test.describe('Settings tab', () => {
   test('export settings produces a JSON bundle download', async ({ page, mock }) => {
     await openApp(page, mock);
     await gotoTab(page, 'Settings');
-    await gotoWebSubTab(page);
+    await gotoSubTab(page, 'Configuration'); // backup/restore moved to its own sub-tab
     const dlPromise = page.waitForEvent('download');
     await page.locator('button', { hasText: 'Export settings' }).click();
     const dl = await dlPromise;
@@ -130,7 +131,7 @@ test.describe('Settings tab', () => {
   test('import settings uploads layout files to the device and reloads', async ({ page, mock }) => {
     await openApp(page, mock);
     await gotoTab(page, 'Settings');
-    await gotoWebSubTab(page);
+    await gotoSubTab(page, 'Configuration');
     page.on('dialog', d => d.accept());
     const bundle = {
       type: 'openinverter-ui-settings',
@@ -145,5 +146,50 @@ test.describe('Settings tab', () => {
     // (a synchronous check right after favorites lands races the gauges POST)
     await expect.poll(async () => (await mock.state()).files).toContain('gauges.json');
     expect((await mock.state()).files).toContain('favorites.json');
+  });
+
+  test('individual files back up and restore from the Configuration sub-tab', async ({ page, mock }) => {
+    // Seed a presets file to back up
+    await fetch(mock.url + '/__test/put-file?name=presets.json', {
+      method: 'POST', body: JSON.stringify({ v: 1, presets: [{ id: 1, name: 'Track', params: { fweak: 72 } }] }),
+    });
+    // One handler for the whole test — a second registration would race the
+    // first for the same dialog
+    const dialogs = [];
+    page.on('dialog', d => { dialogs.push(d.message()); d.accept(); });
+    await openApp(page, mock);
+    await gotoTab(page, 'Settings');
+    await gotoSubTab(page, 'Configuration');
+    // Backup downloads the raw device file
+    const row = page.locator('.preset-row', { hasText: 'Parameter presets' });
+    const dlPromise = page.waitForEvent('download');
+    await row.locator('button', { hasText: 'Backup' }).click();
+    const dl = await dlPromise;
+    expect(dl.suggestedFilename()).toBe('presets.json');
+    const chunks = [];
+    for await (const c of await dl.createReadStream()) chunks.push(c);
+    expect(JSON.parse(Buffer.concat(chunks).toString()).presets[0].name).toBe('Track');
+    // Restore replaces a single file (after a shape check + confirm)
+    await page.locator('#single-import-gauges').setInputFiles({
+      name: 'gauges.json', mimeType: 'application/octet-stream',
+      buffer: Buffer.from(JSON.stringify({ v: 3, pages: [{ id: 1, name: 'Restored', items: [] }] })),
+    });
+    await expect.poll(async () => (await mock.state()).files).toContain('gauges.json');
+    const saved = await fetch(mock.url + '/gauges.json').then(r => r.json());
+    expect(saved.pages[0].name).toBe('Restored');
+    // A wrong-shaped file is refused: a presets file can't restore as gauges
+    await page.reload();
+    await expect(page.locator('#version')).toContainText('Web: v0.1-mock');
+    await gotoTab(page, 'Settings');
+    await gotoSubTab(page, 'Configuration');
+    const before = dialogs.length;
+    await page.locator('#single-import-gauges').setInputFiles({
+      name: 'presets.json', mimeType: 'application/json',
+      buffer: Buffer.from(JSON.stringify({ v: 1, presets: [] })),
+    });
+    await expect.poll(() => dialogs.length).toBeGreaterThan(before);
+    expect(dialogs[dialogs.length - 1]).toContain("doesn't look like a gauge pages file");
+    // ...and gauges.json on the device is untouched
+    expect((await fetch(mock.url + '/gauges.json').then(r => r.json())).pages[0].name).toBe('Restored');
   });
 });

@@ -2598,6 +2598,17 @@ if (_noSleep && getKeepAwake()) {
   ['click', 'touchstart', 'keydown'].forEach(ev => document.addEventListener(ev, arm));
 }
 
+// Per-file backup/restore items for the Configuration sub-tab. check() is a
+// light shape test so an obviously wrong file (or the full settings bundle)
+// can't silently replace a device file.
+const SINGLE_FILES = [
+  { key: 'gauges', file: 'gauges.json', label: 'Gauge pages', check: d => Array.isArray(d.pages) || Array.isArray(d.items) },
+  { key: 'presets', file: 'presets.json', label: 'Parameter presets', check: d => Array.isArray(d.presets) },
+  { key: 'favorites', file: 'favorites.json', label: 'Favourites', check: d => typeof d === 'object' && !d.type },
+  { key: 'plots', file: 'plots.json', label: 'Plot layouts', check: d => typeof d === 'object' && !d.type },
+  { key: 'uiprefs', file: 'uiprefs.json', label: 'UI preferences', check: d => typeof d === 'object' && !d.type },
+];
+
 const Settings = () => {
   const { state, dispatch } = useContext(Store);
   const [txrxSwapped, setTxrxSwapped] = useState(true);
@@ -2661,6 +2672,32 @@ const Settings = () => {
       location.reload();
     } catch (err) { alert('Import failed: ' + err.message); }
   };
+  // Individual-file backup/restore (Configuration sub-tab)
+  const exportSingle = async (item) => {
+    try {
+      const r = await fetch('/' + item.file);
+      if (!r.ok) { alert('No ' + item.label.toLowerCase() + ' stored on the device yet.'); return; }
+      const a = document.createElement('a');
+      a.href = 'data:application/json;charset=utf-8,' + encodeURIComponent(await r.text());
+      a.download = item.file;
+      a.click();
+    } catch (e) { alert('Backup failed: ' + e.message); }
+  };
+  const importSingle = async (item, e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    try {
+      const data = JSON.parse(await f.text());
+      if (!data || !item.check(data)) { alert("That doesn't look like a " + item.label.toLowerCase() + ' file.'); return; }
+      if (!confirm('Replace the ' + item.label.toLowerCase() + ' on this device with "' + f.name + '"?')) return;
+      const fd = new FormData();
+      fd.append('updatefile', new Blob([JSON.stringify(data)], { type: 'application/json' }), item.file);
+      await fetch('/edit', { method: 'POST', body: fd });
+      alert(item.label + ' restored — reloading');
+      location.reload();
+    } catch (err) { alert('Restore failed: ' + err.message); }
+  };
   const [apSSID, setApSSID] = useState('');
   const [apPW, setApPW] = useState('');
   const [staSSID, setStaSSID] = useState('');
@@ -2680,9 +2717,12 @@ const Settings = () => {
     const t = setInterval(load, 5000);
     return () => { alive = false; clearInterval(t); };
   }, []);
-  // Sub-tab (Device & Connection / Web Interface) — deep-linkable as
-  // #settings/device or #settings/web, restored when returning via back
-  const [subTab, setSubTab] = useState(() => (parseHash().sub === 'web' ? 'web' : 'device'));
+  // Sub-tab (Device & Connection / Web Interface / Configuration) —
+  // deep-linkable as #settings/device|web|config
+  const [subTab, setSubTab] = useState(() => {
+    const s = parseHash().sub;
+    return (s === 'web' || s === 'config') ? s : 'device';
+  });
   const pickSubTab = (s) => {
     setSubTab(s);
     if (/^#settings(\/|$)/.test(location.hash)) history.replaceState(null, '', '#settings/' + s);
@@ -2778,6 +2818,7 @@ const Settings = () => {
         <div id="settings-subtabs" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:.75rem">
           <button class="page-pill ${subTab === 'device' ? 'active' : ''}" onclick=${() => pickSubTab('device')}>Device & Connection</button>
           <button class="page-pill ${subTab === 'web' ? 'active' : ''}" onclick=${() => pickSubTab('web')}>Web Interface</button>
+          <button class="page-pill ${subTab === 'config' ? 'active' : ''}" onclick=${() => pickSubTab('config')}>Configuration</button>
         </div>
         <div class="settings-grid">
         ${subTab === 'device' && html`
@@ -2984,14 +3025,32 @@ const Settings = () => {
           ${!dashMetrics.filter(Boolean).length && html`<p style="font-size:.72rem;color:var(--text3);margin:.35rem 0 0">Nothing selected — the default (udc, tmphs) is shown.</p>`}
         </div>
 
+        `}
+        ${subTab === 'config' && html`
+
         <div class="dash-box compact">
           <h3>Backup & Restore</h3>
-          <p style="font-size:.8rem;margin:0 0 .5rem">Back up or restore favourites, gauge and plot layouts, and UI preferences as a single file.</p>
+          <p style="font-size:.8rem;margin:0 0 .5rem">Back up or restore favourites, gauge pages, presets, plot layouts and UI preferences as a single file.</p>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             <button onclick=${exportUiSettings} style="width:auto"><${Icon} n="download" />Export settings</button>
             <input id="ui-settings-import" type="file" hidden onchange=${importUiSettings} />
             <label class="butt" for="ui-settings-import" style="width:auto"><${Icon} n="upload" />Import settings</label>
           </div>
+        </div>
+
+        <div class="dash-box compact">
+          <h3>Individual Files</h3>
+          <p style="font-size:.8rem;margin:0 0 .5rem">Back up or restore one piece at a time — e.g. share just your presets or gauge pages.</p>
+          ${SINGLE_FILES.map(item => html`
+            <div class="preset-row" key=${item.key} style="flex-wrap:nowrap">
+              <span class="preset-name" style="flex:1 1 auto">${item.label}</span>
+              <button onclick=${() => exportSingle(item)} title=${'Download ' + item.file}><${Icon} n="download" size=${11} />Backup</button>
+              <input id=${'single-import-' + item.key} type="file" hidden onchange=${e => importSingle(item, e)} />
+              <label class="butt" for=${'single-import-' + item.key} title=${'Upload a ' + item.file + ' backup'}
+                style="width:auto;height:24px;padding:0 9px;font-size:.7rem;line-height:1;justify-content:center"><${Icon} n="upload" size=${11} />Restore</label>
+            </div>
+          `)}
+          <p style="font-size:.72rem;color:var(--text3);margin:.35rem 0 0">Restoring replaces that file on the device and reloads the page.</p>
         </div>
 
         `}

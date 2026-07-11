@@ -50,9 +50,11 @@ test.describe('Parameter presets', () => {
     const dialogs = [];
     page.on('dialog', d => { dialogs.push(d.message()); d.accept(); });
     await page.locator('.preset-row', { hasText: 'Street' }).locator('button', { hasText: 'Apply & save' }).click();
-    await expect.poll(async () => await mock.commands(), { timeout: 15000 }).toContain('save');
+    // Wait for the SUMMARY dialog — the save command lands before it opens
+    await expect.poll(() => dialogs.length, { timeout: 15000 }).toBeGreaterThanOrEqual(2);
+    expect(dialogs[1]).toContain('Saved to flash');
+    expect(await mock.commands()).toContain('save');
     expect(await mock.commands()).toContain('set fweak 70');
-    expect(dialogs[dialogs.length - 1]).toContain('Saved to flash');
   });
 
   test('changed-from-default captures exactly the tuned parameters', async ({ page, mock }) => {
@@ -92,7 +94,7 @@ test.describe('Parameter presets', () => {
     await seedPresets(mock, [{ id: 1, name: 'Track', params: { fweak: 72 } }]);
     await openApp(page, mock);
     await gotoTab(page, 'Settings');
-    await page.locator('#settings-subtabs .page-pill', { hasText: 'Web Interface' }).click();
+    await page.locator('#settings-subtabs .page-pill', { hasText: 'Configuration' }).click();
     const dlPromise = page.waitForEvent('download');
     await page.locator('button', { hasText: 'Export settings' }).click();
     const dl = await dlPromise;
