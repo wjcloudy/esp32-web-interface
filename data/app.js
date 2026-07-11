@@ -3183,13 +3183,13 @@ const Settings = () => {
           <p class="settings-subhead">Access Point — created by this module</p>
           <div style="display:flex;flex-direction:column;gap:6px;max-width:350px;margin-bottom:.85rem">
             <label style="font-size:.8rem">SSID: <input type="text" value=${apSSID} oninput=${e => setApSSID(e.target.value)} style="width:100%" autocomplete="off" data-lpignore="true" data-1p-ignore /></label>
-            <label style="font-size:.8rem">Password: <input type="text" value=${apPW} oninput=${e => setApPW(e.target.value)} style="width:100%" minlength="8" autocomplete="off" data-lpignore="true" data-1p-ignore /></label>
+            <label style="font-size:.8rem">Passphrase: <input type="text" value=${apPW} oninput=${e => setApPW(e.target.value)} style="width:100%" minlength="8" autocomplete="off" data-lpignore="true" data-1p-ignore /></label>
             <button onclick=${() => saveWiFi('ap')} style="align-self:flex-start;font-size:.75rem;padding:4px 12px"><${Icon} n="save" />Save AP settings</button>
           </div>
           <p class="settings-subhead">Station — join an existing network</p>
           <div style="display:flex;flex-direction:column;gap:6px;max-width:350px">
             <label style="font-size:.8rem">Network SSID: <input type="text" value=${staSSID} oninput=${e => setStaSSID(e.target.value)} style="width:100%" autocomplete="off" data-lpignore="true" data-1p-ignore /></label>
-            <label style="font-size:.8rem">Password: <input type="text" value=${staPW} oninput=${e => setStaPW(e.target.value)} style="width:100%" autocomplete="off" data-lpignore="true" data-1p-ignore /></label>
+            <label style="font-size:.8rem">Passphrase: <input type="text" value=${staPW} oninput=${e => setStaPW(e.target.value)} style="width:100%" autocomplete="off" data-lpignore="true" data-1p-ignore /></label>
             <button onclick=${() => saveWiFi('sta')} style="align-self:flex-start;font-size:.75rem;padding:4px 12px"><${Icon} n="save" />Save station settings</button>
           </div>
           ${wifiMsg && html`<p style="color:var(--accent);font-size:.78rem;font-weight:600;margin:.5rem 0 0">${wifiMsg}</p>`}

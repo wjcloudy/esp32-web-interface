@@ -202,6 +202,14 @@ p { margin: 0 0 .5rem; color: var(--text2); line-height: 1.6; }
 #device-name { margin: auto 10px 0; padding: 6px 10px; font-size: .78rem; font-weight: 700; color: var(--accent); background: var(--accent-glow); border-radius: var(--radius-xs); text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* preset dry-run / file-compare diff tables: matching rows fade back */
 tr.diff-same td { color: var(--text3); }
+
+/* Password managers (LastPass especially) ignore the data-lpignore hints on
+   the Settings fields and inject in-field icon overlays anyway — mispositioned
+   by the multi-column card layout. Nothing on these pages is a credential
+   (WiFi config, device name), so suppress the injected overlay elements. */
+[data-lastpass-icon-root], [data-lastpass-root], [data-lastpass-infield],
+#onepassword-button, com-1password-button { display: none !important; }
+input::-webkit-credentials-auto-fill-button { visibility: hidden; pointer-events: none; }
 #data-age { position: relative; margin: 8px 10px 10px; padding: 6px 12px; font-size: .75rem; font-weight: 600; color: var(--accent); background: var(--accent-glow); border-radius: var(--radius-xs); text-align: center; font-variant-numeric: tabular-nums; }
 
 /* refresh indicator: a glowing stroke circling the badge outline (no layout shift) */
