@@ -3475,7 +3475,7 @@ const hueShift = (hex, deg) => {
 // one way and regen the other, pivoting on a tick at the centre mark.
 // invertScale mirrors the whole scale (max at the arc's start, min at its
 // end), fill and labels included.
-const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decimals = 1, warn, warnColor, center, invertScale, peaks, gstyle }) => {
+const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decimals = 1, warn, warnColor, center, invertScale, peaks, gstyle, revColor }) => {
   const size = px || 230, c = size / 2, r = Math.round(size * 0.4);
   const sw = Math.max(8, Math.round(size * 0.057));
   const SWEEP = 270; // degrees, gap centered at the bottom
@@ -3500,7 +3500,10 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decim
   const custom = color && /^#[0-9a-fA-F]{6}$/.test(color);
   const warned = warn != null && v != null && v >= warn;
   const wc = (warnColor && /^#[0-9a-fA-F]{6}$/.test(warnColor)) ? warnColor : '#f59e0b';
-  const stroke = warned ? wc : 'url(#' + grad + ')';
+  // Below the centre point the sweep can use its own colour (regen vs drive)
+  const below = hasCenter && v != null && frac < cFrac;
+  const revC = (below && revColor && /^#[0-9a-fA-F]{6}$/.test(revColor)) ? revColor : null;
+  const stroke = warned ? wc : (revC || 'url(#' + grad + ')');
   const legacyOver = warn == null && frac >= 0.92;
   // Needle dial: pointer over the track instead of a fill arc; the value
   // moves into the arc's bottom gap, out of the pointer's way
@@ -3547,7 +3550,7 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decim
           ${needle && v != null && html`
             <g class="g-needle" style=${'transform-origin:' + c + 'px ' + c + 'px;transform:rotate(' + (pointFrac * SWEEP).toFixed(2) + 'deg)'}>
               <line x1=${c + Math.round(r * 0.25)} y1=${c} x2=${c + r - Math.round(sw * 0.4)} y2=${c}
-                stroke=${warned ? wc : (custom ? color : '#ff6b6b')}
+                stroke=${warned ? wc : (revC || (custom ? color : '#4cc9f0'))}
                 stroke-width=${Math.max(2, Math.round(size * 0.016))} stroke-linecap="round" />
             </g>
             <circle class="g-hub" cx=${c} cy=${c} r=${Math.max(3, Math.round(size * 0.032))} />`}
@@ -3743,7 +3746,7 @@ const IndicatorLamp = ({ value, min, max, color, enums, invert, px }) => {
 // level bar or a column depending on the tile's shape (wider = horizontal,
 // taller = vertical). Same range/gradient/over-range behaviour as the
 // radial; value overlaid in the centre, min/max in the corners.
-const BarGauge = ({ value, min = 0, max = 100, unit, color, enums, decimals = 1, w, h, warn, warnColor, center, invertScale, peaks }) => {
+const BarGauge = ({ value, min = 0, max = 100, unit, color, enums, decimals = 1, w, h, warn, warnColor, center, invertScale, peaks, revColor }) => {
   const v = (value == null || isNaN(value)) ? null : value;
   const lo = min != null ? min : 0;
   const hi = (max == null || max === lo) ? lo + 100 : max;
@@ -3771,6 +3774,9 @@ const BarGauge = ({ value, min = 0, max = 100, unit, color, enums, decimals = 1,
   const warned = warn != null && v != null && v >= warn;
   const wc = (warnColor && /^#[0-9a-fA-F]{6}$/.test(warnColor)) ? warnColor : '#f59e0b';
   const over = warn == null && frac >= 0.92;
+  // Below the centre point the fill can use its own colour (regen vs drive)
+  const below = hasCenter && v != null && frac < cFrac;
+  const revC = (below && revColor && /^#[0-9a-fA-F]{6}$/.test(revColor)) ? revColor : null;
   const disp = v == null ? '—' : (enums ? String(enumLabel(enums, v)) : v.toFixed(decimals));
   // Fit the overlay by BOTH axes — a narrow column bar must shrink the
   // value to its width, not just its shorter side
@@ -3782,7 +3788,7 @@ const BarGauge = ({ value, min = 0, max = 100, unit, color, enums, decimals = 1,
       <div class="bar-fill ${over ? 'over' : ''}"
         style=${(horiz ? 'left:' : 'bottom:') + (startFrac * 100).toFixed(1) + '%;'
           + (horiz ? 'width:' : 'height:') + (lenFrac * 100).toFixed(1) + '%;'
-          + (warned ? 'background:' + wc : over ? '' : 'background:' + grad)}></div>
+          + (warned ? 'background:' + wc : over ? '' : 'background:' + (revC || grad))}></div>
       ${hasCenter && html`<div class="bar-center-tick" style=${(horiz ? 'left:' : 'bottom:') + (tickFrac * 100).toFixed(1) + '%'}></div>`}
       ${/* Peak-hold markers: session max (and min on centred bars) */ ''}
       ${peaks && (() => {
@@ -4062,7 +4068,7 @@ const GaugeTileBody = ({ g, title, value, value2, unit, enums, editing, canMode,
         ? html`<${BarGauge} value=${value} unit=${unit} enums=${enums} color=${g.color || ''}
             decimals=${g.decimals != null ? g.decimals : 1} min=${g.min != null ? g.min : 0}
             max=${(g.max == null || g.max === 0) ? 4000 : g.max} w=${w - 8} h=${gh - 4}
-            warn=${g.warn} warnColor=${g.warnColor} center=${g.center} invertScale=${!!g.invertScale} peaks=${peaks} />`
+            warn=${g.warn} warnColor=${g.warnColor} center=${g.center} invertScale=${!!g.invertScale} peaks=${peaks} revColor=${g.revColor || ''} />`
         : (g.type === 'toggle')
         ? html`<${ToggleTile} g=${g} value=${value} canMode=${canMode} editing=${editing} px=${Math.max(20, Math.min(w, gh) - 4)} />`
         : (g.type === 'slider')
@@ -4071,7 +4077,7 @@ const GaugeTileBody = ({ g, title, value, value2, unit, enums, editing, canMode,
             px=${Math.max(40, Math.min(w, gh) - 4)} decimals=${g.decimals != null ? g.decimals : 1}
             min=${g.min != null ? g.min : 0} max=${(g.max == null || g.max === 0) ? 4000 : g.max}
             warn=${g.warn} warnColor=${g.warnColor} center=${g.center} invertScale=${!!g.invertScale}
-            peaks=${peaks} gstyle=${g.gstyle || ''} />`)}
+            peaks=${peaks} gstyle=${g.gstyle || ''} revColor=${g.revColor || ''} />`)}
       </div>
     </div>`;
 };
@@ -4926,6 +4932,16 @@ const Gauges = () => {
                     style="width:6em;padding:5px 6px" />
                   <span style="font-size:.72rem;color:var(--text3)">gauge sweeps from this value both ways — e.g. 0 on a power gauge</span>
                 </div>
+                ${cfg.center != null && html`
+                  <div style="display:flex;gap:8px;align-items:center">
+                    <label style="width:4.5em">Below</label>
+                    <input id="gauge-revcolor" type="color" value=${cfg.revColor || '#54e6a4'}
+                      oninput=${e => updateGaugeConfig(cfg.id, 'revColor', e.target.value)}
+                      style="width:34px;height:28px;padding:0;border:1px solid var(--border2);border-radius:6px;background:none;cursor:pointer" />
+                    ${cfg.revColor && html`<button onclick=${() => updateGaugeConfig(cfg.id, 'revColor', undefined)} style="font-size:.65rem;padding:2px 8px;width:auto" title="Use the main colour below centre too"><${Icon} n="undo" size=${11} /></button>`}
+                    <span style="font-size:.72rem;color:var(--text3)">colour for the reverse sweep below centre — e.g. green for regen</span>
+                  </div>
+                `}
                 <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
                   <span style="width:4.5em">Invert</span>
                   <input type="checkbox" checked=${!!cfg.invertScale} onchange=${e => updateGaugeConfig(cfg.id, 'invertScale', e.target.checked)} style="width:auto" />

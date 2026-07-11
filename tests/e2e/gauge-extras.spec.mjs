@@ -26,6 +26,34 @@ test.describe('Gauge extras', () => {
     expect(t).toMatch(/rotate\(215\.\d+deg\)/);
   });
 
+  test('needle uses the set colour', async ({ page, mock }) => {
+    await seedLayout(mock, [
+      { id: 1, name: 'udc', type: 'radial', gstyle: 'needle', color: '#b78cff', min: 0, max: 500, x: 0, y: 0, w: 3, h: 3 },
+    ]);
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await expect(page.locator('.g-needle line')).toHaveAttribute('stroke', '#b78cff');
+  });
+
+  test('centred gauge uses the reverse colour below the pivot', async ({ page, mock }) => {
+    // idc streams 0 by default; set it below centre so the reverse colour shows
+    await fetch(mock.url + '/__test/spot?name=speed&value=-100'); // reuse a signed-capable value
+    await seedLayout(mock, [
+      { id: 1, name: 'speed', type: 'bar', center: 0, revColor: '#54e6a4', color: '#4cc9f0', min: -300, max: 300, x: 0, y: 0, w: 5, h: 2 },
+    ]);
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    // Value -100 is below centre 0 → the fill uses the reverse colour, not the gradient
+    await expect.poll(async () =>
+      page.locator('.bar-fill').first().evaluate(el => el.style.background)
+    ).toContain('rgb(84, 230, 164)'); // #54e6a4
+    // Above centre it reverts to the gradient (no solid reverse colour)
+    await fetch(mock.url + '/__test/spot?name=speed&value=150');
+    await expect.poll(async () =>
+      page.locator('.bar-fill').first().evaluate(el => el.style.background)
+    ).toContain('gradient');
+  });
+
   test('peak-hold marker stays at the session high after the value drops', async ({ page, mock }) => {
     await setSpot(mock, 'udc', 300);
     await seedLayout(mock, [
