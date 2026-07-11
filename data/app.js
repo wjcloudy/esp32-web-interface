@@ -3678,6 +3678,11 @@ const Gauges = () => {
   const [configId, setConfigId] = useState(null); // gauge whose settings modal is open
   const [autoPage, setAutoPage] = useState(true); // conditional page display armed
   const [loaded, setLoaded] = useState(false); // gauges.json fetch settled
+  // Bumped when the whole layout is replaced (sample load): the grid keys on
+  // it so the DOM remounts even when the new first page has the SAME id —
+  // reused tiles have had their gs-* attributes stripped by gridstack, so a
+  // reused container renders the old layout until a page switch
+  const [layoutGen, setLayoutGen] = useState(0);
   // Deep-link target, captured at first render — effects rewrite the hash
   // before the async layout fetch reads it
   const initialSubRef = useRef(parseHash().sub);
@@ -3840,7 +3845,7 @@ const Gauges = () => {
     return () => { ro.disconnect(); grid.destroy(false); gridApi.current = null; };
     // types join: a type switch (e.g. radial -> indicator) changes the
     // engine minimums, so re-init to reapply them
-  }, [activePage, items.length, editing, pages.length, items.map(g => g.type).join()]);
+  }, [activePage, layoutGen, items.length, editing, pages.length, items.map(g => g.type).join()]);
 
   const addGauge = () => {
     const id = nextId.current++;
@@ -3934,6 +3939,7 @@ const Gauges = () => {
       setAutoPage(auto);
       setPages(migrated);
       setActivePage(migrated[0].id);
+      setLayoutGen(g => g + 1); // remount the grid — same-id pages reuse stale DOM
       persist(migrated, auto);
     } catch (e) { alert('Could not load the sample layout: ' + e.message); }
   };
@@ -4086,7 +4092,7 @@ const Gauges = () => {
           ${editing && html`<button class="page-pill" title="Add page" onclick=${addPage}>+</button>`}
         </div>
         ${items.length === 0 && !editing && html`<p style="color:var(--text3);font-size:.85rem;text-align:center;padding:2rem 0">Click Edit Layout to add a gauge.</p>`}
-        <div class="grid-stack" ref=${gridRef} key=${'page-' + activePage}>
+        <div class="grid-stack" ref=${gridRef} key=${'page-' + activePage + '-g' + layoutGen}>
           ${items.map(g => {
             const sv = state.spotValues && state.spotValues[g.name];
             const unit = (sv && sv.unit && sv.unit.indexOf('=') === -1) ? sv.unit : '';

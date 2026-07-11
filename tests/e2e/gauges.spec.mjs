@@ -567,6 +567,10 @@ test.describe('Gauges grid', () => {
     for (const name of ['Battery', 'Temps', 'Charging', 'Debug', 'Controls']) {
       await expect(page.locator('.page-pill', { hasText: name })).toBeVisible();
     }
+    // The Driving page's tiles render IMMEDIATELY — the old page (with the
+    // same id) previously kept its stale grid DOM until a page switch
+    await expect(page.locator('.gauge-tile-name', { hasText: 'Motor' })).toBeVisible();
+    await expect(page.locator('.gauge-tile-name', { hasText: 'udc' })).toHaveCount(0);
     // Persisted straight to the device, conditional Charging page included
     await expect.poll(async () => (await savedLayout(mock)).pages.length).toBe(6);
     const saved = await savedLayout(mock);
