@@ -35,6 +35,27 @@ test.describe('Gauges grid', () => {
     await expect(page.locator('.gauge-tile .g-val')).toContainText('398.5');
   });
 
+  test('Cancel & exit discards edits made since opening the editor', async ({ page, mock }) => {
+    // Start with one saved tile
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', {
+      method: 'POST', body: JSON.stringify({ v: 3, pages: [{ id: 1, name: 'Main', items: [
+        { id: 1, name: 'udc', type: 'radial', min: 0, max: 500, x: 0, y: 0, w: 3, h: 3 },
+      ] }] }),
+    });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await enterEdit(page);
+    await addGauge(page, 'tmphs'); // a second tile, in state only (not saved)
+    await expect(page.locator('.grid-stack-item')).toHaveCount(2);
+    await page.locator('button', { hasText: 'Cancel' }).click();
+    // Back to view mode with the original single tile; device file untouched
+    await expect(page.locator('button', { hasText: 'Edit Layout' })).toBeVisible();
+    await expect(page.locator('.grid-stack-item')).toHaveCount(1);
+    const layout = await savedLayout(mock);
+    expect(layout.pages[0].items).toHaveLength(1);
+    expect(layout.pages[0].items[0].name).toBe('udc');
+  });
+
   test('tiles can be moved by dragging (position round-trips)', async ({ page, mock }) => {
     await openApp(page, mock);
     await gotoTab(page, 'Gauges');

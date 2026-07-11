@@ -754,6 +754,9 @@ td { font-variant-numeric: tabular-nums; }
 }
 @media (max-width: 600px) {
   .small-modal-container, .large-modal-container, .can-mapping-modal-container { width: 95vw; }
+  /* the gauge editor's actions bar wraps to a full-width row on phones and
+     eats most of the screen — drop the explanatory help text there */
+  .edit-help { display: none; }
   table { font-size: .8rem; }
   #spotValues { font-size: .9rem; }
   thead th, tbody td { padding: 6px 6px; }

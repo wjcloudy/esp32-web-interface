@@ -4139,6 +4139,7 @@ const Gauges = () => {
   const gridApi = useRef(null);  // GridStack instance
   const dragBusyRef = useRef(false); // true during (and briefly after) a drag/resize
   const lastHitRef = useRef(null); // page whose condition matched last tick
+  const editSnapshotRef = useRef(null); // pages/autoPage captured on entering edit, for Cancel
   // Session min/max per tile id, for peak-hold markers (resets when the
   // Gauges tab is left — a browsing "session", not a persisted one)
   const peaksRef = useRef({});
@@ -4389,6 +4390,27 @@ const Gauges = () => {
     // engine minimums, so re-init to reapply them
   }, [activePage, layoutGen, items.length, editing, pages.length, items.map(g => g.type).join()]);
 
+  // Enter edit mode, snapshotting the layout so Cancel can restore it
+  const startEditing = () => {
+    editSnapshotRef.current = { pages: JSON.parse(JSON.stringify(pages)), autoPage };
+    setEditing(true);
+  };
+  // Discard every change made this edit session and exit — restore the
+  // snapshot, remount the grid, and re-persist so a mid-edit write (e.g. a
+  // sample-layout load) is undone on the device too
+  const cancelEditing = () => {
+    const snap = editSnapshotRef.current;
+    if (snap) {
+      setPages(snap.pages);
+      setAutoPage(snap.autoPage);
+      if (!snap.pages.some(p => p.id === activePage)) setActivePage(snap.pages[0].id);
+      setLayoutGen(g => g + 1);
+      persist(snap.pages, snap.autoPage);
+    }
+    setConfigId(null);
+    setEditing(false);
+  };
+
   const addGauge = () => {
     const id = nextId.current++;
     setPageItems(activePage, prev => {
@@ -4613,6 +4635,7 @@ const Gauges = () => {
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px">
           <button onclick=${addGauge}><${Icon} n="plus" />Add Gauge</button>
           <button onclick=${() => { persist(pages); setEditing(false); }}><${Icon} n="check" />Save & Done</button>
+          <button onclick=${cancelEditing} title="Discard changes made since you opened the editor"><${Icon} n="x" />Cancel &amp; exit</button>
         </div>
         <p style="font-size:.72rem;color:var(--text3);margin:.25rem 0 .5rem">Drag tiles to move them; drag a tile's corner to resize.</p>
         <h3 class="underline">Page: ${page.name}</h3>
@@ -4642,16 +4665,16 @@ const Gauges = () => {
               <span style="font-size:.72rem;color:var(--text3)">show while OUTSIDE the range</span>
             </label>
             <button onclick=${clearPageCond} style="font-size:.72rem;padding:3px 10px;width:auto;align-self:flex-start;color:var(--red)"><${Icon} n="x" size=${11} />Remove condition</button>
-            <p style="font-size:.72rem;color:var(--text3);margin:0">Shows this page while the value is between Min and Max (inclusive). Equal-to is Min = Max — e.g. opmode 3 to 3. Leave Min or Max blank for no lower/upper limit. The Auto-switch toggle above the grid arms it.</p>
+            <p class="edit-help" style="font-size:.72rem;color:var(--text3);margin:0">Shows this page while the value is between Min and Max (inclusive). Equal-to is Min = Max — e.g. opmode 3 to 3. Leave Min or Max blank for no lower/upper limit. The Auto-switch toggle above the grid arms it.</p>
           </div>
         ` : html`
           <button onclick=${() => updatePageCond('name', '')} style="font-size:.75rem;padding:4px 10px;width:auto"><${Icon} n="plus" />Add condition</button>
-          <p style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">A condition switches to this page automatically while a value is in range — e.g. opmode 3 to 3, or lasterr 0 to 0 inverted (any error).</p>
+          <p class="edit-help" style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">A condition switches to this page automatically while a value is in range — e.g. opmode 3 to 3, or lasterr 0 to 0 inverted (any error).</p>
         `}
-        <p style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">Tap a tile to configure its value, type, colour and range — or to duplicate or remove it.</p>
+        <p class="edit-help" style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">Tap a tile to configure its value, type, colour and range — or to duplicate or remove it.</p>
         <h3 class="underline">Starter Layout</h3>
         <button onclick=${loadSampleLayout} style="font-size:.75rem;padding:4px 10px"><${Icon} n="cloud" />Load sample layout</button>
-        <p style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">Six example pages (Driving, Battery, Temps, Charging, Debug, Controls) using standard value names — every gauge type included. Replaces your current gauges after confirmation.</p>
+        <p class="edit-help" style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">Six example pages (Driving, Battery, Temps, Charging, Debug, Controls) using standard value names — every gauge type included. Replaces your current gauges after confirmation.</p>
       </div>
       `}
       <div class="main-left">
@@ -4677,7 +4700,7 @@ const Gauges = () => {
               style=${'font-size:.75rem;padding:4px 12px' + (recording ? ';color:var(--red);border-color:var(--red)' : '')}>
               ${recording ? '■ Stop' : '● Record'}</button>`}
             ${!editing && html`<button id="fullscreen-btn" onclick=${() => setKiosk(true)} title="Full screen — gauges only, all chrome hidden" style="font-size:.75rem;padding:4px 12px">⛶ Full screen</button>`}
-            ${!editing && html`<button onclick=${() => setEditing(true)} style="font-size:.75rem;padding:4px 12px"><${Icon} n="edit" />Edit Layout</button>`}
+            ${!editing && html`<button onclick=${startEditing} style="font-size:.75rem;padding:4px 12px"><${Icon} n="edit" />Edit Layout</button>`}
           </div>
         </div>
         <div id="gauge-pages" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:.6rem">
