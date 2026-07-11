@@ -1362,12 +1362,12 @@ const Parameters = () => {
       </${Modal}>`;
     })()}
     ${logView && html`
-      <${Modal} id="param-log" title="Parameter change log" onClose=${() => setLogView(null)}>
+      <${Modal} id="param-log" size="large" title="Parameter change log" onClose=${() => setLogView(null)}>
         ${logView.length === 0 ? html`
           <p style="font-size:.85rem;color:var(--text3)">No parameter changes recorded yet. Every value set through this interface — table edits, presets, gauge buttons — is logged here (last ${PARAM_LOG_MAX}).</p>
         ` : html`
-          <div style="max-height:50vh;overflow-y:auto;border:1px solid var(--border2);border-radius:var(--radius-xs)">
-            <table id="param-log-table" style="width:100%">
+          <div style="max-height:50vh;overflow:auto;border:1px solid var(--border2);border-radius:var(--radius-xs)">
+            <table id="param-log-table" style="width:100%;table-layout:auto">
               <thead><tr><th>Time</th><th>Parameter</th><th>Value</th><th></th></tr></thead>
               <tbody>
                 ${logView.map((en, i) => html`
