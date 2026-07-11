@@ -176,7 +176,7 @@ export function createMockEsp({ port = 0 } = {}) {
       if (p === '/__test/state') return json({ inverter, files: [...files.keys()], settings, commandLog, fwSteps });
       if (p === '/__test/reset') {
         inverter = freshInverterState(); files = new Map(); commandLog = []; fwSteps = [];
-        settings = { dev_name: '', txrx_swapped: false, ap_fallback: false, can_mode: false, can_node_id: 1, can_speed: 2, can_rx_pin: 4, can_tx_pin: 5 };
+        settings = { dev_name: '', txrx_swapped: false, ap_fallback: false, can_mode: false, can_node_id: 1, can_speed: 2, can_rx_pin: 4, can_tx_pin: 5, sse_port: settings.sse_port };
         fwStatus = { state: 0 };
         return text('reset');
       }
@@ -264,6 +264,32 @@ export function createMockEsp({ port = 0 } = {}) {
         if (!settings.can_mode) { res.writeHead(400, { 'Content-Type': 'text/json' }); return res.end('{"error":"CAN mode not enabled"}'); }
         return json([{ nodeId: 1, serial: 'CAFEBABE' }]);
       }
+      // SSE value stream, like the firmware's port-81 listener (served on
+      // the mock's own port — settings.sse_port points here)
+      if (p === '/stream') {
+        if (settings.can_mode) { res.writeHead(404); return res.end(); }
+        const names = (url.searchParams.get('names') || '').split(',').filter(Boolean);
+        const ms = Math.min(5000, Math.max(20, parseInt(url.searchParams.get('ms') || '100')));
+        commandLog.push('stream ' + names.join(','));
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive', 'Access-Control-Allow-Origin': '*',
+        });
+        res.write('retry: 1000\n\n');
+        const tick = () => {
+          const line = names.map(n => {
+            const v = allValues()[n.trim()];
+            return v === undefined ? 'Unknown parameter' : Number(v.value).toFixed(2);
+          }).join(' ');
+          res.write('data: ' + line + '\n\n');
+        };
+        tick();
+        const timer = setInterval(tick, ms);
+        // req 'close' fires as soon as the (empty) body is consumed — the
+        // response is what stays open until the client disconnects
+        res.on('close', () => clearInterval(timer));
+        return; // connection stays open
+      }
       if (p === '/reboot') return text('Rebooting...');
       if (p === '/reset-inverter') return text('Inverter reset sent');
       if (p === '/virtual-reload') return text('ok');
@@ -285,6 +311,8 @@ export function createMockEsp({ port = 0 } = {}) {
 
   return new Promise((resolve) => {
     server.listen(port, '127.0.0.1', () => {
+      // Advertise the SSE stream on our own port (the firmware uses :81)
+      settings.sse_port = server.address().port;
       resolve({ server, port: server.address().port, url: `http://127.0.0.1:${server.address().port}` });
     });
   });

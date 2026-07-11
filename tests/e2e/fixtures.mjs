@@ -13,6 +13,7 @@ export const test = base.extend({
       state: async () => (await fetch(url + '/__test/state')).json(),
       setFwStatus: async (s) => fetch(url + '/__test/fw-status', { method: 'POST', body: JSON.stringify(s) }),
     });
+    server.closeAllConnections?.(); // an open SSE stream would otherwise hold the server up
     server.close();
   },
   page: async ({ page }, use) => {

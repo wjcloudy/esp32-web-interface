@@ -85,6 +85,7 @@
 
 const char* host = "inverter";
 String deviceName = ""; // friendly nickname (Settings → Device Name); also drives the hostname
+#define SSE_PORT 81 // push value stream for the gauges page (advertised via /settings)
 bool fastUart = false;
 bool fastUartAvailable = true;
 uint8_t fastUartAttempts = 0; // negotiation storms per boot are bounded — wrong-baud bytes can upset some inverter consoles
@@ -2151,6 +2152,8 @@ static void handleSettings()
     json += canRxPin;
     json += ",\"can_tx_pin\":";
     json += canTxPin;
+    json += ",\"sse_port\":";
+    json += SSE_PORT;
     // Return can_nodes from settings file if present
     if (SPIFFS.exists("/settings.json")) {
       File f = SPIFFS.open("/settings.json", "r");
@@ -2229,6 +2232,97 @@ static void handleWifiStatus()
   json += apFallback ? "true" : "false";
   json += "}";
   server.send(200, "text/json", json);
+}
+
+// ==================== SSE value stream (port 81) ====================
+// Push-based spot value streaming for the gauges page: the browser opens
+// one EventSource and the firmware sends a 'get' result every interval —
+// no HTTP round-trip per sample. Served by a minimal raw-TCP listener on
+// its own port because the synchronous WebServer can't hold a connection
+// open without blocking every other request. One client at a time (a new
+// stream replaces the old); UART mode only — the browser falls back to
+// polling whenever the connection fails or is refused.
+static WiFiServer sseServer(SSE_PORT);
+static WiFiClient sseClient;
+static String sseNames = "";
+static uint32_t sseIntervalMs = 100;
+static uint32_t sseLastSend = 0;
+
+// Value of `key` in the request line's query string ("" if absent)
+static String sseQueryParam(const String& reqLine, const char* key)
+{
+  String pat = String(key) + "=";
+  int i = reqLine.indexOf('?');
+  i = (i < 0) ? -1 : reqLine.indexOf(pat, i);
+  if (i < 0) return "";
+  i += pat.length();
+  int e = i;
+  while (e < (int)reqLine.length() && reqLine[e] != '&' && reqLine[e] != ' ') e++;
+  return reqLine.substring(i, e);
+}
+
+static void sseAccept()
+{
+  WiFiClient nc = sseServer.available();
+  if (!nc) return;
+  nc.setTimeout(250);
+  String reqLine = nc.readStringUntil('\n');
+  // Drain the header block (deadline-bounded — a stalled client can't wedge loop())
+  uint32_t t0 = millis();
+  while (nc.connected() && millis() - t0 < 250) {
+    String line = nc.readStringUntil('\n');
+    if (line.length() <= 1) break; // bare "\r" = end of headers
+  }
+  String names = sseQueryParam(reqLine, "names");
+  // Spot value names only — anything else in the query is refused, so the
+  // stream can't be used to run arbitrary terminal commands
+  bool namesOk = names.length() > 0 && names.length() <= 120;
+  for (unsigned int i = 0; namesOk && i < names.length(); i++) {
+    char ch = names[i];
+    if (!isalnum(ch) && ch != '_' && ch != ',' && ch != '.' && ch != '-') namesOk = false;
+  }
+  if (reqLine.indexOf("GET /stream") != 0 || canMode || !namesOk) {
+    nc.print("HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n");
+    nc.stop();
+    return;
+  }
+  int ms = sseQueryParam(reqLine, "ms").toInt();
+  if (ms < 50) ms = 100;
+  if (ms > 5000) ms = 5000;
+  if (sseClient && sseClient.connected()) sseClient.stop(); // newest stream wins
+  sseNames = names;
+  sseIntervalMs = ms;
+  sseLastSend = 0;
+  nc.setNoDelay(true);
+  nc.print("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\n"
+           "Connection: keep-alive\r\nAccess-Control-Allow-Origin: *\r\n\r\nretry: 1000\n\n");
+  sseClient = nc;
+}
+
+static void sseTick()
+{
+  sseAccept();
+  if (!sseClient) return;
+  if (!sseClient.connected()) { sseClient.stop(); sseNames = ""; return; }
+  if (canMode || sseNames.length() == 0) return;
+  if (millis() - sseLastSend < sseIntervalMs) return;
+  sseLastSend = millis();
+  // One plain 'get' transaction on the UART — loop() runs this and the web
+  // server sequentially, so it never races a /cmd request. Baud negotiation
+  // stays handleCommand's job; the regular json poll keeps it settled.
+  sendCommand("get " + sseNames);
+  char buffer[255];
+  int len;
+  String out;
+  do {
+    memset(buffer, 0, sizeof(buffer));
+    len = uart_read_bytes(INVERTER_PORT, buffer, sizeof(buffer), UART_TIMEOUT);
+    if (len > 0) out.concat(buffer, len);
+  } while (len > 0);
+  if (out.length() == 0) return; // silent inverter — skip the frame, keep the stream
+  out.replace('\r', ' ');
+  out.replace('\n', ' ');
+  sseClient.print("data: " + out + "\n\n");
 }
 
 void setup(void){
@@ -2605,6 +2699,7 @@ void setup(void){
 
   server.begin();
   server.client().setNoDelay(1);
+  sseServer.begin(); // push value stream for the gauges page
 
   MDNS.addService("http", "tcp", 80);
 }
@@ -2679,6 +2774,11 @@ void loop(void){
   // note: ArduinoOTA.handle() calls MDNS.update();
   server.handleClient();
   ArduinoOTA.handle();
+
+  // SSE value stream (gauges page). Never while binary logging owns the
+  // UART at its own baud rate — though logging only runs with no WiFi
+  // clients, so the two can't really coexist anyway.
+  if (!fastLoggingActive) sseTick();
 
   // AP-fallback mode transitions (drop the AP once the station is up, bring
   // it back if the station falls over) — checked every 15 s

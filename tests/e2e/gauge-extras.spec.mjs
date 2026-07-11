@@ -88,6 +88,61 @@ test.describe('Gauge extras', () => {
     })).toBe(2);
   });
 
+  test('values stream over SSE when the device offers it (no polling round-trips)', async ({ page, mock }) => {
+    await seedLayout(mock, [
+      { id: 1, name: 'udc', type: 'radial', min: 0, max: 500, x: 0, y: 0, w: 3, h: 3 },
+    ]);
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await expect(page.locator('.svg-gauge .g-val')).toContainText('398.5');
+    // The stream opened...
+    await expect.poll(async () => await mock.commands()).toContain('stream udc');
+    // ...and live updates arrive over it, not via new 'get' polls
+    const getsBefore = (await mock.commands()).filter(c => c === 'get udc').length;
+    await setSpot(mock, 'udc', 250);
+    await expect(page.locator('.svg-gauge .g-val')).toContainText('250.0');
+    expect((await mock.commands()).filter(c => c === 'get udc').length).toBe(getsBefore);
+  });
+
+  test('falls back to polling when the stream is unavailable (old firmware)', async ({ page, mock }) => {
+    await seedLayout(mock, [
+      { id: 1, name: 'udc', type: 'radial', min: 0, max: 500, x: 0, y: 0, w: 3, h: 3 },
+    ]);
+    await page.route('**/stream**', route => route.abort());
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    // Values still flow — via the classic get loop
+    await expect(page.locator('.svg-gauge .g-val')).toContainText('398.5');
+    await expect.poll(async () => await mock.commands()).toContain('get udc');
+  });
+
+  test('session recorder captures the stream and exports CSV', async ({ page, mock }) => {
+    await seedLayout(mock, [
+      { id: 1, name: 'udc', type: 'radial', min: 0, max: 500, x: 0, y: 0, w: 3, h: 3 },
+    ]);
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await expect(page.locator('.svg-gauge .g-val')).toContainText('398.5');
+    await page.locator('#rec-btn').click(); // ● Record
+    await expect(page.locator('#rec-btn')).toContainText('Stop');
+    // Let a few ticks land, with a value change mid-recording
+    await setSpot(mock, 'udc', 123);
+    await expect(page.locator('.svg-gauge .g-val')).toContainText('123.0');
+    await page.locator('#rec-btn').click(); // ■ Stop
+    const modal = page.locator('.modal-content');
+    await expect(modal.locator('#rec-summary')).toContainText('samples of 1 value(s)');
+    // CSV download: time column + one column per recorded value
+    const dlPromise = page.waitForEvent('download');
+    await modal.locator('button', { hasText: 'Download CSV' }).click();
+    const dl = await dlPromise;
+    const chunks = [];
+    for await (const c of await dl.createReadStream()) chunks.push(c);
+    const csv = Buffer.concat(chunks).toString().trim().split('\n');
+    expect(csv[0]).toBe('time_s,udc');
+    expect(csv.length).toBeGreaterThan(2);
+    expect(csv.some(l => l.endsWith(',123'))).toBe(true);
+  });
+
   test('drive mode hides the chrome and the exit button restores it', async ({ page, mock }) => {
     await seedLayout(mock, [
       { id: 1, name: 'udc', type: 'radial', min: 0, max: 500, x: 0, y: 0, w: 3, h: 3 },

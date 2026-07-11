@@ -229,6 +229,7 @@ const initialState = {
   updateTag: null, // newest GitHub release tag, when newer than webVersion
   presets: [], // named parameter sets ({id, name, params: {name: value}})
   deviceName: '', // friendly nickname for this module (Settings → Device)
+  ssePort: 0, // port of the firmware's SSE value stream (0 = not offered)
   history: {}, // recent numeric samples for dashboard sparklines
 };
 
@@ -423,6 +424,8 @@ function reducer(state, action) {
       return { ...state, presets: action.payload };
     case 'SET_DEVICE_NAME':
       return { ...state, deviceName: action.payload };
+    case 'SET_SSE_PORT':
+      return { ...state, ssePort: action.payload };
     case 'SET_FILE_LIST':
       return { ...state, fileList: action.payload };
     case 'SET_ALL_CATEGORIES': {
@@ -4067,6 +4070,40 @@ const GaugeTileBody = ({ g, title, value, value2, unit, enums, editing, canMode,
     </div>`;
 };
 
+// Post-recording review chart: every recorded series on one time axis,
+// decimated to ~500 points so long recordings stay snappy in the modal
+const RecChart = ({ rec }) => {
+  const canvasRef = useRef(null);
+  useEffect(() => {
+    if (!canvasRef.current || typeof Chart === 'undefined') return;
+    const step = Math.max(1, Math.ceil(rec.rows.length / 500));
+    const sampled = rec.rows.filter((_, i) => i % step === 0);
+    const chart = new Chart(canvasRef.current, {
+      type: 'line',
+      data: {
+        datasets: rec.names.map((n, i) => ({
+          label: n,
+          data: sampled.map(r => ({ x: (r.t - rec.t0) / 1000, y: r.vals[n] }))
+            .filter(pt => pt.y != null && !isNaN(pt.y)),
+          borderColor: colours[i % colours.length],
+          backgroundColor: colours[i % colours.length],
+          pointRadius: 0,
+        })),
+      },
+      options: {
+        animation: false, parsing: false,
+        scales: {
+          x: { type: 'linear', title: { display: true, text: 'seconds' }, ticks: { maxTicksLimit: 8 } },
+          y: { type: 'linear' },
+        },
+        plugins: { legend: { labels: { boxWidth: 12, usePointStyle: true } } },
+      },
+    });
+    return () => chart.destroy();
+  }, []);
+  return html`<div style="height:300px"><canvas ref=${canvasRef}></canvas></div>`;
+};
+
 const Gauges = () => {
   const { state, dispatch } = useContext(Store);
   const [pages, setPages] = useState([{ id: 1, name: 'Main', items: [] }]);
@@ -4093,6 +4130,33 @@ const Gauges = () => {
   // Session min/max per tile id, for peak-hold markers (resets when the
   // Gauges tab is left — a browsing "session", not a persisted one)
   const peaksRef = useRef({});
+  // Session recorder: while armed, every stream tick lands in rows (in
+  // memory only) for CSV export and a review chart afterwards. Survives
+  // page switches — the columns are the union of everything streamed.
+  const recRef = useRef(null); // { t0, started, rows: [{t, vals}], names: Set }
+  const [recording, setRecording] = useState(false);
+  const [recResult, setRecResult] = useState(null);
+  const startRec = () => {
+    recRef.current = { t0: performance.now(), started: Date.now(), rows: [], names: new Set() };
+    setRecording(true);
+  };
+  const stopRec = () => {
+    const rec = recRef.current;
+    recRef.current = null;
+    setRecording(false);
+    if (!rec || rec.rows.length < 2) { alert('Nothing recorded — open a page with streaming values first.'); return; }
+    setRecResult({ started: rec.started, t0: rec.t0, rows: rec.rows, names: [...rec.names] });
+  };
+  const downloadRec = () => {
+    const { rows, names, t0, started } = recResult;
+    const lines = ['time_s,' + names.join(',')];
+    rows.forEach(r => lines.push(((r.t - t0) / 1000).toFixed(3) + ',' +
+      names.map(n => (r.vals[n] != null && !isNaN(r.vals[n])) ? r.vals[n] : '').join(',')));
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([lines.join('\n')], { type: 'text/csv' }));
+    a.download = 'gauges-' + new Date(started).toISOString().slice(0, 19).replace(/[:T]/g, '-') + '.csv';
+    a.click();
+  };
   // Drive mode: full-screen gauges, all chrome hidden
   const [kiosk, setKiosk] = useState(false);
   useEffect(() => {
@@ -4394,62 +4458,89 @@ const Gauges = () => {
     }
     dispatch({ type: 'SET_LOGGING', payload: true });
     let active = true;
-    const interval = 100; // ms between fetches
+    let es = null; // EventSource when the firmware pushes values (SSE)
+    const interval = 100; // ms between samples
+    // One reply → tiles, peaks, recorder and conditional page display.
+    // Shared by both transports so they behave identically.
+    const applyText = (text) => {
+      const vals = text.match(/[\-\d\.]+/g) || [];
+      // Positional mapping is only safe when counts line up — an error reply
+      // (e.g. one bad name) would shift every gauge onto its neighbour's value
+      if (vals.length !== names.length) return;
+      const byName = {};
+      names.forEach((n, i) => { byName[n] = parseFloat(vals[i]); });
+      // Session recorder rides the stream, whatever the transport
+      if (recRef.current) {
+        const rec = recRef.current;
+        names.forEach(n => rec.names.add(n));
+        if (rec.rows.length < 36000) rec.rows.push({ t: performance.now(), vals: { ...byName } });
+      }
+      const next = {};
+      items.forEach(g => {
+        if (g.calc) {
+          const cv = calcEval(g.calc, byName);
+          if (!isNaN(cv)) next[g.id] = cv;
+        } else {
+          const n = tileStreamName(g);
+          if (n && !isNaN(byName[n])) next[g.id] = byName[n];
+        }
+        // Second line series rides along under a ':2' key
+        if (g.type === 'line' && g.name2 && !isNaN(byName[g.name2])) next[g.id + ':2'] = byName[g.name2];
+      });
+      // Peak-hold bookkeeping: session min/max per tile
+      for (const k in next) {
+        const p = peaksRef.current[k] || (peaksRef.current[k] = { min: next[k], max: next[k] });
+        if (next[k] < p.min) p.min = next[k];
+        if (next[k] > p.max) p.max = next[k];
+      }
+      setLineVals(prev => ({ ...prev, ...next }));
+      // Conditional page display: when a page's condition STARTS matching,
+      // switch to it. A persisting match doesn't re-trigger, so the user can
+      // still browse away; when nothing matches the current page stays.
+      if (autoPage && !editingRef.current) {
+        const hit = pagesRef.current.find(p => p.cond && p.cond.name && condMatch(p.cond, byName[p.cond.name]));
+        const hitId = hit ? hit.id : null;
+        if (hitId !== lastHitRef.current) {
+          lastHitRef.current = hitId;
+          if (hitId != null && hitId !== activeRef.current) setActivePage(hitId);
+        }
+      }
+    };
     const fetchLoop = async () => {
       if (!active) return;
       const t0 = performance.now();
       try {
         const text = await api.getText('get ' + names.join(','));
         if (!active) return;
-        const vals = text.match(/[\-\d\.]+/g) || [];
-        // Positional mapping is only safe when counts line up — an error reply
-        // (e.g. one bad name) would shift every gauge onto its neighbour's value
-        if (vals.length !== names.length) return;
-        const byName = {};
-        names.forEach((n, i) => { byName[n] = parseFloat(vals[i]); });
-        const next = {};
-        items.forEach(g => {
-          if (g.calc) {
-            const cv = calcEval(g.calc, byName);
-            if (!isNaN(cv)) next[g.id] = cv;
-          } else {
-            const n = tileStreamName(g);
-            if (n && !isNaN(byName[n])) next[g.id] = byName[n];
-          }
-          // Second line series rides along under a ':2' key
-          if (g.type === 'line' && g.name2 && !isNaN(byName[g.name2])) next[g.id + ':2'] = byName[g.name2];
-        });
-        // Peak-hold bookkeeping: session min/max per tile
-        for (const k in next) {
-          const p = peaksRef.current[k] || (peaksRef.current[k] = { min: next[k], max: next[k] });
-          if (next[k] < p.min) p.min = next[k];
-          if (next[k] > p.max) p.max = next[k];
-        }
-        setLineVals(prev => ({ ...prev, ...next }));
-        // Conditional page display: when a page's condition STARTS matching,
-        // switch to it. A persisting match doesn't re-trigger, so the user can
-        // still browse away; when nothing matches the current page stays.
-        if (autoPage && !editingRef.current) {
-          const hit = pagesRef.current.find(p => p.cond && p.cond.name && condMatch(p.cond, byName[p.cond.name]));
-          const hitId = hit ? hit.id : null;
-          if (hitId !== lastHitRef.current) {
-            lastHitRef.current = hitId;
-            if (hitId != null && hitId !== activeRef.current) setActivePage(hitId);
-          }
-        }
+        applyText(text);
       } catch (e) { /* ignore */ }
       if (active) {
         const elapsed = performance.now() - t0;
         fetchRef.current = setTimeout(fetchLoop, Math.max(0, interval - elapsed));
       }
     };
-    fetchRef.current = setTimeout(fetchLoop, 0);
+    // Prefer server push when the firmware offers it (sse_port in /settings):
+    // one long-lived connection instead of an HTTP round-trip per sample.
+    // Any error — old firmware, blocked port, CAN-mode refusal — falls back
+    // to the polling loop, which is always available.
+    if (!state.canMode && state.ssePort && window.EventSource) {
+      const url = location.protocol + '//' + location.hostname + ':' + state.ssePort +
+        '/stream?names=' + names.join(',') + '&ms=' + interval;
+      es = new EventSource(url);
+      es.onmessage = (ev) => { if (active) applyText(ev.data); };
+      es.onerror = () => {
+        if (es) { es.close(); es = null; if (active) fetchRef.current = setTimeout(fetchLoop, 0); }
+      };
+    } else {
+      fetchRef.current = setTimeout(fetchLoop, 0);
+    }
     return () => {
       active = false;
+      if (es) { es.close(); es = null; }
       dispatch({ type: 'SET_LOGGING', payload: false });
       if (fetchRef.current) { clearTimeout(fetchRef.current); fetchRef.current = null; }
     };
-  }, [items, configId, autoPage, pages.map(p => (p.cond && p.cond.name) || '').join()]);
+  }, [items, configId, autoPage, state.canMode, state.ssePort, pages.map(p => (p.cond && p.cond.name) || '').join()]);
 
   const spotNames = state.spotValues ? Object.keys(state.spotValues) : [];
 
@@ -4520,6 +4611,10 @@ const Gauges = () => {
                   <span class="slider"></span>
                 </span>
               </label>`}
+            ${!editing && html`<button id="rec-btn" onclick=${() => (recording ? stopRec() : startRec())}
+              title=${recording ? 'Stop and review the recording' : 'Record the streamed values for CSV export'}
+              style=${'font-size:.75rem;padding:4px 12px' + (recording ? ';color:var(--red);border-color:var(--red)' : '')}>
+              ${recording ? '■ Stop' : '● Record'}</button>`}
             ${!editing && html`<button id="drive-mode-btn" onclick=${() => setKiosk(true)} title="Drive mode — full-screen gauges, chrome hidden" style="font-size:.75rem;padding:4px 12px">⛶ Drive</button>`}
             ${!editing && html`<button onclick=${() => setEditing(true)} style="font-size:.75rem;padding:4px 12px"><${Icon} n="edit" />Edit Layout</button>`}
           </div>
@@ -4884,6 +4979,20 @@ const Gauges = () => {
             </div>
           </${Modal}>`;
       })()}
+      ${recResult && (() => {
+        const dur = (recResult.rows[recResult.rows.length - 1].t - recResult.t0) / 1000;
+        return html`
+        <${Modal} id="rec-result" size="large" title="Session recording" onClose=${() => setRecResult(null)}>
+          <p id="rec-summary" style="font-size:.85rem;margin:0 0 .5rem">
+            <b>${recResult.rows.length}</b> samples of ${recResult.names.length} value(s) over ${dur.toFixed(1)} s.
+          </p>
+          <${RecChart} rec=${recResult} />
+          <div style="display:flex;gap:8px;margin-top:.75rem">
+            <button onclick=${downloadRec} style="width:auto"><${Icon} n="download" />Download CSV</button>
+            <button onclick=${() => setRecResult(null)} style="width:auto">Close</button>
+          </div>
+        </${Modal}>`;
+      })()}
     </div>
   `;
 };
@@ -4931,6 +5040,7 @@ const App = () => {
       if (mode) dispatch({ type: 'SET_CAN_NODE', payload: nodeId });
       if (data.can_nodes) dispatch({ type: 'SET_CAN_NODES', payload: data.can_nodes });
       if (typeof data.dev_name === 'string' && data.dev_name) dispatch({ type: 'SET_DEVICE_NAME', payload: data.dev_name });
+      if (data.sse_port > 0) dispatch({ type: 'SET_SSE_PORT', payload: data.sse_port });
     }).catch(() => {});
   }, []);
 
