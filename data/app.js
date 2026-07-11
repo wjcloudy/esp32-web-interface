@@ -4671,7 +4671,22 @@ const Gauges = () => {
         return cfg && html`
           <${Modal} id="gauge-config" title="Gauge settings" onClose=${() => setConfigId(null)}>
             <div style="display:flex;flex-direction:column;gap:10px;font-size:.85rem">
-              ${/* Type first: it decides which of the rows below even apply */ ''}
+              ${/* Grouped into sections — the option list outgrew a flat form.
+                  Type comes first: it decides which sections below even apply */ ''}
+              ${(() => {
+                const isInteractive = ['action', 'toggle', 'slider'].includes(cfg.type);
+                const decimalsRow = html`<div style="display:flex;gap:8px;align-items:center">
+                  <label style="width:4.5em">Decimals</label>
+                  <select id="gauge-decimals" value=${String(cfg.decimals != null ? cfg.decimals : 1)} onchange=${e => updateGaugeConfig(cfg.id, 'decimals', parseInt(e.target.value))}
+                    style="width:auto;min-width:5em;padding:5px 30px 5px 8px">
+                    <option value="0">0</option>
+                    <option value="1">1</option>
+                    <option value="2">2</option>
+                    <option value="3">3</option>
+                  </select>
+                </div>`;
+                return html`
+              <p class="modal-sect">Tile</p>
               <div style="display:flex;gap:8px;align-items:center">
                 <label style="width:4.5em">Type</label>
                 <select value=${cfg.type || 'radial'} onchange=${e => {
@@ -4700,23 +4715,6 @@ const Gauges = () => {
                   style="width:34px;height:28px;padding:0;border:1px solid var(--border2);border-radius:6px;background:none;cursor:pointer" />
                 ${cfg.color && html`<button onclick=${() => updateGaugeConfig(cfg.id, 'color', '')} style="font-size:.65rem;padding:2px 8px;width:auto" title="Reset to theme gradient"><${Icon} n="undo" size=${11} /></button>`}
               </div>
-              ${!['action', 'toggle', 'slider'].includes(cfg.type) && html`<div style="display:flex;gap:8px;align-items:center">
-                <label style="width:4.5em">Value</label>
-                <${FieldPicker} value=${cfg.name} spotNames=${spotNames} onChange=${name => updateGaugeConfig(cfg.id, 'name', name)} />
-              </div>
-              <div style="display:flex;gap:8px;align-items:center">
-                <label style="width:4.5em">Formula</label>
-                <input id="gauge-calc" type="text" value=${cfg.calc || ''} placeholder="(optional — e.g. udc*idc/1000)" maxlength="60"
-                  oninput=${e => updateGaugeConfig(cfg.id, 'calc', e.target.value || undefined)} style="flex:1;padding:5px 8px;font-family:var(--mono)" />
-              </div>
-              ${cfg.calc ? html`
-                <div style="display:flex;gap:8px;align-items:center">
-                  <label style="width:4.5em">Unit</label>
-                  <input type="text" value=${cfg.unit || ''} placeholder="kW" maxlength="8"
-                    oninput=${e => updateGaugeConfig(cfg.id, 'unit', e.target.value || undefined)} style="width:6em;padding:5px 8px" />
-                  <span style="font-size:.72rem;color:var(--text3)">computed from spot values — overrides Value</span>
-                </div>
-              ` : ''}`}
               <div style="display:flex;gap:8px;align-items:center">
                 <label style="width:4.5em">Label</label>
                 <input type="text" value=${cfg.label || ''} placeholder="(shows the value name)" maxlength="24"
@@ -4728,93 +4726,21 @@ const Gauges = () => {
                   onchange=${e => updateGaugeConfig(cfg.id, 'transparent', e.target.checked || undefined)} style="width:auto" />
                 <span style="font-size:.72rem;color:var(--text3)">transparent tile — no card background or outline</span>
               </label>
-              ${!['text', 'action', 'toggle'].includes(cfg.type) && html`<div style="display:flex;gap:8px;align-items:center">
-                <label style="width:4.5em">Min</label>
-                <input type="number" value=${cfg.min} oninput=${e => updateGaugeConfig(cfg.id, 'min', parseFloat(e.target.value) || 0)} style="width:6em;padding:5px 6px" step="any" />
-                <label>Max</label>
-                <input type="number" value=${cfg.max} oninput=${e => updateGaugeConfig(cfg.id, 'max', parseFloat(e.target.value) || 0)} style="width:6em;padding:5px 6px" step="any" />
-              </div>`}
-              ${((cfg.type || 'radial') === 'radial' || cfg.type === 'bar') && html`
-                <div style="display:flex;gap:8px;align-items:center">
-                  <label style="width:4.5em">Centre</label>
-                  <input type="number" step="any" value=${cfg.center != null ? cfg.center : ''} placeholder="(min)"
-                    oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'center', isNaN(n) ? undefined : n); }}
-                    style="width:6em;padding:5px 6px" />
-                  <span style="font-size:.72rem;color:var(--text3)">gauge sweeps from this value both ways — e.g. 0 on a power gauge</span>
-                </div>
-                <div style="display:flex;gap:8px;align-items:center">
-                  <label style="width:4.5em">Warn ≥</label>
-                  <input type="number" step="any" value=${cfg.warn != null ? cfg.warn : ''} placeholder="(off)"
-                    oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'warn', isNaN(n) ? undefined : n); }}
-                    style="width:6em;padding:5px 6px" />
-                  <label>Colour</label>
-                  <input type="color" value=${cfg.warnColor || '#f59e0b'} oninput=${e => updateGaugeConfig(cfg.id, 'warnColor', e.target.value)}
-                    style="width:34px;height:28px;padding:0;border:1px solid var(--border2);border-radius:6px;background:none;cursor:pointer" />
-                </div>
-                <p style="font-size:.72rem;color:var(--text3);margin:0">The gauge switches to the warn colour at/above this value — e.g. 80 on a coolant dial. Blank keeps the default (red past 92% of range).</p>
-                <div style="display:flex;gap:8px;align-items:center">
-                  <label style="width:4.5em">Alert</label>
-                  <select id="gauge-alarm" value=${cfg.alarm || ''} onchange=${e => {
-                    const v = e.target.value || undefined;
-                    updateGaugeConfig(cfg.id, 'alarm', v);
-                    // Notifications need permission — ask while we still have the click
-                    if (v === 'notify' && window.Notification && window.Notification.permission === 'default') {
-                      try { window.Notification.requestPermission().catch(() => {}); } catch (err) {}
-                    }
-                  }} style="width:auto;min-width:11em;padding:5px 30px 5px 8px">
-                    <option value="">Off</option>
-                    <option value="flash">Flash the tile</option>
-                    <option value="beep">Flash + beep</option>
-                    <option value="notify">Flash + beep + notification</option>
-                  </select>
-                </div>
-                <p style="font-size:.72rem;color:var(--text3);margin:0">Fires each time the value crosses the Warn threshold — set one above for this to do anything.</p>
-                <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
-                  <span style="width:4.5em">Invert</span>
-                  <input type="checkbox" checked=${!!cfg.invertScale} onchange=${e => updateGaugeConfig(cfg.id, 'invertScale', e.target.checked)} style="width:auto" />
-                  <span style="font-size:.72rem;color:var(--text3)">reverse the scale — Max at the start, Min at the end</span>
-                </label>
-                <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
-                  <span style="width:4.5em">Peak</span>
-                  <input id="gauge-peak" type="checkbox" checked=${!!cfg.peak} onchange=${e => updateGaugeConfig(cfg.id, 'peak', e.target.checked || undefined)} style="width:auto" />
-                  <span style="font-size:.72rem;color:var(--text3)">hold a marker at the session's highest value (and lowest, on centred gauges)</span>
-                </label>
-                ${(cfg.type || 'radial') === 'radial' && html`
-                  <div style="display:flex;gap:8px;align-items:center">
-                    <label style="width:4.5em">Style</label>
-                    <select id="gauge-style" value=${cfg.gstyle || 'arc'} onchange=${e => updateGaugeConfig(cfg.id, 'gstyle', e.target.value === 'needle' ? 'needle' : undefined)}
-                      style="width:auto;min-width:9.5em;padding:5px 30px 5px 8px">
-                      <option value="arc">Filled arc</option>
-                      <option value="needle">Needle dial</option>
-                    </select>
-                  </div>
+              <div style="display:flex;gap:8px;align-items:center">
+                <label style="width:4.5em">Size</label>
+                ${tileFreeform(cfg.type) ? html`
+                  <input type="number" min=${tileFloor(cfg.type)} max=${GRID_COLS} value=${cfg.w} title="Width (cells)"
+                    onchange=${e => setGaugeSize(cfg.id, parseInt(e.target.value), cfg.h)} style="width:5em;padding:5px 6px" />
+                  <label>×</label>
+                  <input type="number" min=${tileFloor(cfg.type)} max=${GRID_COLS} value=${cfg.h} title="Height (cells)"
+                    onchange=${e => setGaugeSize(cfg.id, cfg.w, parseInt(e.target.value))} style="width:5em;padding:5px 6px" />
+                ` : html`
+                  <input type="number" min=${tileFloor(cfg.type)} max=${GRID_COLS} value=${cfg.w} title="Size (cells, square)"
+                    onchange=${e => setGaugeSize(cfg.id, parseInt(e.target.value), parseInt(e.target.value))} style="width:5em;padding:5px 6px" />
+                  <span style="font-size:.72rem;color:var(--text3)">cells (of ${GRID_COLS})</span>
                 `}
-              `}
-              ${cfg.type === 'text' && html`
-                <div style="display:flex;gap:8px;align-items:center">
-                  <label style="width:4.5em">Text</label>
-                  <input type="text" value=${cfg.text || ''} placeholder="(empty = show the live value)" maxlength="40"
-                    oninput=${e => updateGaugeConfig(cfg.id, 'text', e.target.value)} style="flex:1;padding:5px 8px" />
-                </div>
-                <p style="font-size:.72rem;color:var(--text3);margin:0">Leave Text empty to show the selected value as large text; set it for a static caption (section headers etc.).</p>
-              `}
-              ${!['indicator', 'action', 'toggle'].includes(cfg.type) && html`<div style="display:flex;gap:8px;align-items:center">
-                <label style="width:4.5em">Decimals</label>
-                <select id="gauge-decimals" value=${String(cfg.decimals != null ? cfg.decimals : 1)} onchange=${e => updateGaugeConfig(cfg.id, 'decimals', parseInt(e.target.value))}
-                  style="width:auto;min-width:5em;padding:5px 30px 5px 8px">
-                  <option value="0">0</option>
-                  <option value="1">1</option>
-                  <option value="2">2</option>
-                  <option value="3">3</option>
-                </select>
-              </div>`}
-              ${cfg.type === 'indicator' && html`
-                <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
-                  <span style="width:4.5em">Invert</span>
-                  <input type="checkbox" checked=${!!cfg.invert} onchange=${e => updateGaugeConfig(cfg.id, 'invert', e.target.checked)} style="width:auto" />
-                  <span style="font-size:.72rem;color:var(--text3)">lamp lit while the value is OFF</span>
-                </label>
-                <p style="font-size:.72rem;color:var(--text3);margin:0">The lamp lights in the chosen colour when the value rises past the midpoint between Min and Max — e.g. Min 0 / Max 1 switches at 0.5. Set Min = Max to light only on exactly that value (e.g. 3 and 3 for opmode 3).</p>`}
+              </div>
+              ${isInteractive && html`<p class="modal-sect">Action</p>`}
               ${cfg.type === 'action' && html`
                 <div style="display:flex;gap:8px;align-items:center">
                   <label style="width:4.5em">Action</label>
@@ -4844,7 +4770,7 @@ const Gauges = () => {
                   </div>
                   <div style="display:flex;gap:8px;align-items:center">
                     <label style="width:4.5em">Set to</label>
-                    <input type="number" step="any" value=${cfg.value != null ? cfg.value : ''}
+                    <input id="gauge-setto" type="number" step="any" value=${cfg.value != null ? cfg.value : ''}
                       oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'value', isNaN(n) ? undefined : n); }}
                       style="width:8em;padding:5px 6px" />
                   </div>
@@ -4936,30 +4862,93 @@ const Gauges = () => {
                 </div>
                 <p style="font-size:.72rem;color:var(--text3);margin:0">Drag sets <b>${cfg.param || '…'}</b> anywhere between Min and Max (step from Decimals). The value is sent when you let go, and the knob follows the live value when idle. Live immediately, not saved to flash.</p>
               `}
-              <div style="display:flex;gap:8px;align-items:center">
-                <label style="width:4.5em">Size</label>
-                ${tileFreeform(cfg.type) ? html`
-                  <input type="number" min=${tileFloor(cfg.type)} max=${GRID_COLS} value=${cfg.w} title="Width (cells)"
-                    onchange=${e => setGaugeSize(cfg.id, parseInt(e.target.value), cfg.h)} style="width:5em;padding:5px 6px" />
-                  <label>×</label>
-                  <input type="number" min=${tileFloor(cfg.type)} max=${GRID_COLS} value=${cfg.h} title="Height (cells)"
-                    onchange=${e => setGaugeSize(cfg.id, cfg.w, parseInt(e.target.value))} style="width:5em;padding:5px 6px" />
-                ` : html`
-                  <input type="number" min=${tileFloor(cfg.type)} max=${GRID_COLS} value=${cfg.w} title="Size (cells, square)"
-                    onchange=${e => setGaugeSize(cfg.id, parseInt(e.target.value), parseInt(e.target.value))} style="width:5em;padding:5px 6px" />
-                  <span style="font-size:.72rem;color:var(--text3)">cells (of ${GRID_COLS})</span>
-                `}
-              </div>
-              ${cfg.type === 'line' && html`
+              ${!isInteractive && html`
+                <p class="modal-sect">Value</p>
                 <div style="display:flex;gap:8px;align-items:center">
-                  <label style="width:4.5em">2nd value</label>
-                  <${FieldPicker} value=${cfg.name2 || ''} spotNames=${spotNames} onChange=${n => updateGaugeConfig(cfg.id, 'name2', n)} />
-                  <input type="color" value=${cfg.color2 || '#ffb454'} title="Second series colour"
-                    oninput=${e => updateGaugeConfig(cfg.id, 'color2', e.target.value)}
-                    style="width:34px;height:28px;padding:0;border:1px solid var(--border2);border-radius:6px;background:none;cursor:pointer" />
-                  ${cfg.name2 && html`<button onclick=${() => updateGaugeConfig(cfg.id, 'name2', undefined)} title="Remove the second series" style="width:auto;padding:2px 8px;color:var(--red)">×</button>`}
+                  <label style="width:4.5em">Value</label>
+                  <${FieldPicker} value=${cfg.name} spotNames=${spotNames} onChange=${name => updateGaugeConfig(cfg.id, 'name', name)} />
                 </div>
-                <p style="font-size:.72rem;color:var(--text3);margin:0">Optional second value plotted on the same chart — e.g. heatsink and motor temperature together.</p>
+                <div style="display:flex;gap:8px;align-items:center">
+                  <label style="width:4.5em">Formula</label>
+                  <input id="gauge-calc" type="text" value=${cfg.calc || ''} placeholder="(optional — e.g. udc*idc/1000)" maxlength="60"
+                    oninput=${e => updateGaugeConfig(cfg.id, 'calc', e.target.value || undefined)} style="flex:1;padding:5px 8px;font-family:var(--mono)" />
+                </div>
+                ${cfg.calc ? html`
+                  <div style="display:flex;gap:8px;align-items:center">
+                    <label style="width:4.5em">Unit</label>
+                    <input type="text" value=${cfg.unit || ''} placeholder="kW" maxlength="8"
+                      oninput=${e => updateGaugeConfig(cfg.id, 'unit', e.target.value || undefined)} style="width:6em;padding:5px 8px" />
+                    <span style="font-size:.72rem;color:var(--text3)">computed from spot values — overrides Value</span>
+                  </div>
+                ` : ''}
+                ${cfg.type === 'text' ? html`
+                  <div style="display:flex;gap:8px;align-items:center">
+                    <label style="width:4.5em">Text</label>
+                    <input type="text" value=${cfg.text || ''} placeholder="(empty = show the live value)" maxlength="40"
+                      oninput=${e => updateGaugeConfig(cfg.id, 'text', e.target.value)} style="flex:1;padding:5px 8px" />
+                  </div>
+                  <p style="font-size:.72rem;color:var(--text3);margin:0">Leave Text empty to show the selected value as large text; set it for a static caption (section headers etc.).</p>
+                ` : ''}
+                ${cfg.type === 'line' ? html`
+                  <div style="display:flex;gap:8px;align-items:center">
+                    <label style="width:4.5em">2nd value</label>
+                    <${FieldPicker} value=${cfg.name2 || ''} spotNames=${spotNames} onChange=${n => updateGaugeConfig(cfg.id, 'name2', n)} />
+                    <input type="color" value=${cfg.color2 || '#ffb454'} title="Second series colour"
+                      oninput=${e => updateGaugeConfig(cfg.id, 'color2', e.target.value)}
+                      style="width:34px;height:28px;padding:0;border:1px solid var(--border2);border-radius:6px;background:none;cursor:pointer" />
+                    ${cfg.name2 && html`<button onclick=${() => updateGaugeConfig(cfg.id, 'name2', undefined)} title="Remove the second series" style="width:auto;padding:2px 8px;color:var(--red)">×</button>`}
+                  </div>
+                  <p style="font-size:.72rem;color:var(--text3);margin:0">Optional second value plotted on the same chart — e.g. heatsink and motor temperature together.</p>
+                ` : ''}
+                ${cfg.type !== 'indicator' ? decimalsRow : ''}
+              `}
+              ${!['text', 'action', 'toggle'].includes(cfg.type) && html`
+                <p class="modal-sect">Scale</p>
+                <div style="display:flex;gap:8px;align-items:center">
+                  <label style="width:4.5em">Min</label>
+                  <input id="gauge-min" type="number" value=${cfg.min} oninput=${e => updateGaugeConfig(cfg.id, 'min', parseFloat(e.target.value) || 0)} style="width:6em;padding:5px 6px" step="any" />
+                  <label>Max</label>
+                  <input id="gauge-max" type="number" value=${cfg.max} oninput=${e => updateGaugeConfig(cfg.id, 'max', parseFloat(e.target.value) || 0)} style="width:6em;padding:5px 6px" step="any" />
+                </div>
+                ${cfg.type === 'slider' ? decimalsRow : ''}
+              `}
+              ${((cfg.type || 'radial') === 'radial' || cfg.type === 'bar') && html`
+                <div style="display:flex;gap:8px;align-items:center">
+                  <label style="width:4.5em">Centre</label>
+                  <input type="number" step="any" value=${cfg.center != null ? cfg.center : ''} placeholder="(min)"
+                    oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'center', isNaN(n) ? undefined : n); }}
+                    style="width:6em;padding:5px 6px" />
+                  <span style="font-size:.72rem;color:var(--text3)">gauge sweeps from this value both ways — e.g. 0 on a power gauge</span>
+                </div>
+                <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+                  <span style="width:4.5em">Invert</span>
+                  <input type="checkbox" checked=${!!cfg.invertScale} onchange=${e => updateGaugeConfig(cfg.id, 'invertScale', e.target.checked)} style="width:auto" />
+                  <span style="font-size:.72rem;color:var(--text3)">reverse the scale — Max at the start, Min at the end</span>
+                </label>
+                <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+                  <span style="width:4.5em">Peak</span>
+                  <input id="gauge-peak" type="checkbox" checked=${!!cfg.peak} onchange=${e => updateGaugeConfig(cfg.id, 'peak', e.target.checked || undefined)} style="width:auto" />
+                  <span style="font-size:.72rem;color:var(--text3)">hold a marker at the session's highest value (and lowest, on centred gauges)</span>
+                </label>
+                ${(cfg.type || 'radial') === 'radial' && html`
+                  <div style="display:flex;gap:8px;align-items:center">
+                    <label style="width:4.5em">Style</label>
+                    <select id="gauge-style" value=${cfg.gstyle || 'arc'} onchange=${e => updateGaugeConfig(cfg.id, 'gstyle', e.target.value === 'needle' ? 'needle' : undefined)}
+                      style="width:auto;min-width:9.5em;padding:5px 30px 5px 8px">
+                      <option value="arc">Filled arc</option>
+                      <option value="needle">Needle dial</option>
+                    </select>
+                  </div>
+                `}
+              `}
+              ${cfg.type === 'indicator' && html`
+                <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+                  <span style="width:4.5em">Invert</span>
+                  <input type="checkbox" checked=${!!cfg.invert} onchange=${e => updateGaugeConfig(cfg.id, 'invert', e.target.checked)} style="width:auto" />
+                  <span style="font-size:.72rem;color:var(--text3)">lamp lit while the value is OFF</span>
+                </label>
+                <p style="font-size:.72rem;color:var(--text3);margin:0">The lamp lights in the chosen colour when the value rises past the midpoint between Min and Max — e.g. Min 0 / Max 1 switches at 0.5. Set Min = Max to light only on exactly that value (e.g. 3 and 3 for opmode 3).</p>`}
+              ${cfg.type === 'line' && html`
                 <div style="display:flex;gap:8px;align-items:center">
                   <label style="width:4.5em">Points</label>
                   <input type="number" min="5" max="500" value=${cfg.points || 20}
@@ -4978,6 +4967,38 @@ const Gauges = () => {
                 </div>
                 <p style="font-size:.72rem;color:var(--text3);margin:0">Time window ≈ Points × Sample — e.g. 60 points at 1 s shows the last minute. Faster sampling scrolls faster.</p>
               `}
+              ${((cfg.type || 'radial') === 'radial' || cfg.type === 'bar') && html`
+                <p class="modal-sect">Warning</p>
+                <div style="display:flex;gap:8px;align-items:center">
+                  <label style="width:4.5em">Warn ≥</label>
+                  <input type="number" step="any" value=${cfg.warn != null ? cfg.warn : ''} placeholder="(off)"
+                    oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'warn', isNaN(n) ? undefined : n); }}
+                    style="width:6em;padding:5px 6px" />
+                  <label>Colour</label>
+                  <input type="color" value=${cfg.warnColor || '#f59e0b'} oninput=${e => updateGaugeConfig(cfg.id, 'warnColor', e.target.value)}
+                    style="width:34px;height:28px;padding:0;border:1px solid var(--border2);border-radius:6px;background:none;cursor:pointer" />
+                </div>
+                <p style="font-size:.72rem;color:var(--text3);margin:0">The gauge switches to the warn colour at/above this value — e.g. 80 on a coolant dial. Blank keeps the default (red past 92% of range).</p>
+                <div style="display:flex;gap:8px;align-items:center">
+                  <label style="width:4.5em">Alert</label>
+                  <select id="gauge-alarm" value=${cfg.alarm || ''} onchange=${e => {
+                    const v = e.target.value || undefined;
+                    updateGaugeConfig(cfg.id, 'alarm', v);
+                    // Notifications need permission — ask while we still have the click
+                    if (v === 'notify' && window.Notification && window.Notification.permission === 'default') {
+                      try { window.Notification.requestPermission().catch(() => {}); } catch (err) {}
+                    }
+                  }} style="width:auto;min-width:11em;padding:5px 30px 5px 8px">
+                    <option value="">Off</option>
+                    <option value="flash">Flash the tile</option>
+                    <option value="beep">Flash + beep</option>
+                    <option value="notify">Flash + beep + notification</option>
+                  </select>
+                </div>
+                <p style="font-size:.72rem;color:var(--text3);margin:0">Fires each time the value crosses the Warn threshold — set one above for this to do anything.</p>
+              `}
+                `;
+              })()}
               <div style="display:flex;gap:8px;margin-top:4px;flex-wrap:wrap">
                 <button onclick=${() => setConfigId(null)} style="width:auto"><${Icon} n="check" />Done</button>
                 <button onclick=${() => { duplicateGauge(cfg.id); setConfigId(null); }} style="width:auto">⧉ Duplicate</button>

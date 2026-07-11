@@ -809,6 +809,13 @@ td { font-variant-numeric: tabular-nums; }
 /* transparent tiles: the gauge floats on the page with no card chrome
    (the edit-mode dashed outline still shows, so they stay manipulable) */
 .gauge-tile.tile-clear { background: transparent; border-color: transparent; }
+/* gauge settings modal: section headers group the (long) option list */
+.modal-sect {
+  font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--text3); margin: 6px 0 -4px; padding-bottom: 3px;
+  border-bottom: 1px solid var(--border2);
+}
+.modal-sect:first-child { margin-top: 0; }
 /* edit mode affordances: dashed outline + grab cursor, like a layout editor */
 .gauges-editing .gauge-tile { outline: 1.5px dashed var(--accent); cursor: grab; }
 .gauges-editing .grid-stack-item.ui-draggable-dragging .gauge-tile { cursor: grabbing; opacity: .85; }

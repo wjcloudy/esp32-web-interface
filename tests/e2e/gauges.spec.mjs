@@ -127,7 +127,7 @@ test.describe('Gauges grid', () => {
     await page.locator('.gauge-tile').click();
     const modal = page.locator('.modal-content');
     await expect(modal).toBeVisible();
-    await modal.locator('input[type="number"]').nth(1).fill('500'); // max
+    await modal.locator('#gauge-max').fill('500');
     await modal.locator('select').first().selectOption('line'); // Type is the first select
     await modal.locator('button', { hasText: 'Done' }).click();
     await page.locator('button', { hasText: 'Save & Done' }).click();
@@ -213,7 +213,7 @@ test.describe('Gauges grid', () => {
     // Give the original a custom range so the copy proves config carries over
     await page.locator('.gauge-tile').click();
     const modal = page.locator('.modal-content');
-    await modal.locator('input[type="number"]').nth(1).fill('500'); // max
+    await modal.locator('#gauge-max').fill('500');
     await modal.locator('button', { hasText: 'Duplicate' }).click();
     await expect(page.locator('.grid-stack-item')).toHaveCount(2);
     await expect(page.locator('.gauge-tile-name', { hasText: 'udc' })).toHaveCount(2);
@@ -615,7 +615,7 @@ test.describe('Gauges grid', () => {
     // Pick the parameter and target value; confirm stays on by default
     await modal.locator('div', { hasText: /^Select\.\.\.$/ }).last().click();
     await modal.locator('.hover-row', { hasText: 'fweak' }).last().click();
-    await modal.locator('input[type="number"]').first().fill('72');
+    await modal.locator('#gauge-setto').fill('72');
     await modal.locator('button', { hasText: 'Done' }).click();
     await page.locator('button', { hasText: 'Save & Done' }).click();
     await expect.poll(async () => (await savedLayout(mock)).pages[0].items[0].type).toBe('action');
