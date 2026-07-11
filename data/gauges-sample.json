@@ -106,12 +106,14 @@
           "id": 9,
           "name": "SOC",
           "label": "SOC",
-          "type": "text",
+          "type": "bar",
           "decimals": 0,
           "x": 0,
           "y": 4,
           "w": 2,
-          "h": 1
+          "h": 1,
+          "min": 0,
+          "max": 100
         },
         {
           "id": 10,
@@ -819,6 +821,161 @@
           "y": 3,
           "w": 5,
           "h": 3
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "name": "Controls",
+      "items": [
+        {
+          "id": 110,
+          "type": "toggle",
+          "param": "Chgctrl",
+          "onValue": 0,
+          "offValue": 1,
+          "label": "Charging",
+          "onLabel": "Enabled",
+          "offLabel": "Disabled",
+          "confirm": true,
+          "x": 0,
+          "y": 0,
+          "w": 2,
+          "h": 2
+        },
+        {
+          "id": 111,
+          "type": "toggle",
+          "param": "BMS_BalancingOn",
+          "onValue": 1,
+          "offValue": 0,
+          "label": "Balancing",
+          "onLabel": "On",
+          "offLabel": "Off",
+          "x": 2,
+          "y": 0,
+          "w": 2,
+          "h": 2
+        },
+        {
+          "id": 112,
+          "type": "action",
+          "param": "CCS_SOCLim",
+          "value": 80,
+          "label": "Charge to 80%",
+          "confirm": true,
+          "x": 4,
+          "y": 0,
+          "w": 2,
+          "h": 1
+        },
+        {
+          "id": 113,
+          "type": "action",
+          "param": "CCS_SOCLim",
+          "value": 100,
+          "label": "Charge to 100%",
+          "confirm": true,
+          "x": 4,
+          "y": 1,
+          "w": 2,
+          "h": 1
+        },
+        {
+          "id": 114,
+          "type": "action",
+          "param": "BMS_DTCRead",
+          "value": 1,
+          "label": "Read BMS DTCs",
+          "confirm": true,
+          "x": 6,
+          "y": 0,
+          "w": 2,
+          "h": 1
+        },
+        {
+          "id": 115,
+          "type": "action",
+          "act": "can",
+          "canId": "0x7DF",
+          "canData": "02 01 00",
+          "label": "OBD query (CAN)",
+          "confirm": true,
+          "x": 6,
+          "y": 1,
+          "w": 2,
+          "h": 1
+        },
+        {
+          "id": 116,
+          "name": "CCS_SOCLim",
+          "type": "text",
+          "label": "SOC limit",
+          "decimals": 0,
+          "x": 8,
+          "y": 0,
+          "w": 2,
+          "h": 1
+        },
+        {
+          "id": 117,
+          "name": "Chgctrl",
+          "type": "text",
+          "label": "Charge ctrl",
+          "x": 8,
+          "y": 1,
+          "w": 2,
+          "h": 1
+        },
+        {
+          "id": 118,
+          "type": "slider",
+          "param": "HeatPercnt",
+          "min": 0,
+          "max": 100,
+          "decimals": 0,
+          "label": "Heater power",
+          "x": 0,
+          "y": 2,
+          "w": 4,
+          "h": 1
+        },
+        {
+          "id": 119,
+          "type": "slider",
+          "param": "regenlevel",
+          "min": 0,
+          "max": 3,
+          "decimals": 0,
+          "label": "Regen level",
+          "x": 4,
+          "y": 2,
+          "w": 3,
+          "h": 1
+        },
+        {
+          "id": 120,
+          "name": "tmpheater",
+          "type": "bar",
+          "min": 0,
+          "max": 90,
+          "decimals": 0,
+          "label": "Heater t",
+          "x": 7,
+          "y": 2,
+          "w": 1,
+          "h": 2
+        },
+        {
+          "id": 121,
+          "name": "HeatPercnt",
+          "type": "text",
+          "label": "Heater %",
+          "decimals": 0,
+          "x": 8,
+          "y": 2,
+          "w": 2,
+          "h": 1
         }
       ]
     }

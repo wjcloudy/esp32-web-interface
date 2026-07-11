@@ -3788,7 +3788,7 @@ const Gauges = () => {
         <p style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">Tap a tile to configure its value, type, colour and range — or to duplicate or remove it.</p>
         <h3 class="underline">Starter Layout</h3>
         <button onclick=${loadSampleLayout} style="font-size:.75rem;padding:4px 10px"><${Icon} n="cloud" />Load sample layout</button>
-        <p style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">Five example pages (Driving, Battery, Temps, Charging, Debug) using standard value names — replaces your current gauges after confirmation.</p>
+        <p style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">Six example pages (Driving, Battery, Temps, Charging, Debug, Controls) using standard value names — every gauge type included. Replaces your current gauges after confirmation.</p>
       </div>
       `}
       <div class="main-left">

@@ -564,11 +564,11 @@ test.describe('Gauges grid', () => {
     await page.locator('button', { hasText: 'Load sample layout' }).click();
     await expect(page.locator('.page-pill', { hasText: 'Driving' })).toBeVisible();
     expect(dialogs[0]).toContain('Replace your current gauges');
-    for (const name of ['Battery', 'Temps', 'Charging', 'Debug']) {
+    for (const name of ['Battery', 'Temps', 'Charging', 'Debug', 'Controls']) {
       await expect(page.locator('.page-pill', { hasText: name })).toBeVisible();
     }
     // Persisted straight to the device, conditional Charging page included
-    await expect.poll(async () => (await savedLayout(mock)).pages.length).toBe(5);
+    await expect.poll(async () => (await savedLayout(mock)).pages.length).toBe(6);
     const saved = await savedLayout(mock);
     expect(saved.autoPage).toBe(true);
     expect(saved.pages[3].cond).toEqual({ name: 'opmode', min: 4, max: 4 });
