@@ -4268,27 +4268,52 @@ const Gauges = () => {
     // Layout effect + correct initial cellHeight + animation off during init:
     // a page switch paints fully laid out in one frame instead of zooming in.
     // Animation comes back for the nice drag/drop transitions.
-    // Cell height is normally the square-cell size (width / columns), but on a
-    // very wide screen that makes tiles so tall the page scrolls vertically.
-    // Cap it so the current page's rows fit the viewport height — tiles go
-    // slightly wide-of-square rather than overflowing downward. A floor keeps
-    // them usable when a page packs many rows.
+    // Cells are square: cellHeight always equals the column width. On a very
+    // wide screen the square size (width / columns) would make a page so tall
+    // it scrolls vertically — so instead of stretching the cells, cap the
+    // square size to what fits the viewport height and narrow the whole grid
+    // (centred) to match. Cells stay square; the grid just doesn't fill the
+    // full width when height is the tighter constraint. A floor keeps cells
+    // usable when a page packs many rows.
     const MARGIN = 4;
-    const computeCellH = () => {
-      const w = el.clientWidth / GRID_COLS;
-      if (!(w > 0)) return 1;
-      let ch = w;
+    // Width available to the grid, read from the PARENT so it's stable no
+    // matter what max-width we set on the grid element itself (avoids a
+    // ResizeObserver feedback loop).
+    const availWidth = () => {
+      const p = el.parentElement;
+      if (!p) return el.clientWidth;
+      const cs = getComputedStyle(p);
+      return p.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+    };
+    const squareCell = () => {
+      const availW = availWidth();
+      if (!(availW > 0)) return 1;
+      let cell = availW / GRID_COLS;
       const rows = itemsRef.current.reduce((m, g) => Math.max(m, (g.y || 0) + (g.h || 1)), 0);
       if (rows > 0) {
         const availH = window.innerHeight - el.getBoundingClientRect().top - 8;
-        const capH = (availH - MARGIN * (rows + 1)) / rows;
-        if (capH > 30) ch = Math.min(ch, capH); // floor: never shrink below ~30px/cell
+        const capCell = (availH - MARGIN * (rows + 1)) / rows;
+        if (capCell > 30 && capCell < cell) cell = capCell; // floor ~30px/cell
       }
-      return Math.max(1, Math.round(ch));
+      return Math.max(1, Math.round(cell));
+    };
+    const applyCellSize = () => {
+      const cell = squareCell();
+      const availW = availWidth();
+      const gridW = cell * GRID_COLS;
+      // Narrow + centre the grid when height is the binding constraint, so
+      // the columns render at the same square size as the (capped) rows
+      if (gridW < availW - 1) {
+        el.style.maxWidth = gridW + 'px';
+        el.style.marginLeft = 'auto'; el.style.marginRight = 'auto';
+      } else {
+        el.style.maxWidth = ''; el.style.marginLeft = ''; el.style.marginRight = '';
+      }
+      grid.cellHeight(cell);
     };
     const grid = GridStack.init({
       column: GRID_COLS,
-      cellHeight: computeCellH(),
+      cellHeight: squareCell(),
       margin: MARGIN,
       float: true,
       animate: false,
@@ -4296,13 +4321,13 @@ const Gauges = () => {
       alwaysShowResizeHandle: 'mobile',
     }, el);
     gridApi.current = grid;
+    applyCellSize();
     requestAnimationFrame(() => { if (gridApi.current === grid) grid.setAnimation(true); });
-    const sizeCells = () => { grid.cellHeight(computeCellH()); };
-    const ro = new ResizeObserver(sizeCells);
+    const ro = new ResizeObserver(applyCellSize);
     ro.observe(el);
     // Viewport-height changes (rotation, window resize) don't alter el's width,
     // so the ResizeObserver won't fire — watch the window too for the height cap
-    window.addEventListener('resize', sizeCells);
+    window.addEventListener('resize', applyCellSize);
     // gridstack strips gs-min-* attributes on first parse, so re-inits would
     // lose them — enforce minimums at engine level instead (1x1 for
     // indicator lamps, 2x2 for everything else)
@@ -4354,7 +4379,12 @@ const Gauges = () => {
       }
       if (n.w !== w || n.h !== h) grid.update(el, { w, h });
     });
-    return () => { ro.disconnect(); window.removeEventListener('resize', sizeCells); grid.destroy(false); gridApi.current = null; };
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', applyCellSize);
+      el.style.maxWidth = ''; el.style.marginLeft = ''; el.style.marginRight = '';
+      grid.destroy(false); gridApi.current = null;
+    };
     // types join: a type switch (e.g. radial -> indicator) changes the
     // engine minimums, so re-init to reapply them
   }, [activePage, layoutGen, items.length, editing, pages.length, items.map(g => g.type).join()]);

@@ -252,6 +252,9 @@ test.describe('Gauge extras', () => {
       [...document.querySelectorAll('.grid-stack-item')]
         .reduce((m, el) => Math.max(m, el.getBoundingClientRect().bottom), 0));
     expect(maxBottom).toBeLessThanOrEqual(700 + 2);
+    // ...and the cells stay square (a 3x3 tile is as wide as it is tall)
+    const box = await page.locator('.grid-stack-item').first().boundingBox();
+    expect(Math.abs(box.width - box.height)).toBeLessThanOrEqual(3);
   });
 
   test('full-screen mode hides the chrome and the exit button restores it', async ({ page, mock }) => {
