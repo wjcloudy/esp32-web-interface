@@ -3779,7 +3779,7 @@ const Gauges = () => {
               <span style="font-size:.72rem;color:var(--text3)">show while OUTSIDE the range</span>
             </label>
             <button onclick=${clearPageCond} style="font-size:.72rem;padding:3px 10px;width:auto;align-self:flex-start;color:var(--red)"><${Icon} n="x" size=${11} />Remove condition</button>
-            <p style="font-size:.72rem;color:var(--text3);margin:0">Shows this page while the value is between Min and Max (inclusive). Equal-to is Min = Max — e.g. opmode 3 to 3. Leave Min or Max blank for no lower/upper limit. The Auto toggle above the grid arms it.</p>
+            <p style="font-size:.72rem;color:var(--text3);margin:0">Shows this page while the value is between Min and Max (inclusive). Equal-to is Min = Max — e.g. opmode 3 to 3. Leave Min or Max blank for no lower/upper limit. The Auto-switch toggle above the grid arms it.</p>
           </div>
         ` : html`
           <button onclick=${() => updatePageCond('name', '')} style="font-size:.75rem;padding:4px 10px;width:auto"><${Icon} n="plus" />Add condition</button>
@@ -3797,7 +3797,7 @@ const Gauges = () => {
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
             ${pages.some(p => p.cond && p.cond.name) && html`
               <label class="toggle-row" id="auto-pages" style="width:auto;padding:4px 10px;font-size:.72rem" title="Conditional page display: switch pages automatically when a page condition matches">
-                <span class="toggle-label">Auto pages</span>
+                <span class="toggle-label">Auto-switch</span>
                 <span class="switch sm">
                   <input type="checkbox" checked=${autoPage} onchange=${e => {
                     const v = e.target.checked;

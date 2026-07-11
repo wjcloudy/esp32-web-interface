@@ -533,7 +533,7 @@ test.describe('Gauges grid', () => {
     await expect(page.locator('.page-pill.active')).toHaveText('Fault', { timeout: 5000 });
   });
 
-  test('Auto pages toggle disarms conditional display and persists', async ({ page, mock }) => {
+  test('Auto-switch toggle disarms conditional display and persists', async ({ page, mock }) => {
     const layout = { v: 3, pages: [
       { id: 1, name: 'Main', items: [{ id: 1, name: 'udc', type: 'text', x: 0, y: 0, w: 2, h: 1 }] },
       { id: 2, name: 'Fast', cond: { name: 'speed', min: 500 }, items: [] },
@@ -572,7 +572,7 @@ test.describe('Gauges grid', () => {
     const saved = await savedLayout(mock);
     expect(saved.autoPage).toBe(true);
     expect(saved.pages[3].cond).toEqual({ name: 'opmode', min: 4, max: 4 });
-    // The Auto pages toggle is visible now a condition exists
+    // The Auto-switch toggle is visible now a condition exists
     await expect(page.locator('#auto-pages')).toBeVisible();
   });
 
@@ -754,7 +754,7 @@ test.describe('Gauges grid', () => {
     // A blank bound persists as ABSENT (open end), not a default snapped back
     await expect.poll(async () => (await savedLayout(mock)).pages[0].cond)
       .toEqual({ name: 'speed', max: 3000 });
-    // The Auto pages toggle appears once any page carries a condition
+    // The Auto-switch toggle appears once any page carries a condition
     await expect(page.locator('#auto-pages')).toBeVisible();
   });
 });
