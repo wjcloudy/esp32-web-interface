@@ -481,6 +481,19 @@ test.describe('Gauges grid', () => {
     await expect.poll(async () => (await mock.state()).files).toContain('gauges.json');
   });
 
+  test('editor page/condition sections collapse behind an expander on mobile', async ({ page, mock }) => {
+    await page.setViewportSize({ width: 390, height: 780 });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await enterEdit(page);
+    // Primary actions stay visible; the secondary sections are hidden until expanded
+    await expect(page.locator('.main-right button', { hasText: 'Add Gauge' })).toBeVisible();
+    const newPage = page.locator('.main-right button', { hasText: 'New page' });
+    await expect(newPage).toBeHidden();
+    await page.locator('.actions-expander', { hasText: 'Pages & options' }).click();
+    await expect(newPage).toBeVisible();
+  });
+
   test('inverted indicator lights while the value is OFF', async ({ page, mock }) => {
     const layout = { v: 3, pages: [{ id: 1, name: 'Main', items: [
       { id: 1, name: 'pot', type: 'indicator', min: 0, max: 4095, invert: true, color: '#ff6b6b', x: 0, y: 0, w: 3, h: 3 },
@@ -895,6 +908,16 @@ test.describe('Gauges grid', () => {
     range = page.locator('.slider-tile input[type="range"]');
     await expect(range).toHaveAttribute('min', '-10');
     await expect(range).toHaveAttribute('max', '0');
+    expect(await range.evaluate(el => getComputedStyle(el).direction)).toBe('rtl');
+    // Invert checkbox flips a normal range's direction (and cancels with the
+    // range inversion, back to ltr)
+    await page.locator('.gauge-tile').click();
+    modal = page.locator('.modal-content');
+    await modal.locator('#gauge-max').fill('10'); // back to 0..10 (normal), ltr
+    const invert = modal.locator('label', { hasText: 'flip the drag direction' }).locator('input[type="checkbox"]');
+    await invert.check();
+    await modal.locator('button', { hasText: 'Done' }).click();
+    range = page.locator('.slider-tile input[type="range"]');
     expect(await range.evaluate(el => getComputedStyle(el).direction)).toBe('rtl');
   });
 

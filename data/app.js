@@ -3977,11 +3977,12 @@ const SliderTile = ({ g, value, editing, w, h }) => {
   const [flash, setFlash] = useState('');
   const min = g.min != null ? g.min : 0;
   const max = (g.max != null && g.max !== min) ? g.max : min + 100;
-  // The native range needs min < max, so drive it on lo..hi and, when the
-  // configured range is inverted (Max below Min, e.g. 0 → -10), flip the
-  // track with direction:rtl so the left end is still Min and the right Max.
+  // The native range needs min < max, so drive it on lo..hi and flip the
+  // track with direction:rtl when the drag direction should be reversed —
+  // either because the range is inverted (Max below Min, e.g. 0 → -10) or the
+  // Invert checkbox is ticked. Both together cancel out (XOR).
   const lo = Math.min(min, max), hi = Math.max(min, max);
-  const inverted = max < min;
+  const inverted = (max < min) !== !!g.invertScale;
   const dec = g.decimals != null ? g.decimals : 1;
   const cur = drag != null ? drag : (value != null ? value : min);
   const clamped = Math.min(hi, Math.max(lo, cur));
@@ -4145,6 +4146,7 @@ const Gauges = () => {
   const [activePage, setActivePage] = useState(1);
   const [lineVals, setLineVals] = useState({});
   const [editing, setEditing] = useState(false);
+  const [editActionsOpen, setEditActionsOpen] = useState(false); // responsive-only expander for the editor's page/condition/starter sections
   const [configId, setConfigId] = useState(null); // gauge whose settings modal is open
   const [autoPage, setAutoPage] = useState(true); // conditional page display armed
   const [loaded, setLoaded] = useState(false); // gauges.json fetch settled
@@ -4747,6 +4749,14 @@ const Gauges = () => {
           <button onclick=${cancelEditing} title="Discard changes made since you opened the editor"><${Icon} n="x" />Cancel & exit</button>
         </div>
         <p style="font-size:.72rem;color:var(--text3);margin:.25rem 0 .5rem">Drag tiles to move them; drag a tile's corner to resize.</p>
+        ${/* Page / condition / starter sections collapse behind a button on
+            narrow screens so the editor doesn't fill the phone (same pattern
+            as the Parameters actions) */ ''}
+        <button class="actions-expander" onclick=${() => setEditActionsOpen(!editActionsOpen)}>
+          <span class="btn-ic" style=${'transition:transform .18s;transform:rotate(' + (editActionsOpen ? 180 : 0) + 'deg)'}><${Icon} n="chevron" /></span>
+          Pages & options
+        </button>
+        <div class="collapsible-actions ${editActionsOpen ? 'open' : ''}">
         <h3 class="underline">Page: ${page.name}</h3>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:6px">
           <button onclick=${addPage} style="font-size:.75rem;padding:4px 10px"><${Icon} n="plus" />New page</button>
@@ -4784,6 +4794,7 @@ const Gauges = () => {
         <h3 class="underline">Starter Layout</h3>
         <button onclick=${loadSampleLayout} style="font-size:.75rem;padding:4px 10px"><${Icon} n="cloud" />Load sample layout</button>
         <p class="edit-help" style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">Six example pages (Driving, Battery, Temps, Charging, Debug, Controls) using standard value names — every gauge type included. Replaces your current gauges after confirmation.</p>
+        </div>
       </div>
       `}
       <div class="main-left ${editing ? '' : 'gauge-swipe'}" onpointerdown=${onSwipeStart}
@@ -5061,6 +5072,11 @@ const Gauges = () => {
                     onChange=${n => updateGaugeConfig(cfg.id, 'param', n)} />
                 </div>
                 <p style="font-size:.72rem;color:var(--text3);margin:0">Drag sets <b>${cfg.param || '…'}</b> anywhere between Min and Max (step from Decimals). The value is sent when you let go, and the knob follows the live value when idle. Live immediately, not saved to flash.</p>
+                <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+                  <span style="width:4.5em">Invert</span>
+                  <input type="checkbox" checked=${!!cfg.invertScale} onchange=${e => updateGaugeConfig(cfg.id, 'invertScale', e.target.checked || undefined)} style="width:auto" />
+                  <span style="font-size:.72rem;color:var(--text3)">flip the drag direction (Min on the right, Max on the left)</span>
+                </label>
               `}
               ${!isInteractive && html`
                 <p class="modal-sect">Value</p>
