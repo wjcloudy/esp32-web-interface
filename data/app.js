@@ -3052,10 +3052,13 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decim
 const GRID_COLS = 10;
 const V1_SPAN = { xs: 2, sm: 2, md: 3, lg: 4 }; // legacy fixed sizes -> tile span (10-col)
 
-// Per-type tile rules: indicators, text tiles and action buttons can go down
-// to 1 cell; dials/lamps stay square, everything else can be any shape
-const tileFloor = (type) => (type === 'indicator' || type === 'text' || type === 'action') ? 1 : 2;
-const tileFreeform = (type) => type === 'line' || type === 'text' || type === 'action';
+// Per-type tile rules: indicators, text tiles and the interactive tiles
+// (action/toggle/slider) can go down to 1 cell; dials/lamps stay square,
+// everything else can be any shape
+const tileFloor = (type) => (type === 'radial' || type == null) ? 2 : (type === 'line' ? 2 : 1);
+const tileFreeform = (type) => type !== 'radial' && type !== 'indicator' && type != null;
+// Interactive tiles stream their PARAMETER for live state instead of a spot value
+const tileStreamName = (g) => g.name || ((g.type === 'toggle' || g.type === 'slider') ? g.param : '') || '';
 
 // A page condition ({ name, min, max, invert }) matches while the value sits
 // inside min..max INCLUSIVE — so equality is min = max (opmode 3..3 matches
@@ -3212,6 +3215,80 @@ const ActionTile = ({ g, canMode, editing, w, h }) => {
     </button>`;
 };
 
+// Toggle tile: a switch bound to an on/off pair — parameter values (live
+// position streams back from the inverter, so it shows the REAL state) or
+// two CAN payloads on one ID (no feedback; the position is optimistic).
+// Unlike action buttons, confirmation is opt-in: toggles are meant for
+// frequent deliberate flips.
+const ToggleTile = ({ g, value, canMode, editing, px }) => {
+  const [busy, setBusy] = useState(false);
+  const [fail, setFail] = useState(false);
+  const [localOn, setLocalOn] = useState(false); // CAN mode's remembered position
+  const isCan = g.act === 'can';
+  const on = isCan ? localOn
+    : (value != null && g.onValue != null && Math.abs(value - g.onValue) < 1e-6);
+  const fire = async () => {
+    if (editing || busy) return;
+    const next = !on;
+    if (g.confirm === true && !window.confirm('Switch "' + (g.label || g.param || g.canId || 'toggle') + '" ' + (next ? 'ON' : 'OFF') + '?')) return;
+    setBusy(true);
+    let ok = false;
+    try {
+      if (isCan) {
+        if (!canMode) throw new Error('CAN mode is off');
+        if (!g.canId) throw new Error('No CAN ID configured');
+        const r = await fetch('/can-send?canId=' + encodeURIComponent(g.canId) + '&data=' + encodeURIComponent((next ? g.onData : g.offData) || ''));
+        const j = await r.json().catch(() => ({}));
+        ok = r.ok && !j.error;
+        if (ok) setLocalOn(next);
+      } else {
+        if (!g.param || g.onValue == null || g.offValue == null) throw new Error('On/Off values not configured');
+        ok = (await api.setParam(g.param, next ? g.onValue : g.offValue)).ok;
+      }
+    } catch (e) { /* falls through to the fail flash */ }
+    setBusy(false);
+    if (!ok) { setFail(true); setTimeout(() => setFail(false), 1200); }
+  };
+  const k = Math.max(0.9, Math.min(2.2, px / 55));
+  return html`
+    <div class="toggle-tile ${fail ? 'fail' : ''}" onclick=${fire}
+      style=${'pointer-events:' + (editing ? 'none' : 'auto')} title=${g.param || g.canId || ''}>
+      <label class="switch" style=${'transform:scale(' + k.toFixed(2) + ');pointer-events:none'}>
+        <input type="checkbox" checked=${on} disabled=${busy} />
+        <span class="slider"></span>
+      </label>
+      ${px >= 46 && html`<div class="g-unit" style=${'margin-top:' + Math.round(k * 8) + 'px'}>${busy ? '…' : on ? 'ON' : 'OFF'}</div>`}
+    </div>`;
+};
+
+// Slider tile: drag to set a parameter anywhere between Min and Max
+// (step from the Decimals setting). The value is sent on RELEASE — not per
+// pixel, which would flood the link — and the knob follows the streamed
+// parameter when idle, so it reflects changes made elsewhere.
+const SliderTile = ({ g, value, editing, w }) => {
+  const [drag, setDrag] = useState(null); // position while the finger is down
+  const [flash, setFlash] = useState('');
+  const min = g.min != null ? g.min : 0;
+  const max = (g.max != null && g.max !== min) ? g.max : min + 100;
+  const dec = g.decimals != null ? g.decimals : 1;
+  const cur = drag != null ? drag : (value != null ? value : min);
+  const send = async (v) => {
+    setDrag(null);
+    let ok = false;
+    try { if (g.param) ok = (await api.setParam(g.param, v)).ok; } catch (e) { /* fail flash */ }
+    setFlash(ok ? 'ok' : 'fail');
+    setTimeout(() => setFlash(''), 1200);
+  };
+  return html`
+    <div class="slider-tile ${flash}" style=${'width:' + w + 'px;pointer-events:' + (editing ? 'none' : 'auto')} title=${g.param || ''}>
+      <input type="range" min=${min} max=${max} step=${Math.pow(10, -dec)} value=${cur}
+        oninput=${e => setDrag(parseFloat(e.target.value))}
+        onchange=${e => send(parseFloat(e.target.value))}
+        style=${g.color ? 'accent-color:' + g.color : ''} />
+      <div class="g-val" style="font-size:.92rem">${Number(cur).toFixed(dec)}</div>
+    </div>`;
+};
+
 // Fills the tile under the name label and measures itself with a
 // ResizeObserver, so gauges rescale live while a tile is being resized
 // (GridStack changes the DOM size continuously during the drag).
@@ -3275,6 +3352,10 @@ const GaugeTileBody = ({ g, title, value, unit, enums, editing, canMode }) => {
             decimals=${g.decimals != null ? g.decimals : 1} w=${w - 6} h=${gh - 4} />`
         : (g.type === 'action')
         ? html`<${ActionTile} g=${g} canMode=${canMode} editing=${editing} w=${w - 10} h=${gh - 8} />`
+        : (g.type === 'toggle')
+        ? html`<${ToggleTile} g=${g} value=${value} canMode=${canMode} editing=${editing} px=${Math.max(20, Math.min(w, gh) - 4)} />`
+        : (g.type === 'slider')
+        ? html`<${SliderTile} g=${g} value=${value} editing=${editing} w=${w - 18} />`
         : html`<${SvgGauge} id=${g.id} value=${value} unit=${unit} color=${g.color || ''} enums=${enums}
             px=${Math.max(40, Math.min(w, gh) - 4)} decimals=${g.decimals != null ? g.decimals : 1}
             min=${g.min != null ? g.min : 0} max=${(g.max == null || g.max === 0) ? 4000 : g.max} />`)}
@@ -3570,7 +3651,7 @@ const Gauges = () => {
     const condNames = (autoPage && !configId)
       ? pages.map(p => p.cond && p.cond.name).filter(Boolean) : [];
     const names = configId ? []
-      : [...new Set([...items.map(g => g.name).filter(Boolean), ...condNames])];
+      : [...new Set([...items.map(tileStreamName).filter(Boolean), ...condNames])];
     if (names.length === 0) {
       dispatch({ type: 'SET_LOGGING', payload: false });
       return;
@@ -3592,7 +3673,8 @@ const Gauges = () => {
         names.forEach((n, i) => { byName[n] = parseFloat(vals[i]); });
         const next = {};
         items.forEach(g => {
-          if (g.name && !isNaN(byName[g.name])) next[g.id] = byName[g.name];
+          const n = tileStreamName(g);
+          if (n && !isNaN(byName[n])) next[g.id] = byName[n];
         });
         setLineVals(prev => ({ ...prev, ...next }));
         // Conditional page display: when a page's condition STARTS matching,
@@ -3716,10 +3798,12 @@ const Gauges = () => {
                     label on the button itself (no name row) */ ''}
                 ${(() => {
                   const configured = g.type === 'text' ? !!(g.name || g.label || (g.text && String(g.text).trim()))
-                    : g.type === 'action' ? !!(g.label || g.param || g.canId)
+                    : (g.type === 'action' || g.type === 'toggle') ? !!(g.label || g.param || g.canId)
+                    : g.type === 'slider' ? !!(g.label || g.param)
                     : !!(g.name || g.label);
                   const title = g.type === 'action' ? (editing && !configured ? 'tap to set up' : '—')
-                    : (g.label || g.name || (editing && !configured ? 'tap to set up' : '—'));
+                    : (g.label || g.name || ((g.type === 'toggle' || g.type === 'slider') && g.param)
+                       || (editing && !configured ? 'tap to set up' : '—'));
                   return html`<${GaugeTileBody} g=${g} title=${title} value=${lineVals[g.id]} unit=${unit} enums=${enums}
                     editing=${editing} canMode=${state.canMode} />`;
                 })()}
@@ -3753,13 +3837,15 @@ const Gauges = () => {
                   <option value="indicator">Indicator</option>
                   <option value="text">Text</option>
                   <option value="action">Action button</option>
+                  <option value="toggle">Toggle switch</option>
+                  <option value="slider">Slider</option>
                 </select>
                 <label style="margin-left:8px">Colour</label>
                 <input type="color" value=${cfg.color || '#4cc9f0'} oninput=${e => updateGaugeConfig(cfg.id, 'color', e.target.value)}
                   style="width:34px;height:28px;padding:0;border:1px solid var(--border2);border-radius:6px;background:none;cursor:pointer" />
                 ${cfg.color && html`<button onclick=${() => updateGaugeConfig(cfg.id, 'color', '')} style="font-size:.65rem;padding:2px 8px;width:auto" title="Reset to theme gradient"><${Icon} n="undo" size=${11} /></button>`}
               </div>
-              ${cfg.type !== 'action' && html`<div style="display:flex;gap:8px;align-items:center">
+              ${!['action', 'toggle', 'slider'].includes(cfg.type) && html`<div style="display:flex;gap:8px;align-items:center">
                 <label style="width:4.5em">Value</label>
                 <${FieldPicker} value=${cfg.name} spotNames=${spotNames} onChange=${name => updateGaugeConfig(cfg.id, 'name', name)} />
               </div>`}
@@ -3768,7 +3854,7 @@ const Gauges = () => {
                 <input type="text" value=${cfg.label || ''} placeholder="(shows the value name)" maxlength="24"
                   oninput=${e => updateGaugeConfig(cfg.id, 'label', e.target.value)} style="flex:1;padding:5px 8px" />
               </div>
-              ${cfg.type !== 'text' && cfg.type !== 'action' && html`<div style="display:flex;gap:8px;align-items:center">
+              ${!['text', 'action', 'toggle'].includes(cfg.type) && html`<div style="display:flex;gap:8px;align-items:center">
                 <label style="width:4.5em">Min</label>
                 <input type="number" value=${cfg.min} oninput=${e => updateGaugeConfig(cfg.id, 'min', parseFloat(e.target.value) || 0)} style="width:6em;padding:5px 6px" step="any" />
                 <label>Max</label>
@@ -3782,7 +3868,7 @@ const Gauges = () => {
                 </div>
                 <p style="font-size:.72rem;color:var(--text3);margin:0">Leave Text empty to show the selected value as large text; set it for a static caption (section headers etc.).</p>
               `}
-              ${cfg.type !== 'indicator' && cfg.type !== 'action' && html`<div style="display:flex;gap:8px;align-items:center">
+              ${!['indicator', 'action', 'toggle'].includes(cfg.type) && html`<div style="display:flex;gap:8px;align-items:center">
                 <label style="width:4.5em">Decimals</label>
                 <select value=${String(cfg.decimals != null ? cfg.decimals : 1)} onchange=${e => updateGaugeConfig(cfg.id, 'decimals', parseInt(e.target.value))}
                   style="width:auto;min-width:5em;padding:5px 30px 5px 8px">
@@ -3840,6 +3926,65 @@ const Gauges = () => {
                     onchange=${e => updateGaugeConfig(cfg.id, 'confirm', e.target.checked)} style="width:auto" />
                   <span style="font-size:.72rem;color:var(--text3)">ask before firing (recommended for driving pages)</span>
                 </label>
+              `}
+              ${cfg.type === 'toggle' && html`
+                <div style="display:flex;gap:8px;align-items:center">
+                  <label style="width:4.5em">Action</label>
+                  <select value=${cfg.act || 'set'} onchange=${e => updateGaugeConfig(cfg.id, 'act', e.target.value)}
+                    style="width:auto;min-width:11em;padding:5px 30px 5px 8px">
+                    <option value="set">Set parameter</option>
+                    <option value="can">Send CAN frame</option>
+                  </select>
+                </div>
+                ${(cfg.act || 'set') === 'set' ? html`
+                  <div style="display:flex;gap:8px;align-items:center">
+                    <label style="width:4.5em">Param</label>
+                    <${FieldPicker} value=${cfg.param || ''} spotNames=${Object.keys(state.params || {}).sort()}
+                      onChange=${n => updateGaugeConfig(cfg.id, 'param', n)} />
+                  </div>
+                  <div style="display:flex;gap:8px;align-items:center">
+                    <label style="width:4.5em">On</label>
+                    <input type="number" step="any" value=${cfg.onValue != null ? cfg.onValue : ''}
+                      oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'onValue', isNaN(n) ? undefined : n); }}
+                      style="width:6em;padding:5px 6px" />
+                    <label>Off</label>
+                    <input type="number" step="any" value=${cfg.offValue != null ? cfg.offValue : ''}
+                      oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'offValue', isNaN(n) ? undefined : n); }}
+                      style="width:6em;padding:5px 6px" />
+                  </div>
+                  <p style="font-size:.72rem;color:var(--text3);margin:0">The switch position follows the parameter's live value, so it shows the inverter's real state. Change is live immediately, not saved to flash.</p>
+                ` : html`
+                  <div style="display:flex;gap:8px;align-items:center">
+                    <label style="width:4.5em">CAN ID</label>
+                    <input type="text" value=${cfg.canId || ''} placeholder="0x180" maxlength="10"
+                      oninput=${e => updateGaugeConfig(cfg.id, 'canId', e.target.value)} style="width:7em;padding:5px 6px;font-family:var(--mono)" />
+                  </div>
+                  <div style="display:flex;gap:8px;align-items:center">
+                    <label style="width:4.5em">On data</label>
+                    <input type="text" value=${cfg.onData || ''} placeholder="01" maxlength="40"
+                      oninput=${e => updateGaugeConfig(cfg.id, 'onData', e.target.value)} style="flex:1;padding:5px 6px;font-family:var(--mono)" />
+                  </div>
+                  <div style="display:flex;gap:8px;align-items:center">
+                    <label style="width:4.5em">Off data</label>
+                    <input type="text" value=${cfg.offData || ''} placeholder="00" maxlength="40"
+                      oninput=${e => updateGaugeConfig(cfg.id, 'offData', e.target.value)} style="flex:1;padding:5px 6px;font-family:var(--mono)" />
+                  </div>
+                  <p style="font-size:.72rem;color:var(--text3);margin:0">One frame per flip on the same ID (hex bytes). There's no feedback over raw CAN, so the switch position is remembered, not measured.${!state.canMode ? html` <b style="color:var(--amber)">The interface is currently UART — this switch only works in CAN Bus mode.</b>` : ''}</p>
+                `}
+                <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+                  <span style="width:4.5em">Confirm</span>
+                  <input type="checkbox" checked=${!!cfg.confirm}
+                    onchange=${e => updateGaugeConfig(cfg.id, 'confirm', e.target.checked)} style="width:auto" />
+                  <span style="font-size:.72rem;color:var(--text3)">ask before each flip (off by default — toggles are for frequent use)</span>
+                </label>
+              `}
+              ${cfg.type === 'slider' && html`
+                <div style="display:flex;gap:8px;align-items:center">
+                  <label style="width:4.5em">Param</label>
+                  <${FieldPicker} value=${cfg.param || ''} spotNames=${Object.keys(state.params || {}).sort()}
+                    onChange=${n => updateGaugeConfig(cfg.id, 'param', n)} />
+                </div>
+                <p style="font-size:.72rem;color:var(--text3);margin:0">Drag sets <b>${cfg.param || '…'}</b> anywhere between Min and Max (step from Decimals). The value is sent when you let go, and the knob follows the live value when idle. Live immediately, not saved to flash.</p>
               `}
               <div style="display:flex;gap:8px;align-items:center">
                 <label style="width:4.5em">Size</label>

@@ -651,6 +651,68 @@ test.describe('Gauges grid', () => {
     await expect.poll(async () => await mock.commands()).toContain('can-send 0x180 01 02');
   });
 
+  test('toggle tile flips a parameter and follows its live value', async ({ page, mock }) => {
+    const layout = { v: 3, pages: [{ id: 1, name: 'Main', items: [
+      { id: 1, type: 'toggle', param: 'potmin', onValue: 100, offValue: 0, label: 'Heat', x: 0, y: 0, w: 2, h: 2 },
+    ] }] };
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(layout) });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    const box = page.locator('.toggle-tile input[type="checkbox"]');
+    // potmin starts at 0 = the OFF value
+    await expect(box).not.toBeChecked();
+    // Flip on: sets the ON value, and the streamed value moves the switch
+    await page.locator('.toggle-tile').click();
+    await expect.poll(async () => await mock.commands()).toContain('set potmin 100');
+    await expect(box).toBeChecked({ timeout: 5000 });
+    expect((await mock.state()).inverter.params.potmin.value).toBe(100);
+    // Flip off again
+    await page.locator('.toggle-tile').click();
+    await expect.poll(async () => await mock.commands()).toContain('set potmin 0');
+    await expect(box).not.toBeChecked({ timeout: 5000 });
+  });
+
+  test('CAN toggle sends the on/off payloads on one ID', async ({ page, mock }) => {
+    const layout = { v: 3, pages: [{ id: 1, name: 'Main', items: [
+      { id: 1, type: 'toggle', act: 'can', canId: '0x200', onData: '01', offData: '00', label: 'Pump', x: 0, y: 0, w: 2, h: 2 },
+    ] }] };
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(layout) });
+    await fetch(mock.url + '/settings?can_mode=1', { method: 'POST' });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    const box = page.locator('.toggle-tile input[type="checkbox"]');
+    await page.locator('.toggle-tile').click();
+    await expect.poll(async () => await mock.commands()).toContain('can-send 0x200 01');
+    await expect(box).toBeChecked(); // optimistic position (raw CAN has no feedback)
+    await page.locator('.toggle-tile').click();
+    await expect.poll(async () => await mock.commands()).toContain('can-send 0x200 00');
+    await expect(box).not.toBeChecked();
+  });
+
+  test('slider tile interpolates Min..Max and sets the parameter on release', async ({ page, mock }) => {
+    const layout = { v: 3, pages: [{ id: 1, name: 'Main', items: [
+      { id: 1, type: 'slider', param: 'fweak', min: 0, max: 400, decimals: 0, label: 'Field weak', x: 0, y: 0, w: 4, h: 1 },
+    ] }] };
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(layout) });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    const range = page.locator('.slider-tile input[type="range"]');
+    await expect(range).toBeVisible();
+    // Knob follows the live value while idle (fweak streams back as 67)
+    await expect.poll(async () => await range.inputValue(), { timeout: 5000 }).toBe('67');
+    // Drag to 300: input events during the drag, ONE set on release
+    await range.evaluate(el => {
+      // runs in the browser: Event comes from the page's window
+      const W = el.ownerDocument.defaultView;
+      el.value = 300;
+      el.dispatchEvent(new W.Event('input', { bubbles: true }));
+      el.dispatchEvent(new W.Event('change', { bubbles: true }));
+    });
+    await expect.poll(async () => await mock.commands()).toContain('set fweak 300');
+    expect((await mock.state()).inverter.params.fweak.value).toBe(300);
+    await expect(page.locator('.slider-tile .g-val')).toContainText('300');
+  });
+
   test('page condition editor round-trips through Save & Done', async ({ page, mock }) => {
     await openApp(page, mock);
     await gotoTab(page, 'Gauges');
