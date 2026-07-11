@@ -4494,11 +4494,24 @@ const Gauges = () => {
   // doesn't re-render (and disturb) the streaming gauges.
   const onSwipeMove = (e) => {
     const s = swipeRef.current, el = swipeHintRef.current;
-    if (!s || !el) return;
+    if (!s) return;
     const dx = e.clientX - s.x, dy = e.clientY - s.y;
     const dir = dx < 0 ? 1 : -1;
-    if (Math.abs(dx) < 8 || Math.abs(dx) <= Math.abs(dy) || !hasPageInDir(dir)) { el.style.opacity = 0; return; }
-    el.className = 'swipe-hint ' + (dx < 0 ? 'left' : 'right');
+    const horizontal = Math.abs(dx) >= 8 && Math.abs(dx) > Math.abs(dy);
+    // On touch the pointer is implicitly captured to the pointerdown target —
+    // a gauge's SVG/canvas, which the 100ms stream re-renders mid-drag, so the
+    // capture detaches and we stop getting events (swipe worked over empty
+    // space but not over a live gauge, and only on touch). Re-capture to our
+    // stable handler element once the gesture is clearly horizontal.
+    if (horizontal && !s.captured) {
+      s.captured = true;
+      try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {}
+    }
+    if (!el) return;
+    if (!horizontal || !hasPageInDir(dir)) { el.style.opacity = 0; return; }
+    // Glow the edge the incoming page enters from: swipe left (next) lights the
+    // right edge, swipe right (previous) lights the left edge
+    el.className = 'swipe-hint ' + (dx < 0 ? 'right' : 'left');
     el.style.opacity = Math.min(1, Math.abs(dx) / 120);
   };
   const onSwipeEnd = (e) => {
@@ -4712,7 +4725,7 @@ const Gauges = () => {
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:4px">
           <button onclick=${addGauge}><${Icon} n="plus" />Add Gauge</button>
           <button onclick=${() => { persist(pages); setEditing(false); }}><${Icon} n="check" />Save & Done</button>
-          <button onclick=${cancelEditing} title="Discard changes made since you opened the editor"><${Icon} n="x" />Cancel &amp; exit</button>
+          <button onclick=${cancelEditing} title="Discard changes made since you opened the editor"><${Icon} n="x" />Cancel & exit</button>
         </div>
         <p style="font-size:.72rem;color:var(--text3);margin:.25rem 0 .5rem">Drag tiles to move them; drag a tile's corner to resize.</p>
         <h3 class="underline">Page: ${page.name}</h3>

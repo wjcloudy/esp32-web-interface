@@ -258,33 +258,36 @@ test.describe('Gauge extras', () => {
   });
 
   test('swipe flips between gauge pages in view mode', async ({ page, mock }) => {
+    // Full-width tiles so the drag starts ON a live gauge (the case that
+    // failed on touch), not empty space
     await fetch(mock.url + '/__test/put-file?name=gauges.json', {
       method: 'POST', body: JSON.stringify({ v: 3, pages: [
-        { id: 1, name: 'Drive', items: [{ id: 1, name: 'udc', type: 'radial', min: 0, max: 500, x: 0, y: 0, w: 3, h: 3 }] },
-        { id: 2, name: 'Batt', items: [{ id: 2, name: 'tmphs', type: 'radial', min: 0, max: 100, x: 0, y: 0, w: 3, h: 3 }] },
+        { id: 1, name: 'Drive', items: [{ id: 1, name: 'udc', type: 'radial', min: 0, max: 500, x: 0, y: 0, w: 10, h: 4 }] },
+        { id: 2, name: 'Batt', items: [{ id: 2, name: 'tmphs', type: 'radial', min: 0, max: 100, x: 0, y: 0, w: 10, h: 4 }] },
       ] }),
     });
     await openApp(page, mock);
     await gotoTab(page, 'Gauges');
     await expect(page.locator('.page-pill.active')).toHaveText('Drive');
-    // Drag left over the gauge area → next page
-    const area = await page.locator('#gauges .main-left').boundingBox();
-    const y = area.y + area.height - 40;
-    await page.mouse.move(area.x + area.width - 60, y);
+    // Drag left starting over the gauge tile → next page
+    const tile = await page.locator('.gauge-tile').first().boundingBox();
+    const y = tile.y + tile.height / 2;
+    await page.mouse.move(tile.x + tile.width * 0.75, y);
     await page.mouse.down();
-    await page.mouse.move(area.x + 40, y, { steps: 8 });
-    // Mid-drag the edge-gradient hint is visible on the swipe side
+    await page.mouse.move(tile.x + tile.width * 0.2, y, { steps: 8 });
+    // Mid-drag the edge-gradient hint is visible on the incoming-page side
+    // (dragging left → next page enters from the right edge)
     const hint = page.locator('.swipe-hint');
-    await expect(hint).toHaveClass(/left/);
+    await expect(hint).toHaveClass(/right/);
     expect(await hint.evaluate(el => parseFloat(el.style.opacity))).toBeGreaterThan(0);
     await page.mouse.up();
     await expect(page.locator('.page-pill.active')).toHaveText('Batt');
     // Hint clears once the gesture ends
     expect(await hint.evaluate(el => parseFloat(el.style.opacity) || 0)).toBe(0);
     // Drag right → back to the previous page
-    await page.mouse.move(area.x + 40, y);
+    await page.mouse.move(tile.x + tile.width * 0.2, y);
     await page.mouse.down();
-    await page.mouse.move(area.x + area.width - 60, y, { steps: 8 });
+    await page.mouse.move(tile.x + tile.width * 0.75, y, { steps: 8 });
     await page.mouse.up();
     await expect(page.locator('.page-pill.active')).toHaveText('Drive');
   });
