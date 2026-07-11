@@ -3140,6 +3140,39 @@ const IndicatorLamp = ({ value, min, max, color, enums, invert, px }) => {
     </div>`;
 };
 
+// Linear bar gauge — the radial's straight sibling. Fills the tile as a
+// level bar or a column depending on the tile's shape (wider = horizontal,
+// taller = vertical). Same range/gradient/over-range behaviour as the
+// radial; value overlaid in the centre, min/max in the corners.
+const BarGauge = ({ value, min = 0, max = 100, unit, color, enums, decimals = 1, w, h }) => {
+  const v = (value == null || isNaN(value)) ? null : value;
+  const lo = min != null ? min : 0;
+  const hi = (max == null || max === lo) ? lo + 100 : max;
+  const frac = v == null ? 0 : Math.min(1, Math.max(0, (v - lo) / (hi - lo)));
+  const horiz = w >= h;
+  const custom = color && /^#[0-9a-fA-F]{6}$/.test(color);
+  const dir = horiz ? '90deg' : '0deg';
+  const grad = custom
+    ? 'linear-gradient(' + dir + ',' + hueShift(color, 21) + ',' + color + ' 50%,' + hueShift(color, -21) + ')'
+    : 'linear-gradient(' + dir + ',#4cc9f0,#54e6a4)';
+  const over = frac >= 0.92;
+  const vfs = Math.max(12, Math.min(30, Math.round(Math.min(w, h) * 0.42)));
+  const disp = v == null ? '—' : (enums ? String(enumLabel(enums, v)) : v.toFixed(decimals));
+  const showEnds = (horiz ? w : h) >= 70 && Math.min(w, h) >= 30;
+  return html`
+    <div class="bar-gauge ${horiz ? 'horiz' : 'vert'}" style=${'width:' + w + 'px;height:' + h + 'px'}>
+      <div class="bar-fill ${over ? 'over' : ''}"
+        style=${(horiz ? 'width:' : 'height:') + (frac * 100).toFixed(1) + '%;' + (over ? '' : 'background:' + grad)}></div>
+      <div class="bar-val g-val" style=${'font-size:' + vfs + 'px'}>
+        ${disp}${!enums && unit ? html`<span class="g-unit" style="display:inline;margin-left:4px;font-size:.5em">${unit}</span>` : ''}
+      </div>
+      ${showEnds && html`
+        <span class="bar-end bar-lo">${lo}</span>
+        <span class="bar-end bar-hi">${hi}</span>
+      `}
+    </div>`;
+};
+
 // Plain text tile: the live value as large text (with unit / enum label),
 // or fixed caption text when "Static text" is set — handy for labelling
 // dashboard sections.
@@ -3352,6 +3385,10 @@ const GaugeTileBody = ({ g, title, value, unit, enums, editing, canMode }) => {
             decimals=${g.decimals != null ? g.decimals : 1} w=${w - 6} h=${gh - 4} />`
         : (g.type === 'action')
         ? html`<${ActionTile} g=${g} canMode=${canMode} editing=${editing} w=${w - 10} h=${gh - 8} />`
+        : (g.type === 'bar')
+        ? html`<${BarGauge} value=${value} unit=${unit} enums=${enums} color=${g.color || ''}
+            decimals=${g.decimals != null ? g.decimals : 1} min=${g.min != null ? g.min : 0}
+            max=${(g.max == null || g.max === 0) ? 4000 : g.max} w=${w - 8} h=${gh - 4} />`
         : (g.type === 'toggle')
         ? html`<${ToggleTile} g=${g} value=${value} canMode=${canMode} editing=${editing} px=${Math.max(20, Math.min(w, gh) - 4)} />`
         : (g.type === 'slider')
@@ -3833,6 +3870,7 @@ const Gauges = () => {
                   }
                 }} style="width:auto;min-width:9.5em;padding:5px 30px 5px 8px">
                   <option value="radial">Radial</option>
+                  <option value="bar">Bar</option>
                   <option value="line">Line</option>
                   <option value="indicator">Indicator</option>
                   <option value="text">Text</option>

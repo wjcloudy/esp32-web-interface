@@ -401,6 +401,19 @@ button:disabled:hover { background: var(--surface); border-color: var(--border2)
 .action-tile-btn.ok { border-color: var(--green); color: var(--green); background: color-mix(in srgb, var(--green) 18%, transparent); }
 .action-tile-btn.fail { border-color: var(--red); color: var(--red); background: color-mix(in srgb, var(--red) 18%, transparent); }
 
+/* bar gauge: a tile-filling linear meter, level or column */
+.bar-gauge { position: relative; border: 1px solid var(--border2); border-radius: var(--radius-xs); background: var(--surface); overflow: hidden; }
+.bar-gauge .bar-fill { position: absolute; transition: width .3s ease, height .3s ease; }
+.bar-gauge.horiz .bar-fill { left: 0; top: 0; bottom: 0; }
+.bar-gauge.vert .bar-fill { left: 0; right: 0; bottom: 0; }
+.bar-gauge .bar-fill.over { background: var(--red); }
+.bar-gauge .bar-val { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-shadow: 0 1px 4px rgba(0,0,0,.35); }
+.bar-gauge .bar-end { position: absolute; font-size: .62rem; color: var(--text2); }
+.bar-gauge.horiz .bar-lo { left: 6px; bottom: 2px; }
+.bar-gauge.horiz .bar-hi { right: 6px; bottom: 2px; }
+.bar-gauge.vert .bar-lo { left: 50%; transform: translateX(-50%); bottom: 2px; }
+.bar-gauge.vert .bar-hi { left: 50%; transform: translateX(-50%); top: 2px; }
+
 /* toggle gauge tile: a scaled switch, red ring flash on failure */
 .toggle-tile {
   display: flex; flex-direction: column; align-items: center; justify-content: center;

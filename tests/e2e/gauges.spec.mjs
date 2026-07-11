@@ -651,6 +651,31 @@ test.describe('Gauges grid', () => {
     await expect.poll(async () => await mock.commands()).toContain('can-send 0x180 01 02');
   });
 
+  test('bar gauge orients to its tile and fills proportionally', async ({ page, mock }) => {
+    const layout = { v: 3, pages: [{ id: 1, name: 'Main', items: [
+      { id: 1, name: 'udc', type: 'bar', min: 0, max: 500, decimals: 1, x: 0, y: 0, w: 5, h: 1 },
+      { id: 2, name: 'udc', type: 'bar', min: 0, max: 500, decimals: 1, x: 0, y: 1, w: 1, h: 4 },
+    ] }] };
+    await fetch(mock.url + '/__test/put-file?name=gauges.json', { method: 'POST', body: JSON.stringify(layout) });
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    // Wide tile renders a level bar, tall tile a column. Both start
+    // horizontal for a frame until the ResizeObserver measures the real tile
+    // shape — wait for the vertical one to settle before asserting counts.
+    const vert = page.locator('.bar-gauge.vert');
+    await expect(vert).toBeVisible({ timeout: 5000 });
+    const horiz = page.locator('.bar-gauge.horiz');
+    await expect(horiz).toHaveCount(1);
+    // udc 398.5 of 0..500 = 79.7% fill, value + unit overlaid
+    await expect(horiz.locator('.bar-fill')).toHaveAttribute('style', /width:79\.7%/);
+    await expect(vert.locator('.bar-fill')).toHaveAttribute('style', /height:79\.7%/);
+    await expect(horiz).toContainText('398.5');
+    await expect(horiz).toContainText('V');
+    // Past 92% of range the fill goes to the warning colour
+    await fetch(mock.url + '/__test/spot?name=udc&value=480');
+    await expect(horiz.locator('.bar-fill')).toHaveClass(/over/, { timeout: 5000 });
+  });
+
   test('toggle tile flips a parameter and follows its live value', async ({ page, mock }) => {
     const layout = { v: 3, pages: [{ id: 1, name: 'Main', items: [
       { id: 1, type: 'toggle', param: 'potmin', onValue: 100, offValue: 0, label: 'Heat', x: 0, y: 0, w: 2, h: 2 },
