@@ -389,12 +389,18 @@ button:disabled:hover { background: var(--surface); border-color: var(--border2)
   font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
   color: var(--text3); margin: .6rem 0 .35rem;
 }
-/* action gauge tile: a button that fills its tile and flashes the outcome */
+/* action gauge tile: a button that fills its tile and flashes the outcome.
+   Minimal padding (the base button's 8/15px ate a third of a phone tile)
+   and labels may wrap onto two clamped lines before ellipsising. */
 .action-tile-btn {
   width: 100%; height: 100%; min-height: 0; justify-content: center;
-  font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-weight: 650; overflow: hidden; padding: 2px 4px;
   border: 1.5px solid var(--accent); color: var(--accent); background: var(--accent-glow);
   transition: background .15s, border-color .15s, color .15s;
+}
+.action-tile-btn .action-label {
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-clamp: 2;
+  overflow: hidden; text-align: center; line-height: 1.15; word-break: break-word; max-width: 100%;
 }
 .action-tile-btn:hover { transform: none; }
 .action-tile-btn.busy { opacity: .6; }

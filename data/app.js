@@ -3251,13 +3251,17 @@ const ActionTile = ({ g, canMode, editing, w, h }) => {
     setTimeout(() => setFlash(f => (f === 'ok' || f === 'fail') ? '' : f), 1200);
   };
   const label = g.label || actionSummary(g);
-  // Fit the label: shrink harder on small tiles (floor 8px under 44px tall)
-  // and ellipsise what still doesn't fit instead of clipping both ends
-  const fs = Math.max(h >= 44 ? 11 : 8, Math.min(18, Math.round(h * 0.3), Math.round((w * 1.7) / Math.max(3, label.length))));
+  // Fit the label: long labels wrap to two lines when there's height for it
+  // (halving the characters per line nearly doubles the fittable font),
+  // then shrink, then ellipsise as the last resort
+  const twoLine = label.length > Math.floor(w / 8) && h >= 26;
+  const perLine = twoLine ? Math.ceil(label.length / 2) + 1 : label.length;
+  const maxByH = twoLine ? Math.floor((h - 4) / 2.3) : Math.floor((h - 4) / 1.4);
+  const fs = Math.max(8, Math.min(18, maxByH, Math.round((w * 1.7) / Math.max(3, perLine))));
   return html`
     <button class="action-tile-btn ${flash}" onclick=${fire} title=${actionSummary(g) + (lastMsg ? ' — ' + lastMsg : '')}
       style=${'font-size:' + fs + 'px;pointer-events:' + (editing ? 'none' : 'auto')}>
-      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%">${flash === 'busy' ? '…' : label}</span>
+      <span class="action-label">${flash === 'busy' ? '…' : label}</span>
     </button>`;
 };
 
