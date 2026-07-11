@@ -3335,7 +3335,7 @@ const Support = () => html`
 // remounts it (which would drop the accumulated history). `points` sets the
 // visible history length and `sampleMs` how often a sample is taken from the
 // ~100ms stream — together they control the scroll rate/time window.
-const GaugeLine = ({ name, name2, min, max, value, value2, unit, color, color2, enums, w = 230, h = 175, points = 20, sampleMs = 100, decimals = 1 }) => {
+const GaugeLine = ({ name, name2, min, max, min2, max2, value, value2, unit, color, color2, enums, w = 230, h = 175, points = 20, sampleMs = 100, decimals = 1 }) => {
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
   const lastSampleRef = useRef(0);
@@ -3349,8 +3349,12 @@ const GaugeLine = ({ name, name2, min, max, value, value2, unit, color, color2, 
       const yMax = max != null && max !== 0 ? max : 4000;
       const col = color || colours[0];
       const col2 = color2 || colours[2];
-      const datasets = [{ label: name, data: [], borderColor: col, backgroundColor: col + '22', fill: !dual, pointRadius: 0, tension: 0.3 }];
-      if (dual) datasets.push({ label: name2, data: [], borderColor: col2, backgroundColor: col2 + '22', fill: false, pointRadius: 0, tension: 0.3 });
+      // Second series can have its own scale, drawn on the right. Falls back
+      // to the primary range when its min/max aren't set.
+      const y2Min = min2 != null ? min2 : yMin;
+      const y2Max = (max2 != null && max2 !== 0) ? max2 : yMax;
+      const datasets = [{ label: name, data: [], borderColor: col, backgroundColor: col + '22', fill: !dual, pointRadius: 0, tension: 0.3, yAxisID: 'y' }];
+      if (dual) datasets.push({ label: name2, data: [], borderColor: col2, backgroundColor: col2 + '22', fill: false, pointRadius: 0, tension: 0.3, yAxisID: 'y2' });
       chartRef.current = new Chart(canvasRef.current, {
         type: 'line', data: { datasets },
         options: {
@@ -3360,8 +3364,11 @@ const GaugeLine = ({ name, name2, min, max, value, value2, unit, color, color2, 
           plugins: { legend: { display: false } },
           scales: {
             x: { type: 'linear', display: false },
-            y: { type: 'linear', display: true, min: yMin, max: yMax,
-                 ticks: { font: { size: 9 }, stepSize: ((yMax - yMin) / 2) || 1, maxTicksLimit: 3 } }
+            y: { type: 'linear', display: true, position: 'left', min: yMin, max: yMax,
+                 ticks: { color: col, font: { size: 9 }, stepSize: ((yMax - yMin) / 2) || 1, maxTicksLimit: 3 } },
+            ...(dual ? { y2: { type: 'linear', display: true, position: 'right', min: y2Min, max: y2Max,
+                 grid: { drawOnChartArea: false },
+                 ticks: { color: col2, font: { size: 9 }, stepSize: ((y2Max - y2Min) / 2) || 1, maxTicksLimit: 3 } } } : {}),
           }
         }
       });
@@ -3386,17 +3393,26 @@ const GaugeLine = ({ name, name2, min, max, value, value2, unit, color, color2, 
     chart.options.scales.y.max = yMax;
     chart.options.scales.y.ticks.stepSize = ((yMax - yMin) / 2) || 1;
     const col = color || colours[0];
+    chart.options.scales.y.ticks.color = col;
     if (chart.data.datasets[0]) {
       chart.data.datasets[0].borderColor = col;
       chart.data.datasets[0].backgroundColor = col + '22';
     }
     const col2 = color2 || colours[2];
+    if (chart.options.scales.y2) {
+      const y2Min = min2 != null ? min2 : yMin;
+      const y2Max = (max2 != null && max2 !== 0) ? max2 : yMax;
+      chart.options.scales.y2.min = y2Min;
+      chart.options.scales.y2.max = y2Max;
+      chart.options.scales.y2.ticks.stepSize = ((y2Max - y2Min) / 2) || 1;
+      chart.options.scales.y2.ticks.color = col2;
+    }
     if (chart.data.datasets[1]) {
       chart.data.datasets[1].borderColor = col2;
       chart.data.datasets[1].backgroundColor = col2 + '22';
     }
     chart.update('none');
-  }, [min, max, color, color2]);
+  }, [min, max, min2, max2, color, color2]);
 
   // Shrinking the history trims the tail immediately
   useEffect(() => {
@@ -4053,6 +4069,7 @@ const GaugeTileBody = ({ g, title, value, value2, unit, enums, editing, canMode,
           a phone 2x1 leaves just that, and short text still reads */ ''}
       ${w > 12 && (g.type === 'text' ? gh > 7 : gh > 12) && ((g.type === 'line')
         ? html`<${GaugeLine} key=${g.id + '-' + (g.name2 || '')} name=${g.name} name2=${g.name2 || ''} min=${g.min} max=${g.max}
+            min2=${g.min2} max2=${g.max2}
             value=${value} value2=${value2} unit=${unit} color=${g.color || ''} color2=${g.color2 || ''} enums=${enums}
             points=${g.points || 20} sampleMs=${g.sampleMs || 100} decimals=${g.decimals != null ? g.decimals : 1}
             w=${w - 4} h=${gh - 2} />`
@@ -5076,6 +5093,19 @@ const Gauges = () => {
                     ${cfg.name2 && html`<button onclick=${() => updateGaugeConfig(cfg.id, 'name2', undefined)} title="Remove the second series" style="width:auto;padding:2px 8px;color:var(--red)">×</button>`}
                   </div>
                   <p style="font-size:.72rem;color:var(--text3);margin:0">Optional second value plotted on the same chart — e.g. heatsink and motor temperature together.</p>
+                  ${cfg.name2 && html`
+                    <div style="display:flex;gap:8px;align-items:center">
+                      <label style="width:4.5em">2nd min</label>
+                      <input id="gauge-min2" type="number" step="any" value=${cfg.min2 != null ? cfg.min2 : ''} placeholder="(1st)"
+                        oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'min2', isNaN(n) ? undefined : n); }}
+                        style="width:6em;padding:5px 6px" />
+                      <label>Max</label>
+                      <input id="gauge-max2" type="number" step="any" value=${cfg.max2 != null ? cfg.max2 : ''} placeholder="(1st)"
+                        oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'max2', isNaN(n) ? undefined : n); }}
+                        style="width:6em;padding:5px 6px" />
+                    </div>
+                    <p style="font-size:.72rem;color:var(--text3);margin:0">Scale for the second series, drawn on the right of the graph. Leave blank to share the main scale (left).</p>
+                  `}
                 ` : ''}
                 ${cfg.type !== 'indicator' ? decimalsRow : ''}
               `}

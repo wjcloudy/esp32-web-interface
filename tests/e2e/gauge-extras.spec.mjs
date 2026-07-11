@@ -99,21 +99,30 @@ test.describe('Gauge extras', () => {
     await expect(tile.locator('.gauge-tile-name')).toContainText('udc*2');
   });
 
-  test('line tiles plot a second value with both live readouts', async ({ page, mock }) => {
+  test('line tiles plot a second value with its own right-hand scale', async ({ page, mock }) => {
     await seedLayout(mock, [
-      { id: 1, name: 'udc', name2: 'tmphs', type: 'line', min: 0, max: 500, x: 0, y: 0, w: 5, h: 3 },
+      { id: 1, name: 'udc', name2: 'tmphs', type: 'line', min: 0, max: 500, min2: 0, max2: 120, x: 0, y: 0, w: 5, h: 3 },
     ]);
     await openApp(page, mock);
     await gotoTab(page, 'Gauges');
     const tile = page.locator('.gauge-tile').first();
     await expect(tile).toContainText('398.5');
     await expect(tile).toContainText('31.2');
-    // Both series made it onto the chart
-    await expect.poll(() => page.evaluate(() => {
+    // Both series present, second on a right-hand axis with its own range
+    const chartInfo = await page.evaluate(() => {
       const canvas = document.querySelector('.gauge-tile canvas');
       const c = canvas && window.Chart.getChart(canvas);
-      return c ? c.data.datasets.length : 0;
-    })).toBe(2);
+      if (!c) return null;
+      return {
+        datasets: c.data.datasets.length,
+        ds1Axis: c.data.datasets[1].yAxisID,
+        y2Pos: c.options.scales.y2 && c.options.scales.y2.position,
+        y2Min: c.options.scales.y2 && c.options.scales.y2.min,
+        y2Max: c.options.scales.y2 && c.options.scales.y2.max,
+        yMax: c.options.scales.y.max,
+      };
+    });
+    expect(chartInfo).toMatchObject({ datasets: 2, ds1Axis: 'y2', y2Pos: 'right', y2Min: 0, y2Max: 120, yMax: 500 });
   });
 
   test('values stream over SSE when the device offers it (no polling round-trips)', async ({ page, mock }) => {
