@@ -3156,8 +3156,11 @@ const BarGauge = ({ value, min = 0, max = 100, unit, color, enums, decimals = 1,
     ? 'linear-gradient(' + dir + ',' + hueShift(color, 21) + ',' + color + ' 50%,' + hueShift(color, -21) + ')'
     : 'linear-gradient(' + dir + ',#4cc9f0,#54e6a4)';
   const over = frac >= 0.92;
-  const vfs = Math.max(12, Math.min(30, Math.round(Math.min(w, h) * 0.42)));
   const disp = v == null ? '—' : (enums ? String(enumLabel(enums, v)) : v.toFixed(decimals));
+  // Fit the overlay by BOTH axes — a narrow column bar must shrink the
+  // value to its width, not just its shorter side
+  const vfs = Math.max(9, Math.min(30, Math.round(Math.min(w, h) * 0.42),
+    Math.round((w * 1.7) / Math.max(2, disp.length + (!enums && unit ? 1 : 0)))));
   const showEnds = (horiz ? w : h) >= 70 && Math.min(w, h) >= 30;
   return html`
     <div class="bar-gauge ${horiz ? 'horiz' : 'vert'}" style=${'width:' + w + 'px;height:' + h + 'px'}>
@@ -3240,11 +3243,13 @@ const ActionTile = ({ g, canMode, editing, w, h }) => {
     setTimeout(() => setFlash(f => (f === 'ok' || f === 'fail') ? '' : f), 1200);
   };
   const label = g.label || actionSummary(g);
-  const fs = Math.max(11, Math.min(18, Math.round(h * 0.3), Math.round((w * 1.6) / Math.max(3, label.length))));
+  // Fit the label: shrink harder on small tiles (floor 8px under 44px tall)
+  // and ellipsise what still doesn't fit instead of clipping both ends
+  const fs = Math.max(h >= 44 ? 11 : 8, Math.min(18, Math.round(h * 0.3), Math.round((w * 1.7) / Math.max(3, label.length))));
   return html`
     <button class="action-tile-btn ${flash}" onclick=${fire} title=${actionSummary(g) + (lastMsg ? ' — ' + lastMsg : '')}
       style=${'font-size:' + fs + 'px;pointer-events:' + (editing ? 'none' : 'auto')}>
-      ${flash === 'busy' ? '…' : label}
+      <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%">${flash === 'busy' ? '…' : label}</span>
     </button>`;
 };
 
@@ -3299,7 +3304,7 @@ const ToggleTile = ({ g, value, canMode, editing, px }) => {
 // (step from the Decimals setting). The value is sent on RELEASE — not per
 // pixel, which would flood the link — and the knob follows the streamed
 // parameter when idle, so it reflects changes made elsewhere.
-const SliderTile = ({ g, value, editing, w }) => {
+const SliderTile = ({ g, value, editing, w, h }) => {
   const [drag, setDrag] = useState(null); // position while the finger is down
   const [flash, setFlash] = useState('');
   const min = g.min != null ? g.min : 0;
@@ -3313,13 +3318,16 @@ const SliderTile = ({ g, value, editing, w }) => {
     setFlash(ok ? 'ok' : 'fail');
     setTimeout(() => setFlash(''), 1200);
   };
+  // Short tiles (phone 1-cell rows) put the value BESIDE the slider —
+  // stacked, the value row overflowed the tile bottom
+  const row = h != null && h < 42;
   return html`
-    <div class="slider-tile ${flash}" style=${'width:' + w + 'px;pointer-events:' + (editing ? 'none' : 'auto')} title=${g.param || ''}>
+    <div class="slider-tile ${flash} ${row ? 'row' : ''}" style=${'width:' + w + 'px;pointer-events:' + (editing ? 'none' : 'auto')} title=${g.param || ''}>
       <input type="range" min=${min} max=${max} step=${Math.pow(10, -dec)} value=${cur}
         oninput=${e => setDrag(parseFloat(e.target.value))}
         onchange=${e => send(parseFloat(e.target.value))}
         style=${g.color ? 'accent-color:' + g.color : ''} />
-      <div class="g-val" style="font-size:.92rem">${Number(cur).toFixed(dec)}</div>
+      <div class="g-val" style=${'font-size:' + (row ? '.78rem' : '.92rem')}>${Number(cur).toFixed(dec)}</div>
     </div>`;
 };
 
@@ -3393,7 +3401,7 @@ const GaugeTileBody = ({ g, title, value, unit, enums, editing, canMode }) => {
         : (g.type === 'toggle')
         ? html`<${ToggleTile} g=${g} value=${value} canMode=${canMode} editing=${editing} px=${Math.max(20, Math.min(w, gh) - 4)} />`
         : (g.type === 'slider')
-        ? html`<${SliderTile} g=${g} value=${value} editing=${editing} w=${w - 18} />`
+        ? html`<${SliderTile} g=${g} value=${value} editing=${editing} w=${w - 18} h=${gh - 4} />`
         : html`<${SvgGauge} id=${g.id} value=${value} unit=${unit} color=${g.color || ''} enums=${enums}
             px=${Math.max(40, Math.min(w, gh) - 4)} decimals=${g.decimals != null ? g.decimals : 1}
             min=${g.min != null ? g.min : 0} max=${(g.max == null || g.max === 0) ? 4000 : g.max} />`)}

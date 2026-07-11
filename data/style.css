@@ -407,7 +407,7 @@ button:disabled:hover { background: var(--surface); border-color: var(--border2)
 .bar-gauge.horiz .bar-fill { left: 0; top: 0; bottom: 0; }
 .bar-gauge.vert .bar-fill { left: 0; right: 0; bottom: 0; }
 .bar-gauge .bar-fill.over { background: var(--red); }
-.bar-gauge .bar-val { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-shadow: 0 1px 4px rgba(0,0,0,.35); }
+.bar-gauge .bar-val { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-shadow: 0 1px 4px rgba(0,0,0,.35); overflow: hidden; }
 .bar-gauge .bar-end { position: absolute; font-size: .62rem; color: var(--text2); }
 .bar-gauge.horiz .bar-lo { left: 6px; bottom: 2px; }
 .bar-gauge.horiz .bar-hi { right: 6px; bottom: 2px; }
@@ -421,9 +421,12 @@ button:disabled:hover { background: var(--surface); border-color: var(--border2)
 }
 .toggle-tile.fail .slider { box-shadow: 0 0 0 2px var(--red); }
 
-/* slider gauge tile */
-.slider-tile { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; max-width: 100%; }
-.slider-tile input[type="range"] { width: 100%; accent-color: var(--accent); cursor: pointer; }
+/* slider gauge tile; .row = short tiles put the value beside the slider */
+.slider-tile { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; max-width: 100%; overflow: hidden; }
+.slider-tile input[type="range"] { width: 100%; accent-color: var(--accent); cursor: pointer; min-width: 0; }
+.slider-tile.row { flex-direction: row; gap: 6px; }
+.slider-tile.row input[type="range"] { flex: 1; }
+.slider-tile.row .g-val { flex: none; white-space: nowrap; }
 .slider-tile.ok .g-val { color: var(--green); }
 .slider-tile.fail .g-val { color: var(--red); }
 
