@@ -65,9 +65,11 @@ test.describe('Parameter presets', () => {
     await page.locator('button', { hasText: 'New preset' }).click();
     const modal = page.locator('.modal-content');
     await modal.locator('button', { hasText: 'Add changed-from-default' }).click();
-    // Only fweak (80 vs default 67) differs in the fresh mock state
+    // Only fweak (80 vs default 67) counts — the mock's Set_Hour also differs
+    // from its default, but clock settings are excluded from the capture
     await expect(modal).toContainText('1 parameter(s)');
     await expect(modal).toContainText('fweak');
+    await expect(modal).not.toContainText('Set_Hour');
     await expect(modal.locator('input[type="number"]').first()).toHaveValue('80');
   });
 

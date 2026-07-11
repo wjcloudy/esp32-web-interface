@@ -994,7 +994,11 @@ const Parameters = () => {
     const have = new Set(pe.rows.map(r => r.name));
     return { ...pe, rows: [...pe.rows, ...names.filter(n => !have.has(n) && state.params[n]).map(n => ({ name: n, value: liveVal(n) }))] };
   });
+  // RTC clock-setting params always differ from their defaults — they're the
+  // time of day, not tune, so they'd pollute every capture
+  const PRESET_CLOCK_SKIP = /^Set_(Day|Hour|Min|Sec)$/;
   const changedFromDefault = () => Object.keys(state.params).filter(n => {
+    if (PRESET_CLOCK_SKIP.test(n)) return false;
     const p = state.params[n];
     return p.default !== undefined && parseFloat(p.value) !== parseFloat(p.default);
   });

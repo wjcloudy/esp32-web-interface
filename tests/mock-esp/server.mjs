@@ -36,6 +36,8 @@ function freshInverterState() {
       dirmode:  { unit: '0=Button, 1=Switch, 2=ButtonReversed, 3=SwitchReversed, 4=DefaultForward', value: 1, isparam: true, minimum: 0, maximum: 4, default: 1, category: 'Derate', i: 5 },
       potmin:   { unit: 'dig', value: 0, isparam: true, minimum: 0, maximum: 4095, default: 0, category: 'Throttle', i: 6 },
       potmax:   { unit: 'dig', value: 4095, isparam: true, minimum: 0, maximum: 4095, default: 4095, category: 'Throttle', i: 7 },
+      // RTC clock setting — always differs from default; preset capture must skip it
+      Set_Hour: { unit: 'Hours', value: 9, isparam: true, minimum: 0, maximum: 23, default: 0, category: 'Clock', i: 8 },
     },
     spot: {
       version: { unit: '4=5.27.R-sine', value: 4, isparam: false },
