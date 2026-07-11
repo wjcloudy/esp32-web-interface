@@ -4935,11 +4935,16 @@ const Gauges = () => {
                 ${cfg.center != null && html`
                   <div style="display:flex;gap:8px;align-items:center">
                     <label style="width:4.5em">Below</label>
-                    <input id="gauge-revcolor" type="color" value=${cfg.revColor || '#54e6a4'}
-                      oninput=${e => updateGaugeConfig(cfg.id, 'revColor', e.target.value)}
-                      style="width:34px;height:28px;padding:0;border:1px solid var(--border2);border-radius:6px;background:none;cursor:pointer" />
-                    ${cfg.revColor && html`<button onclick=${() => updateGaugeConfig(cfg.id, 'revColor', undefined)} style="font-size:.65rem;padding:2px 8px;width:auto" title="Use the main colour below centre too"><${Icon} n="undo" size=${11} /></button>`}
-                    <span style="font-size:.72rem;color:var(--text3)">colour for the reverse sweep below centre — e.g. green for regen</span>
+                    ${cfg.revColor ? html`
+                      <input id="gauge-revcolor" type="color" value=${cfg.revColor}
+                        oninput=${e => updateGaugeConfig(cfg.id, 'revColor', e.target.value)}
+                        style="width:34px;height:28px;padding:0;border:1px solid var(--border2);border-radius:6px;background:none;cursor:pointer" />
+                      <button onclick=${() => updateGaugeConfig(cfg.id, 'revColor', undefined)} style="font-size:.65rem;padding:2px 8px;width:auto" title="Use the main colour below centre too"><${Icon} n="undo" size=${11} />Clear</button>
+                      <span style="font-size:.72rem;color:var(--text3)">reverse-sweep colour below centre</span>
+                    ` : html`
+                      <button id="gauge-revcolor-set" onclick=${() => updateGaugeConfig(cfg.id, 'revColor', '#54e6a4')} style="font-size:.72rem;padding:3px 10px;width:auto">Set colour</button>
+                      <span style="font-size:.72rem;color:var(--text3)">give the reverse sweep below centre its own colour — e.g. green for regen</span>
+                    `}
                   </div>
                 `}
                 <label style="display:flex;gap:8px;align-items:center;cursor:pointer">

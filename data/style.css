@@ -837,3 +837,6 @@ td { font-variant-numeric: tabular-nums; }
   background: var(--surface); color: var(--text2);
 }
 .page-pill.active { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+/* pills are tabs, not action buttons — no lift on hover/active/select
+   (the generic button transform was nudging the selected pill up a pixel) */
+.page-pill:hover, .page-pill:active { transform: none; }
