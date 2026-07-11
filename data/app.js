@@ -4268,10 +4268,28 @@ const Gauges = () => {
     // Layout effect + correct initial cellHeight + animation off during init:
     // a page switch paints fully laid out in one frame instead of zooming in.
     // Animation comes back for the nice drag/drop transitions.
+    // Cell height is normally the square-cell size (width / columns), but on a
+    // very wide screen that makes tiles so tall the page scrolls vertically.
+    // Cap it so the current page's rows fit the viewport height — tiles go
+    // slightly wide-of-square rather than overflowing downward. A floor keeps
+    // them usable when a page packs many rows.
+    const MARGIN = 4;
+    const computeCellH = () => {
+      const w = el.clientWidth / GRID_COLS;
+      if (!(w > 0)) return 1;
+      let ch = w;
+      const rows = itemsRef.current.reduce((m, g) => Math.max(m, (g.y || 0) + (g.h || 1)), 0);
+      if (rows > 0) {
+        const availH = window.innerHeight - el.getBoundingClientRect().top - 8;
+        const capH = (availH - MARGIN * (rows + 1)) / rows;
+        if (capH > 30) ch = Math.min(ch, capH); // floor: never shrink below ~30px/cell
+      }
+      return Math.max(1, Math.round(ch));
+    };
     const grid = GridStack.init({
       column: GRID_COLS,
-      cellHeight: Math.max(1, Math.round(el.clientWidth / GRID_COLS)),
-      margin: 4,
+      cellHeight: computeCellH(),
+      margin: MARGIN,
       float: true,
       animate: false,
       staticGrid: !editing,
@@ -4279,12 +4297,12 @@ const Gauges = () => {
     }, el);
     gridApi.current = grid;
     requestAnimationFrame(() => { if (gridApi.current === grid) grid.setAnimation(true); });
-    const squareCells = () => {
-      const w = el.clientWidth / GRID_COLS;
-      if (w > 0) grid.cellHeight(Math.round(w));
-    };
-    const ro = new ResizeObserver(squareCells);
+    const sizeCells = () => { grid.cellHeight(computeCellH()); };
+    const ro = new ResizeObserver(sizeCells);
     ro.observe(el);
+    // Viewport-height changes (rotation, window resize) don't alter el's width,
+    // so the ResizeObserver won't fire — watch the window too for the height cap
+    window.addEventListener('resize', sizeCells);
     // gridstack strips gs-min-* attributes on first parse, so re-inits would
     // lose them — enforce minimums at engine level instead (1x1 for
     // indicator lamps, 2x2 for everything else)
@@ -4336,7 +4354,7 @@ const Gauges = () => {
       }
       if (n.w !== w || n.h !== h) grid.update(el, { w, h });
     });
-    return () => { ro.disconnect(); grid.destroy(false); gridApi.current = null; };
+    return () => { ro.disconnect(); window.removeEventListener('resize', sizeCells); grid.destroy(false); gridApi.current = null; };
     // types join: a type switch (e.g. radial -> indicator) changes the
     // engine minimums, so re-init to reapply them
   }, [activePage, layoutGen, items.length, editing, pages.length, items.map(g => g.type).join()]);

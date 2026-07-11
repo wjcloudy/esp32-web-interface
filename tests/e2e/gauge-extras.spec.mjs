@@ -236,6 +236,24 @@ test.describe('Gauge extras', () => {
     expect(await page.locator('.bar-fill').first().evaluate(el => parseFloat(el.style.width))).toBeGreaterThan(0);
   });
 
+  test('wide screens cap tile height so a tall page fits the viewport', async ({ page, mock }) => {
+    // Wide + short: square cells (width/10) would make a 9-row page ~2000px tall
+    await page.setViewportSize({ width: 2400, height: 700 });
+    await seedLayout(mock, [
+      { id: 1, name: 'udc', type: 'radial', min: 0, max: 500, x: 0, y: 0, w: 3, h: 3 },
+      { id: 2, name: 'udc', type: 'radial', min: 0, max: 500, x: 0, y: 3, w: 3, h: 3 },
+      { id: 3, name: 'udc', type: 'radial', min: 0, max: 500, x: 0, y: 6, w: 3, h: 3 },
+    ]);
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await page.locator('.grid-stack-item').nth(2).waitFor();
+    // Every tile's bottom sits within the viewport — no downward scroll needed
+    const maxBottom = await page.evaluate(() =>
+      [...document.querySelectorAll('.grid-stack-item')]
+        .reduce((m, el) => Math.max(m, el.getBoundingClientRect().bottom), 0));
+    expect(maxBottom).toBeLessThanOrEqual(700 + 2);
+  });
+
   test('full-screen mode hides the chrome and the exit button restores it', async ({ page, mock }) => {
     await seedLayout(mock, [
       { id: 1, name: 'udc', type: 'radial', min: 0, max: 500, x: 0, y: 0, w: 3, h: 3 },
