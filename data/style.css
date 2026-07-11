@@ -389,9 +389,14 @@ button:disabled:hover { background: var(--surface); border-color: var(--border2)
   font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
   color: var(--text3); margin: .6rem 0 .35rem;
 }
-/* preset rows in the Parameters action rail: uniform-height compact buttons,
-   wrapping onto a second line when the rail is narrow */
-.preset-row { display: flex; align-items: center; gap: 4px; width: 100%; flex-wrap: wrap; }
+/* preset rows in the Parameters action rail: each preset is its own boxed
+   card (name + button row) so it's obvious which buttons belong to which,
+   with uniform-height compact buttons */
+.preset-row {
+  display: flex; align-items: center; gap: 4px; width: 100%; flex-wrap: wrap;
+  padding: 6px 8px; background: var(--surface); border: 1px solid var(--border2);
+  border-radius: var(--radius-xs);
+}
 .preset-row .preset-name {
   flex: 1 1 100%; min-width: 0; font-size: .8rem; font-weight: 600;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
