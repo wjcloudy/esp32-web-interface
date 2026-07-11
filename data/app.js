@@ -4486,28 +4486,28 @@ const Gauges = () => {
     clearSwipeHint();
     if (editing || pages.length < 2) return;
     if (e.pointerType === 'mouse' && e.button !== 0) return; // left button only
-    if (e.target.closest('input, button, select, textarea, .action-tile-btn, .toggle-tile, .slider-tile, a')) return;
+    // Leave the header (pills, Auto-switch toggle, buttons) and any interactive
+    // tile to their own gestures — only the gauge grid area starts a swipe
+    if (e.target.closest('#gauges-head, #gauge-pages, input, button, select, textarea, label, .action-tile-btn, .toggle-tile, .slider-tile, a')) return;
     swipeRef.current = { x: e.clientX, y: e.clientY, t: performance.now() };
+    // Capture to this stable element NOW, at touch-down. On touch the pointer
+    // is otherwise implicitly captured to the target under the finger — a
+    // gauge's SVG/canvas — which the 100ms stream re-renders mid-drag,
+    // detaching the capture so move/up stop arriving (swipe worked over empty
+    // space but not over a live tile, only on touch). Capturing here beats
+    // that race. View-mode content is height-capped to fit, so giving up
+    // native vertical scroll for the gesture costs nothing.
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {}
   };
   // Live feedback: a gradient grows from the edge you're dragging toward, only
   // when there's a page that way. Driven straight through the ref so the drag
   // doesn't re-render (and disturb) the streaming gauges.
   const onSwipeMove = (e) => {
     const s = swipeRef.current, el = swipeHintRef.current;
-    if (!s) return;
+    if (!s || !el) return;
     const dx = e.clientX - s.x, dy = e.clientY - s.y;
     const dir = dx < 0 ? 1 : -1;
     const horizontal = Math.abs(dx) >= 8 && Math.abs(dx) > Math.abs(dy);
-    // On touch the pointer is implicitly captured to the pointerdown target —
-    // a gauge's SVG/canvas, which the 100ms stream re-renders mid-drag, so the
-    // capture detaches and we stop getting events (swipe worked over empty
-    // space but not over a live gauge, and only on touch). Re-capture to our
-    // stable handler element once the gesture is clearly horizontal.
-    if (horizontal && !s.captured) {
-      s.captured = true;
-      try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) {}
-    }
-    if (!el) return;
     if (!horizontal || !hasPageInDir(dir)) { el.style.opacity = 0; return; }
     // Glow the edge the incoming page enters from: swipe left (next) lights the
     // right edge, swipe right (previous) lights the left edge
