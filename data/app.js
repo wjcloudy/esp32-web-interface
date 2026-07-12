@@ -2975,7 +2975,7 @@ const Settings = () => {
   const [canPwrInv, setCanPwrInv] = useState(false);
   const [canEnPin, setCanEnPin] = useState('');
   const [canEnInv, setCanEnInv] = useState(false);
-  const [boardArch, setBoardArch] = useState('esp32');
+  const [boardArch, setBoardArch] = useState(''); // '' = unknown → offer no presets (don't guess the wrong chip's pins)
   // Interface settings as persisted on the device — drives the unsaved-change
   // hint and gates scanning (a scan runs on the SAVED config, not the form)
   const [savedCan, setSavedCan] = useState({ mode: false, speed: 2, rx: 4, tx: 5, pwr: '', pwrInv: false, en: '', enInv: false });

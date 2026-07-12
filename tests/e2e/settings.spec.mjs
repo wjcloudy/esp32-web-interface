@@ -78,6 +78,29 @@ test.describe('Settings tab', () => {
     await expect.poll(async () => (await mock.state()).settings.can_en_pin).toBe(-1);
   });
 
+  test('board presets are filtered to the device architecture', async ({ page, mock }) => {
+    // ESP32-S3 board: only its preset is offered
+    await fetch(mock.url + '/__test/set-arch?a=esp32s3');
+    await openApp(page, mock);
+    await gotoTab(page, 'Settings');
+    await page.locator('.seg button', { hasText: 'CAN Bus' }).click();
+    const preset = page.locator('#can-board-preset');
+    await expect(preset.locator('option', { hasText: 'T-2CAN' })).toHaveCount(1);
+    await expect(preset.locator('option', { hasText: 'Generic ESP32' })).toHaveCount(0);
+    await expect(preset.locator('option', { hasText: 'T-CAN485' })).toHaveCount(0);
+  });
+
+  test('no board presets shown when the device does not report an architecture', async ({ page, mock }) => {
+    // Old firmware (no arch field) must not guess — the preset dropdown is hidden
+    await fetch(mock.url + '/__test/set-arch'); // clear arch
+    await openApp(page, mock);
+    await gotoTab(page, 'Settings');
+    await page.locator('.seg button', { hasText: 'CAN Bus' }).click();
+    await expect(page.locator('#can-board-preset')).toHaveCount(0);
+    // The manual pin fields are still there
+    await expect(page.locator('#can-pwr-pin')).toBeVisible();
+  });
+
   test('device nickname saves to the device and shows in the sidebar and tab title', async ({ page, mock }) => {
     await openApp(page, mock);
     await gotoTab(page, 'Settings');

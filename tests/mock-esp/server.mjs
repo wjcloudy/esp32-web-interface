@@ -194,6 +194,11 @@ export function createMockEsp({ port = 0 } = {}) {
         Object.assign(otainfo, JSON.parse(body.toString() || '{}'));
         return text('ok');
       }
+      if (p === '/__test/set-arch') { // set the reported board arch, or omit it (blank)
+        const a = url.searchParams.get('a');
+        if (a) settings.arch = a; else delete settings.arch;
+        return text('ok');
+      }
 
       // --- firmware API ---
       if (p === '/cmd') {
