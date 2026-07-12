@@ -55,6 +55,29 @@ test.describe('Settings tab', () => {
     await expect(scan).toBeDisabled();
   });
 
+  test('CAN board preset fills the pins and transceiver enable pins persist', async ({ page, mock }) => {
+    await openApp(page, mock);
+    await gotoTab(page, 'Settings');
+    await page.locator('.seg button', { hasText: 'CAN Bus' }).click();
+    const preset = page.locator('#can-board-preset');
+    // Only presets for this board's architecture (mock = esp32) are offered
+    await expect(preset.locator('option', { hasText: 'LilyGO T-CAN485' })).toHaveCount(1);
+    await expect(preset.locator('option', { hasText: 'T-2CAN' })).toHaveCount(0); // ESP32-S3 only
+    await preset.selectOption({ label: 'LilyGO T-CAN485' });
+    // Enable pins fill from the preset
+    await expect(page.locator('#can-pwr-pin')).toHaveValue('16');
+    await expect(page.locator('#can-en-pin')).toHaveValue('23');
+    // Save and confirm everything landed on the device (incl. the inverted enable pin)
+    await page.locator('#iface-save').click();
+    await expect.poll(async () => (await mock.state()).settings.can_pwr_pin).toBe(16);
+    const s = (await mock.state()).settings;
+    expect(s).toMatchObject({ can_rx_pin: 26, can_tx_pin: 27, can_en_pin: 23, can_en_inv: true, can_pwr_inv: false });
+    // Blank enable pin round-trips as unused (-1)
+    await page.locator('#can-en-pin').fill('');
+    await page.locator('#iface-save').click();
+    await expect.poll(async () => (await mock.state()).settings.can_en_pin).toBe(-1);
+  });
+
   test('device nickname saves to the device and shows in the sidebar and tab title', async ({ page, mock }) => {
     await openApp(page, mock);
     await gotoTab(page, 'Settings');

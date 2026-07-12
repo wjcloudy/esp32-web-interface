@@ -2823,6 +2823,18 @@ const SINGLE_FILES = [
   { key: 'uiprefs', file: 'uiprefs.json', label: 'UI preferences', check: d => typeof d === 'object' && !d.type },
 ];
 
+// CAN board presets fill the interface pins in one tap. `arch` gates which are
+// offered — pin numbers are chip-specific, so the UI only shows presets built
+// for the running board (reported as `arch` by /settings). pwr = 5V-boost /
+// transceiver power enable, en = transceiver standby(silent) enable; *Inv
+// flips the level that ENABLES (default HIGH; inverted = LOW, e.g. an
+// active-low standby pin like the T-CAN485's).
+const CAN_BOARD_PRESETS = [
+  { id: 'generic-esp32', name: 'Generic ESP32 (GPIO4/5)', arch: 'esp32', rx: 4, tx: 5 },
+  { id: 't-can485', name: 'LilyGO T-CAN485', arch: 'esp32', rx: 26, tx: 27, pwr: 16, pwrInv: false, en: 23, enInv: true },
+  { id: 't-2can', name: 'LilyGO T-2CAN', arch: 'esp32s3', rx: 6, tx: 7 },
+];
+
 const Settings = () => {
   const { state, dispatch } = useContext(Store);
   const [txrxSwapped, setTxrxSwapped] = useState(true);
@@ -2957,9 +2969,16 @@ const Settings = () => {
   const [canSpeed, setCanSpeed] = useState(2);
   const [canRxPin, setCanRxPin] = useState(4);
   const [canTxPin, setCanTxPin] = useState(5);
+  // Optional transceiver enable pins (strings so blank = unused); board arch
+  // gates which board presets are offered
+  const [canPwrPin, setCanPwrPin] = useState('');
+  const [canPwrInv, setCanPwrInv] = useState(false);
+  const [canEnPin, setCanEnPin] = useState('');
+  const [canEnInv, setCanEnInv] = useState(false);
+  const [boardArch, setBoardArch] = useState('esp32');
   // Interface settings as persisted on the device — drives the unsaved-change
   // hint and gates scanning (a scan runs on the SAVED config, not the form)
-  const [savedCan, setSavedCan] = useState({ mode: false, speed: 2, rx: 4, tx: 5 });
+  const [savedCan, setSavedCan] = useState({ mode: false, speed: 2, rx: 4, tx: 5, pwr: '', pwrInv: false, en: '', enInv: false });
   const [scanState, setScanState] = useState(''); // '' | 'scanning' | result message
 
   useEffect(() => {
@@ -2976,10 +2995,16 @@ const Settings = () => {
           if (data.can_speed !== undefined) setCanSpeed(data.can_speed);
           if (data.can_rx_pin) setCanRxPin(data.can_rx_pin);
           if (data.can_tx_pin) setCanTxPin(data.can_tx_pin);
+          const pwr = (data.can_pwr_pin != null && data.can_pwr_pin >= 0) ? String(data.can_pwr_pin) : '';
+          const en = (data.can_en_pin != null && data.can_en_pin >= 0) ? String(data.can_en_pin) : '';
+          setCanPwrPin(pwr); setCanPwrInv(data.can_pwr_inv === true);
+          setCanEnPin(en); setCanEnInv(data.can_en_inv === true);
+          if (data.arch) setBoardArch(data.arch);
           setSavedCan({
             mode: data.can_mode === true,
             speed: data.can_speed !== undefined ? data.can_speed : 2,
             rx: data.can_rx_pin || 4, tx: data.can_tx_pin || 5,
+            pwr, pwrInv: data.can_pwr_inv === true, en, enInv: data.can_en_inv === true,
           });
         }
       } catch (e) { /* use default */ }
@@ -3032,8 +3057,19 @@ const Settings = () => {
   // CAN mode. Scanning is only meaningful once the device runs the saved
   // CAN config, so the Scan button stays disabled until then.
   const canDirty = canMode !== savedCan.mode ||
-    (canMode && (canSpeed !== savedCan.speed || canRxPin !== savedCan.rx || canTxPin !== savedCan.tx));
+    (canMode && (canSpeed !== savedCan.speed || canRxPin !== savedCan.rx || canTxPin !== savedCan.tx ||
+      canPwrPin !== savedCan.pwr || canPwrInv !== savedCan.pwrInv || canEnPin !== savedCan.en || canEnInv !== savedCan.enInv));
   const scanReady = savedCan.mode && !canDirty;
+  // Board presets fill the CAN pins in one go; only offer those built for this
+  // chip (ESP32 vs ESP32-S3 have different valid GPIOs)
+  const applyBoardPreset = (id) => {
+    const bp = CAN_BOARD_PRESETS.find(b => b.id === id);
+    if (!bp) return;
+    setCanRxPin(bp.rx); setCanTxPin(bp.tx);
+    setCanPwrPin(bp.pwr != null ? String(bp.pwr) : ''); setCanPwrInv(!!bp.pwrInv);
+    setCanEnPin(bp.en != null ? String(bp.en) : ''); setCanEnInv(!!bp.enInv);
+    if (bp.speed != null) setCanSpeed(bp.speed);
+  };
 
   if (loading) return html`<div class="tabdiv main-content" style="display:flex"><p>Loading...</p></div>`;
 
@@ -3067,11 +3103,15 @@ const Settings = () => {
                 params.set('can_speed', canSpeed);
                 params.set('can_rx_pin', canRxPin);
                 params.set('can_tx_pin', canTxPin);
+                params.set('can_pwr_pin', canPwrPin); // blank = unused
+                params.set('can_pwr_inv', canPwrInv ? '1' : '0');
+                params.set('can_en_pin', canEnPin);
+                params.set('can_en_inv', canEnInv ? '1' : '0');
                 params.set('can_nodes', JSON.stringify(state.canNodes));
                 await fetch('/settings?' + params.toString(), { method: 'POST' });
                 dispatch({ type: 'SET_CAN_CONFIG', payload: { canMode, canNodeId: bootNode } });
                 if (canMode) dispatch({ type: 'SET_CAN_NODE', payload: bootNode });
-                setSavedCan({ mode: canMode, speed: canSpeed, rx: canRxPin, tx: canTxPin });
+                setSavedCan({ mode: canMode, speed: canSpeed, rx: canRxPin, tx: canTxPin, pwr: canPwrPin, pwrInv: canPwrInv, en: canEnPin, enInv: canEnInv });
                 setTimeout(() => setSaving(false), 2000);
               } catch (e) { setSaving(false); }
             }} style="font-size:.75rem;padding:4px 14px;margin-left:auto;${canDirty ? 'border-color:var(--amber);color:var(--amber)' : ''}" disabled=${saving}><${Icon} n="save" />${saving ? 'Saving...' : 'Save'}</button>
@@ -3100,6 +3140,17 @@ const Settings = () => {
 
           ${canMode && html`
             <p class="settings-subhead">CAN Bus</p>
+            ${(() => {
+              const boards = CAN_BOARD_PRESETS.filter(b => b.arch === boardArch);
+              return boards.length ? html`
+                <label style="font-size:.75rem;display:block;margin-bottom:.35rem">Board preset
+                  <select id="can-board-preset" class="styled" style="font-size:.7rem;margin-left:6px"
+                    onchange=${e => { if (e.target.value) applyBoardPreset(e.target.value); }}>
+                    <option value="">Custom / choose a board…</option>
+                    ${boards.map(b => html`<option value=${b.id}>${b.name}</option>`)}
+                  </select>
+                </label>` : '';
+            })()}
             <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:.25rem;align-items:center">
               <label style="font-size:.75rem">Speed <select value=${canSpeed} onchange=${e => setCanSpeed(parseInt(e.target.value))} class="styled" style="font-size:.7rem">
                   <option value="0">125k</option>
@@ -3110,7 +3161,21 @@ const Settings = () => {
               <label style="font-size:.75rem">RX Pin <input type="number" value=${canRxPin} oninput=${e => setCanRxPin(parseInt(e.target.value)||4)} style="width:4em;padding:2px 4px" /></label>
               <label style="font-size:.75rem">TX Pin <input type="number" value=${canTxPin} oninput=${e => setCanTxPin(parseInt(e.target.value)||5)} style="width:4em;padding:2px 4px" /></label>
             </div>
-            <p style="color:var(--text2);font-size:.8rem;margin:0 0 .75rem">Speed and pins apply to all devices on the bus. Default: GPIO4 (RX), GPIO5 (TX).</p>
+            <p style="color:var(--text2);font-size:.8rem;margin:0 0 .5rem">Speed and pins apply to all devices on the bus. Default: GPIO4 (RX), GPIO5 (TX).</p>
+            ${/* Optional transceiver enable pins for boards like the T-CAN485.
+                Blank = unused. Invert = drive LOW to enable (default HIGH). */ ''}
+            <p class="settings-subhead">Transceiver enable pins <span style="font-weight:400;color:var(--text3)">(optional)</span></p>
+            <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:.25rem">
+              <label style="font-size:.75rem">5V/boost pin <input id="can-pwr-pin" type="number" value=${canPwrPin} placeholder="—"
+                oninput=${e => setCanPwrPin(e.target.value)} style="width:4em;padding:2px 4px" /></label>
+              <label style="font-size:.72rem;display:inline-flex;align-items:center;gap:4px"><input type="checkbox" checked=${canPwrInv} onchange=${e => setCanPwrInv(e.target.checked)} style="width:auto" />invert</label>
+              <label style="font-size:.75rem">Enable pin <input id="can-en-pin" type="number" value=${canEnPin} placeholder="—"
+                oninput=${e => setCanEnPin(e.target.value)} style="width:4em;padding:2px 4px" /></label>
+              <label style="font-size:.72rem;display:inline-flex;align-items:center;gap:4px"><input type="checkbox" checked=${canEnInv} onchange=${e => setCanEnInv(e.target.checked)} style="width:auto" />invert</label>
+            </div>
+            <p style="color:var(--text2);font-size:.78rem;margin:0 0 .75rem">
+              For boards that gate transceiver power or standby (e.g. LilyGO T-CAN485: 5V pin 16, enable pin 23 inverted). Each pin is driven to its enable level at boot in CAN mode; <b>invert</b> = drive LOW to enable. Leave blank if not needed.
+            </p>
 
             <p class="settings-subhead">CAN Devices</p>
             <p style="color:var(--text2);font-size:.78rem;margin:0 0 .5rem">

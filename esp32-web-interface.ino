@@ -96,7 +96,33 @@ int canNodeId = CAN_NODE_ID_MIN;
 int canSpeed = 2; // 0=125k, 1=250k, 2=500k
 int canRxPin = CAN_RX_PIN;
 int canTxPin = CAN_TX_PIN;
+// Optional transceiver control pins for boards like the LilyGO T-CAN485:
+// a 5V-boost/power enable and a transceiver standby(silent)-enable. -1 = unused.
+// The *_inv flag flips the level asserted to ENABLE (default: drive HIGH to
+// enable; inverted: drive LOW — e.g. an active-low standby pin).
+int canPwrPin = -1;   bool canPwrInv = false;  // 5V boost / transceiver power
+int canEnPin  = -1;   bool canEnInv  = false;  // transceiver standby / silent enable
 char uartMessBuff[UART_MESSBUF_SIZE];
+
+// Build architecture — the UI only offers board presets whose pin numbers
+// suit this chip (ESP32 vs ESP32-S3 have different valid GPIOs)
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+  #define BOARD_ARCH "esp32s3"
+#elif defined(CONFIG_IDF_TARGET_ESP32S2)
+  #define BOARD_ARCH "esp32s2"
+#elif defined(CONFIG_IDF_TARGET_ESP32C3)
+  #define BOARD_ARCH "esp32c3"
+#else
+  #define BOARD_ARCH "esp32"
+#endif
+
+// Drive the optional CAN transceiver enable pins to their active level (call
+// before bringing up the TWAI driver). No-op for pins left unconfigured.
+static void applyCanEnablePins()
+{
+  if (canPwrPin >= 0) { pinMode(canPwrPin, OUTPUT); digitalWrite(canPwrPin, canPwrInv ? LOW : HIGH); }
+  if (canEnPin  >= 0) { pinMode(canEnPin,  OUTPUT); digitalWrite(canEnPin,  canEnInv  ? LOW : HIGH); }
+}
 
 // CAN parameter cache (downloaded from device via segmented SDO)
 String canParamJson = "";
@@ -2012,12 +2038,14 @@ static void saveSettings(const String& canNodesJson)
 {
   File f = SPIFFS.open("/settings.json", "w");
   if (f) {
-    f.printf("{\"dev_name\":\"%s\",\"txrx_swapped\":%s,\"ap_fallback\":%s,\"can_mode\":%s,\"can_node_id\":%d,\"can_speed\":%d,\"can_rx_pin\":%d,\"can_tx_pin\":%d,\"can_nodes\":%s}",
+    f.printf("{\"dev_name\":\"%s\",\"txrx_swapped\":%s,\"ap_fallback\":%s,\"can_mode\":%s,\"can_node_id\":%d,\"can_speed\":%d,\"can_rx_pin\":%d,\"can_tx_pin\":%d,\"can_pwr_pin\":%d,\"can_pwr_inv\":%s,\"can_en_pin\":%d,\"can_en_inv\":%s,\"can_nodes\":%s}",
              jsonEscape(deviceName).c_str(),
              txrxSwapped ? "true" : "false",
              apFallback ? "true" : "false",
              canMode ? "true" : "false",
              canNodeId, canSpeed, canRxPin, canTxPin,
+             canPwrPin, canPwrInv ? "true" : "false",
+             canEnPin, canEnInv ? "true" : "false",
              canNodesJson.c_str());
     f.close();
   }
@@ -2075,6 +2103,13 @@ static void loadSettings()
       if (rp >= 0) canRxPin = json.substring(rp + 13).toInt();
       int tp = json.indexOf("\"can_tx_pin\":");
       if (tp >= 0) canTxPin = json.substring(tp + 13).toInt();
+      // Optional transceiver enable pins (absent in older files → stay -1/off)
+      int pw = json.indexOf("\"can_pwr_pin\":");
+      if (pw >= 0) canPwrPin = json.substring(pw + 14).toInt();
+      canPwrInv = json.indexOf("\"can_pwr_inv\":true") >= 0;
+      int en = json.indexOf("\"can_en_pin\":");
+      if (en >= 0) canEnPin = json.substring(en + 13).toInt();
+      canEnInv = json.indexOf("\"can_en_inv\":true") >= 0;
 
       if (canNodeId < CAN_NODE_ID_MIN) canNodeId = CAN_NODE_ID_MIN;
       if (canNodeId > CAN_NODE_ID_MAX) canNodeId = CAN_NODE_ID_MAX;
@@ -2111,10 +2146,17 @@ static void handleSettings()
     if (server.hasArg("can_speed")) canSpeed = server.arg("can_speed").toInt();
     if (server.hasArg("can_rx_pin")) canRxPin = server.arg("can_rx_pin").toInt();
     if (server.hasArg("can_tx_pin")) canTxPin = server.arg("can_tx_pin").toInt();
+    // Optional transceiver enable pins: blank/absent → -1 (unused)
+    if (server.hasArg("can_pwr_pin")) { String v = server.arg("can_pwr_pin"); canPwrPin = v.length() ? v.toInt() : -1; }
+    if (server.hasArg("can_pwr_inv")) canPwrInv = (server.arg("can_pwr_inv") == "1");
+    if (server.hasArg("can_en_pin"))  { String v = server.arg("can_en_pin");  canEnPin  = v.length() ? v.toInt() : -1; }
+    if (server.hasArg("can_en_inv"))  canEnInv  = (server.arg("can_en_inv") == "1");
     // Validate GPIO numbers — garbage would persist and silently kill CAN
     // mode at every boot until the settings file is fixed
     if (canRxPin < 0 || canRxPin > 48) canRxPin = CAN_RX_PIN;
     if (canTxPin < 0 || canTxPin > 48) canTxPin = CAN_TX_PIN;
+    if (canPwrPin < -1 || canPwrPin > 48) canPwrPin = -1;
+    if (canEnPin  < -1 || canEnPin  > 48) canEnPin  = -1;
     if (canNodeId < CAN_NODE_ID_MIN) canNodeId = CAN_NODE_ID_MIN;
     if (canNodeId > CAN_NODE_ID_MAX) canNodeId = CAN_NODE_ID_MAX;
     if (canSpeed < 0 || canSpeed > 2) canSpeed = 2;
@@ -2129,6 +2171,7 @@ static void handleSettings()
     if (canMode) {
       CanSpeed speed = (canSpeed == 0) ? CAN_125K : (canSpeed == 1) ? CAN_250K : CAN_500K;
       canDriverStop();
+      applyCanEnablePins(); // power/wake the transceiver before bringing up TWAI
       canDriverInitForDevice(canNodeId, speed, canTxPin, canRxPin);
       canParamCacheLoaded = false;
       canParamJson = "";
@@ -2152,6 +2195,15 @@ static void handleSettings()
     json += canRxPin;
     json += ",\"can_tx_pin\":";
     json += canTxPin;
+    json += ",\"can_pwr_pin\":";
+    json += canPwrPin;
+    json += ",\"can_pwr_inv\":";
+    json += canPwrInv ? "true" : "false";
+    json += ",\"can_en_pin\":";
+    json += canEnPin;
+    json += ",\"can_en_inv\":";
+    json += canEnInv ? "true" : "false";
+    json += ",\"arch\":\"" BOARD_ARCH "\"";
     json += ",\"sse_port\":";
     json += SSE_PORT;
     // Return can_nodes from settings file if present
@@ -2405,6 +2457,7 @@ void setup(void){
   // CAN bus initialization (if enabled) — filter on the saved active node
   if (canMode) {
     CanSpeed speed = (canSpeed == 0) ? CAN_125K : (canSpeed == 1) ? CAN_250K : CAN_500K;
+    applyCanEnablePins(); // power/wake the transceiver (T-CAN485 etc.) first
     if (canDriverInitForDevice(canNodeId, speed, canTxPin, canRxPin)) {
       DBG_OUTPUT_PORT.printf("CAN bus started (node %d, %dkbps, RX=%d TX=%d)\n",
                              canNodeId, (canSpeed == 0 ? 125 : canSpeed == 1 ? 250 : 500),
