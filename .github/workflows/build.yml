@@ -66,19 +66,19 @@ jobs:
         run: |
           ESPTOOL=~/.platformio/packages/tool-esptoolpy/esptool.py
           BOOT_APP0=~/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin
-          python "$ESPTOOL" --chip esp32 merge_bin -o "esp32_wemos_${VER}-0x000.bin" \
+          python "$ESPTOOL" --chip esp32 merge_bin -o "esp32_${VER}-0x000.bin" \
             0x1000   out/esp32_wemos/bootloader.bin \
             0x8000   out/esp32_wemos/partitions.bin \
             0xe000   "$BOOT_APP0" \
             0x10000  out/esp32_wemos/firmware.bin \
             0x290000 out/esp32_wemos/spiffs.bin
-          python "$ESPTOOL" --chip esp32s3 merge_bin -o "esp32_t2can_${VER}-0x000.bin" \
+          python "$ESPTOOL" --chip esp32s3 merge_bin -o "esp32s3_${VER}-0x000.bin" \
             0x0      out/esp32_t2can/bootloader.bin \
             0x8000   out/esp32_t2can/partitions.bin \
             0xe000   "$BOOT_APP0" \
             0x10000  out/esp32_t2can/firmware.bin \
             0xc90000 out/esp32_t2can/spiffs.bin
-          ls -la esp32_wemos_*.bin esp32_t2can_*.bin
+          ls -la esp32_*.bin esp32s3_*.bin
 
       # Combined OTA images for in-browser updates from the web interface:
       # header ("OIWEBOTA" + uint32 LE firmware len + uint32 LE filesystem len)
@@ -90,8 +90,8 @@ jobs:
           import struct, os
           ver = os.environ['VER']
           targets = {
-              'esp32_wemos': 'esp32_wemos_%s-ota.bin' % ver,
-              'esp32_t2can': 'esp32_t2can_%s-ota.bin' % ver,
+              'esp32_wemos': 'esp32_%s-ota.bin' % ver,
+              'esp32_t2can': 'esp32s3_%s-ota.bin' % ver,
           }
           for env, out in targets.items():
               fw = open('out/%s/firmware.bin' % env, 'rb').read()
@@ -100,36 +100,36 @@ jobs:
               open(out, 'wb').write(hdr + fw + fs)
               print('wrote', out, len(hdr) + len(fw) + len(fs), 'bytes')
           PY
-          ls -la esp32_wemos_*-ota.bin esp32_t2can_*-ota.bin
+          ls -la esp32_*-ota.bin esp32s3_*-ota.bin
 
       # Note: Actions artifacts always download as zips (GitHub limitation) —
       # raw .bin downloads come from release assets on v* tags
-      - name: Upload Wemos OTA image
+      - name: Upload esp32 OTA image
         uses: actions/upload-artifact@v7
         with:
-          name: esp32_wemos_${{ env.VER }}-ota
-          path: esp32_wemos_${{ env.VER }}-ota.bin
+          name: esp32_${{ env.VER }}-ota
+          path: esp32_${{ env.VER }}-ota.bin
           retention-days: 30
 
-      - name: Upload T-2Can OTA image
+      - name: Upload esp32s3 OTA image
         uses: actions/upload-artifact@v7
         with:
-          name: esp32_t2can_${{ env.VER }}-ota
-          path: esp32_t2can_${{ env.VER }}-ota.bin
+          name: esp32s3_${{ env.VER }}-ota
+          path: esp32s3_${{ env.VER }}-ota.bin
           retention-days: 30
 
-      - name: Upload Wemos image
+      - name: Upload esp32 image
         uses: actions/upload-artifact@v7
         with:
-          name: esp32_wemos_${{ env.VER }}-0x000
-          path: esp32_wemos_${{ env.VER }}-0x000.bin
+          name: esp32_${{ env.VER }}-0x000
+          path: esp32_${{ env.VER }}-0x000.bin
           retention-days: 30
 
-      - name: Upload T-2Can image
+      - name: Upload esp32s3 image
         uses: actions/upload-artifact@v7
         with:
-          name: esp32_t2can_${{ env.VER }}-0x000
-          path: esp32_t2can_${{ env.VER }}-0x000.bin
+          name: esp32s3_${{ env.VER }}-0x000
+          path: esp32s3_${{ env.VER }}-0x000.bin
           retention-days: 30
 
       - name: Attach images to release
@@ -137,7 +137,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: |
-            esp32_wemos_${{ env.VER }}-0x000.bin
-            esp32_t2can_${{ env.VER }}-0x000.bin
-            esp32_wemos_${{ env.VER }}-ota.bin
-            esp32_t2can_${{ env.VER }}-ota.bin
+            esp32_${{ env.VER }}-0x000.bin
+            esp32s3_${{ env.VER }}-0x000.bin
+            esp32_${{ env.VER }}-ota.bin
+            esp32s3_${{ env.VER }}-ota.bin

@@ -13,7 +13,7 @@ test.describe('Update availability badge', () => {
     // The Update tab auto-loads the release LIST when a newer release is known
     await page.route(/api\.github\.com\/repos\/[^/]+\/[^/]+\/releases$/, route =>
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([
-        { tag_name: 'v99.1', assets: [{ name: 'esp32_wemos_v99.1-ota.bin', browser_download_url: 'http://example.invalid/ota.bin' }] },
+        { tag_name: 'v99.1', assets: [{ name: 'esp32_v99.1-ota.bin', browser_download_url: 'http://example.invalid/ota.bin' }] },
       ]) }));
     await openApp(page, mock);
     const badge = page.locator('#update-badge');
@@ -30,24 +30,46 @@ test.describe('Update availability badge', () => {
 
   test('badge auto-load pre-selects THIS board\'s image, not the default target', async ({ page, mock }) => {
     // Regression: the auto-load promise captured the first render's target
-    // (the wemos default, before /otainfo answered), pre-selecting the wrong
-    // board's image on a T-2Can — refused by the chip check only after a
+    // (the esp32 default, before /otainfo answered), pre-selecting the wrong
+    // board's image on an S3 — refused by the chip check only after a
     // full download
-    await fetch(mock.url + '/__test/otainfo', { method: 'POST', body: JSON.stringify({ target: 'esp32_t2can' }) });
+    await fetch(mock.url + '/__test/otainfo', { method: 'POST', body: JSON.stringify({ target: 'esp32s3' }) });
     await fulfillLatest(page, { tag_name: 'v99.1' });
     await page.route(/api\.github\.com\/repos\/[^/]+\/[^/]+\/releases$/, route =>
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([
         { tag_name: 'v99.1', assets: [
-          { name: 'esp32_wemos_v99.1-ota.bin', browser_download_url: 'http://example.invalid/wemos-ota.bin' },
-          { name: 'esp32_t2can_v99.1-ota.bin', browser_download_url: 'http://example.invalid/t2can-ota.bin' },
+          { name: 'esp32_v99.1-ota.bin', browser_download_url: 'http://example.invalid/esp32-ota.bin' },
+          { name: 'esp32s3_v99.1-ota.bin', browser_download_url: 'http://example.invalid/esp32s3-ota.bin' },
         ] },
       ]) }));
     await openApp(page, mock);
     await page.locator('#update-badge span').click();
     const assetSel = page.locator('#update select').nth(1); // release, then asset
     await expect(assetSel).toBeVisible();
-    await expect(assetSel).toHaveValue('http://example.invalid/t2can-ota.bin');
-    await expect(page.locator('#update')).toContainText('esp32_t2can_v99.1-ota.bin (this board)');
+    await expect(assetSel).toHaveValue('http://example.invalid/esp32s3-ota.bin');
+    await expect(page.locator('#update')).toContainText('esp32s3_v99.1-ota.bin (this board)');
+  });
+
+  test('an existing board on the old target name still matches the renamed image', async ({ page, mock }) => {
+    // Back-compat: a device flashed before the esp32_wemos/esp32_t2can ->
+    // esp32/esp32s3 rename still reports the old target; it must map onto the
+    // new asset prefix so it auto-selects the right board's image.
+    await fetch(mock.url + '/__test/otainfo', { method: 'POST', body: JSON.stringify({ target: 'esp32_t2can' }) });
+    await fulfillLatest(page, { tag_name: 'v99.1' });
+    await page.route(/api\.github\.com\/repos\/[^/]+\/[^/]+\/releases$/, route =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([
+        { tag_name: 'v99.1', assets: [
+          { name: 'esp32_v99.1-ota.bin', browser_download_url: 'http://example.invalid/esp32-ota.bin' },
+          { name: 'esp32s3_v99.1-ota.bin', browser_download_url: 'http://example.invalid/esp32s3-ota.bin' },
+        ] },
+      ]) }));
+    await openApp(page, mock);
+    await page.locator('#update-badge span').click();
+    const assetSel = page.locator('#update select').nth(1);
+    await expect(assetSel).toBeVisible();
+    // old esp32_t2can -> esp32s3 asset
+    await expect(assetSel).toHaveValue('http://example.invalid/esp32s3-ota.bin');
+    await expect(page.locator('#update')).toContainText('esp32s3_v99.1-ota.bin (this board)');
   });
 
   test('a non-version tag from the API is discarded (XSS guard)', async ({ page, mock }) => {

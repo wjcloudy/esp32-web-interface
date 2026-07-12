@@ -58,7 +58,7 @@ export function createMockEsp({ port = 0 } = {}) {
   let commandLog = [];
   let settings = { dev_name: '', txrx_swapped: false, ap_fallback: false, can_mode: false, can_node_id: 1, can_speed: 2, can_rx_pin: 4, can_tx_pin: 5, can_pwr_pin: -1, can_pwr_inv: false, can_en_pin: -1, can_en_inv: false, arch: 'esp32' };
   let fwStatus = { state: 0 }; // /fwupdate-status reply, scriptable via /__test/fw-status
-  let otainfo = { version: 'v0.1-mock', repo: 'https://github.com/wjcloudy/esp32-web-interface', target: 'esp32_wemos' };
+  let otainfo = { version: 'v0.1-mock', repo: 'https://github.com/wjcloudy/esp32-web-interface', target: 'esp32' };
   let uartPages = 4; // pages reported for the UART-mode fwupdate flow
   let fwSteps = []; // every step passed to /fwupdate, in order
 

@@ -101,7 +101,7 @@ const api = {
   // target, so the GitHub update UI defaults to the right place and image.
   async getOtaInfo() {
     try { const r = await fetch('/otainfo'); if (r.ok) return await r.json(); } catch (e) {}
-    return { version: '', repo: '', target: 'esp32_wemos' };
+    return { version: '', repo: '', target: 'esp32' };
   },
 
   async fetchReleasesFor(owner, repo) {
@@ -1611,7 +1611,7 @@ const Update = () => {
   const [releases, setReleases] = useState([]);
   const [otaMsg, setOtaMsg] = useState('');
   // Update-from-GitHub state for the web interface OTA
-  const [otaTarget, setOtaTarget] = useState('esp32_wemos');
+  const [otaTarget, setOtaTarget] = useState('esp32');
   const [ghUrl, setGhUrl] = useState('');
   const [ghReleases, setGhReleases] = useState([]); // [{tag, assets:[{name,url}]}]
   const [ghTag, setGhTag] = useState('');
@@ -1633,14 +1633,14 @@ const Update = () => {
   // its release list straight away — once per page load, not per tab visit.
   useEffect(() => {
     api.getOtaInfo().then(info => {
-      setOtaTarget(info.target || 'esp32_wemos');
+      setOtaTarget(info.target || 'esp32');
       const repo = info.repo || 'https://github.com/wjcloudy/esp32-web-interface';
       setGhUrl(repo);
       if (updateNewer && !Update._autoLoaded) {
         Update._autoLoaded = true;
         // Pass the freshly fetched target explicitly — the otaTarget STATE in
         // this promise's closure is still the pre-/otainfo default
-        getGhReleases(repo, info.target || 'esp32_wemos');
+        getGhReleases(repo, info.target || 'esp32');
       }
     });
   }, []);
@@ -1652,7 +1652,14 @@ const Update = () => {
   // default, before /otainfo answered — which pre-selected the wrong board's
   // image on a T-2Can (the chip check refused it at activation, but only
   // after a full download and a confusing failure).
-  const matchTargetAsset = (assets, target = otaTarget) => assets.find(a => a.name.startsWith(target + '_'));
+  // OTA targets were renamed to the chip arch (esp32 / esp32s3). Map the old
+  // build-name targets a device might still report onto the new asset prefix
+  // so an existing board still finds the right image after the rename.
+  const canonTarget = (t) => ({ esp32_wemos: 'esp32', esp32_t2can: 'esp32s3' }[t] || t);
+  const matchTargetAsset = (assets, target = otaTarget) => {
+    const t = canonTarget(target);
+    return assets.find(a => a.name.startsWith(t + '_'));
+  };
 
   // Default-select the matching image; if none matches, fall back to the first
   // but warn so the user picks a target deliberately (any asset is still selectable).
@@ -1693,7 +1700,7 @@ const Update = () => {
     const name = ghAssetUrl.split('/').pop();
     // Same wrong-board guard as the file-upload path: a mismatched image is
     // refused by the chip check anyway, but only after a full download
-    const warn = !name.startsWith(otaTarget + '_')
+    const warn = !name.startsWith(canonTarget(otaTarget) + '_')
       ? '\n\nWARNING: this image is not built for this board (' + otaTarget + ') — the device will refuse to activate it.' : '';
     if (!confirm('Download and install "' + name + '"?' + warn + '\n\nThis erases saved settings and favourites (the whole filesystem is replaced) — export them first if you want to keep them.\n\nThe device will reboot when done.')) return;
     setGhMsg('');
@@ -1893,10 +1900,10 @@ const Update = () => {
     if (espOtaRef.current) espOtaRef.current.value = ''; // allow re-selecting the same file
     if (!file) return;
     if (!file.name.endsWith('-ota.bin')) {
-      alert('That does not look like an OTA image.\nExpected a combined "*-ota.bin" file, e.g. ' + otaTarget + '_<version>-ota.bin.\n(The full-flash "*-0x000.bin" image cannot be flashed over the air.)');
+      alert('That does not look like an OTA image.\nExpected a combined "*-ota.bin" file, e.g. ' + canonTarget(otaTarget) + '_<version>-ota.bin.\n(The full-flash "*-0x000.bin" image cannot be flashed over the air.)');
       return;
     }
-    const wrongBoard = !file.name.startsWith(otaTarget + '_');
+    const wrongBoard = !file.name.startsWith(canonTarget(otaTarget) + '_');
     const warn = wrongBoard ? '\n\nWARNING: this image is not built for this board (' + otaTarget + ').' : '';
     if (!confirm('Update the web interface from "' + file.name + '"?' + warn + '\n\nThis erases saved settings and favourites (the whole filesystem is replaced) — export them first if you want to keep them.\n\nThe device will reboot when done.')) return;
     setUpdating(true); setProgress(0); setUpdateMsg('Uploading OTA image...');
@@ -1947,7 +1954,7 @@ const Update = () => {
             ${ghReleases.map(r => html`<option value=${r.tag}>${r.tag}</option>`)}
           </select>
           <select class="styled" value=${ghAssetUrl} onchange=${e => setGhAssetUrl(e.target.value)} style="width:100%;margin-top:.25rem">
-            ${(ghReleases.find(r => r.tag === ghTag)?.assets || []).map(a => html`<option value=${a.url}>${a.name}${a.name.startsWith(otaTarget + '_') ? ' (this board)' : ''}</option>`)}
+            ${(ghReleases.find(r => r.tag === ghTag)?.assets || []).map(a => html`<option value=${a.url}>${a.name}${a.name.startsWith(canonTarget(otaTarget) + '_') ? ' (this board)' : ''}</option>`)}
           </select>
           <button onclick=${installFromGithub} style="margin-top:.25rem"><${Icon} n="download" />Download & install</button>
           <div class="flex-break"></div>
@@ -3144,6 +3151,7 @@ const Settings = () => {
               const boards = CAN_BOARD_PRESETS.filter(b => b.arch === boardArch);
               return boards.length ? html`
                 <label style="font-size:.75rem;display:block;margin-bottom:.35rem">Board preset
+                  <span style="color:var(--text3)">(${boardArch} build)</span>
                   <select id="can-board-preset" class="styled" style="font-size:.7rem;margin-left:6px"
                     onchange=${e => { if (e.target.value) applyBoardPreset(e.target.value); }}>
                     <option value="">Custom / choose a board…</option>

@@ -428,7 +428,7 @@ static float canReadParamValue(int paramId) {
 #define WEB_REPO ""
 #endif
 #ifndef WEB_OTA_TARGET
-#define WEB_OTA_TARGET "esp32_wemos"
+#define WEB_OTA_TARGET "esp32"
 #endif
 
 WebServer server(80);
