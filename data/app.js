@@ -3165,12 +3165,14 @@ const Settings = () => {
             ${/* Optional transceiver enable pins for boards like the T-CAN485.
                 Blank = unused. Invert = drive LOW to enable (default HIGH). */ ''}
             <p class="settings-subhead">Transceiver enable pins <span style="font-weight:400;color:var(--text3)">(optional)</span></p>
-            <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:.25rem">
-              <label style="font-size:.75rem">5V/boost pin <input id="can-pwr-pin" type="number" value=${canPwrPin} placeholder="—"
-                oninput=${e => setCanPwrPin(e.target.value)} style="width:4em;padding:2px 4px" /></label>
+            <div style="display:flex;gap:10px;align-items:center;margin-bottom:.25rem">
+              <label style="font-size:.75rem;width:6.5em">5V/boost pin</label>
+              <input id="can-pwr-pin" type="number" value=${canPwrPin} placeholder="—" oninput=${e => setCanPwrPin(e.target.value)} style="width:4em;padding:2px 4px" />
               <label style="font-size:.72rem;display:inline-flex;align-items:center;gap:4px"><input type="checkbox" checked=${canPwrInv} onchange=${e => setCanPwrInv(e.target.checked)} style="width:auto" />invert</label>
-              <label style="font-size:.75rem">Enable pin <input id="can-en-pin" type="number" value=${canEnPin} placeholder="—"
-                oninput=${e => setCanEnPin(e.target.value)} style="width:4em;padding:2px 4px" /></label>
+            </div>
+            <div style="display:flex;gap:10px;align-items:center;margin-bottom:.25rem">
+              <label style="font-size:.75rem;width:6.5em">Enable pin</label>
+              <input id="can-en-pin" type="number" value=${canEnPin} placeholder="—" oninput=${e => setCanEnPin(e.target.value)} style="width:4em;padding:2px 4px" />
               <label style="font-size:.72rem;display:inline-flex;align-items:center;gap:4px"><input type="checkbox" checked=${canEnInv} onchange=${e => setCanEnInv(e.target.checked)} style="width:auto" />invert</label>
             </div>
             <p style="color:var(--text2);font-size:.78rem;margin:0 0 .75rem">
