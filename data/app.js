@@ -2840,6 +2840,7 @@ const CAN_BOARD_PRESETS = [
   { id: 'generic-esp32', name: 'Generic ESP32 (GPIO4/5)', arch: 'esp32', rx: 4, tx: 5 },
   { id: 't-can485', name: 'LilyGO T-CAN485', arch: 'esp32', rx: 26, tx: 27, pwr: 16, pwrInv: false, en: 23, enInv: true },
   { id: 't-2can', name: 'LilyGO T-2CAN', arch: 'esp32s3', rx: 6, tx: 7 },
+  { id: 'ws-s3-rs485-can', name: 'Waveshare ESP32-S3-RS485-CAN', arch: 'esp32s3', rx: 16, tx: 15 },
 ];
 
 // UART (serial-to-inverter) pin presets, filtered by build arch like the CAN
