@@ -3186,7 +3186,6 @@ const Settings = () => {
               <label style="font-size:.75rem">RX Pin <input type="number" value=${canRxPin} oninput=${e => setCanRxPin(parseInt(e.target.value)||4)} style="width:4em;padding:2px 4px" /></label>
               <label style="font-size:.75rem">TX Pin <input type="number" value=${canTxPin} oninput=${e => setCanTxPin(parseInt(e.target.value)||5)} style="width:4em;padding:2px 4px" /></label>
             </div>
-            <p style="color:var(--text2);font-size:.8rem;margin:0 0 .5rem">Speed and pins apply to all devices on the bus. Default: GPIO4 (RX), GPIO5 (TX).</p>
             ${/* Optional transceiver enable pins for boards like the T-CAN485.
                 Blank = unused. Invert = drive LOW to enable (default HIGH). */ ''}
             <p class="settings-subhead">Transceiver enable pins <span style="font-weight:400;color:var(--text3)">(optional)</span></p>
