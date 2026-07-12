@@ -56,7 +56,7 @@ export function createMockEsp({ port = 0 } = {}) {
   let inverter = freshInverterState();
   let files = new Map(); // SPIFFS stand-in: name -> Buffer
   let commandLog = [];
-  let settings = { dev_name: '', txrx_swapped: false, ap_fallback: false, can_mode: false, can_node_id: 1, can_speed: 2, can_rx_pin: 4, can_tx_pin: 5, can_pwr_pin: -1, can_pwr_inv: false, can_en_pin: -1, can_en_inv: false, arch: 'esp32' };
+  let settings = { dev_name: '', txrx_swapped: false, uart_rx_pin: 1, uart_tx_pin: 3, ap_fallback: false, can_mode: false, can_node_id: 1, can_speed: 2, can_rx_pin: 4, can_tx_pin: 5, can_pwr_pin: -1, can_pwr_inv: false, can_en_pin: -1, can_en_inv: false, arch: 'esp32' };
   let fwStatus = { state: 0 }; // /fwupdate-status reply, scriptable via /__test/fw-status
   let otainfo = { version: 'v0.1-mock', repo: 'https://github.com/wjcloudy/esp32-web-interface', target: 'esp32' };
   let uartPages = 4; // pages reported for the UART-mode fwupdate flow
@@ -176,7 +176,7 @@ export function createMockEsp({ port = 0 } = {}) {
       if (p === '/__test/state') return json({ inverter, files: [...files.keys()], settings, commandLog, fwSteps });
       if (p === '/__test/reset') {
         inverter = freshInverterState(); files = new Map(); commandLog = []; fwSteps = [];
-        settings = { dev_name: '', txrx_swapped: false, ap_fallback: false, can_mode: false, can_node_id: 1, can_speed: 2, can_rx_pin: 4, can_tx_pin: 5, can_pwr_pin: -1, can_pwr_inv: false, can_en_pin: -1, can_en_inv: false, arch: 'esp32', sse_port: settings.sse_port };
+        settings = { dev_name: '', txrx_swapped: false, uart_rx_pin: 1, uart_tx_pin: 3, ap_fallback: false, can_mode: false, can_node_id: 1, can_speed: 2, can_rx_pin: 4, can_tx_pin: 5, can_pwr_pin: -1, can_pwr_inv: false, can_en_pin: -1, can_en_inv: false, arch: 'esp32', sse_port: settings.sse_port };
         fwStatus = { state: 0 };
         return text('reset');
       }
@@ -239,7 +239,7 @@ export function createMockEsp({ port = 0 } = {}) {
           if (url.searchParams.has('dev_name')) settings.dev_name = url.searchParams.get('dev_name').slice(0, 32);
           if (url.searchParams.has('ap_fallback')) settings.ap_fallback = url.searchParams.get('ap_fallback') === '1';
           if (url.searchParams.has('can_mode')) settings.can_mode = url.searchParams.get('can_mode') === '1';
-          for (const k of ['can_node_id', 'can_speed', 'can_rx_pin', 'can_tx_pin'])
+          for (const k of ['can_node_id', 'can_speed', 'can_rx_pin', 'can_tx_pin', 'uart_rx_pin', 'uart_tx_pin'])
             if (url.searchParams.has(k)) settings[k] = parseInt(url.searchParams.get(k));
           // Optional transceiver enable pins: blank string → -1 (unused)
           for (const k of ['can_pwr_pin', 'can_en_pin'])

@@ -7,15 +7,20 @@ async function gotoSubTab(page, label) {
 const gotoWebSubTab = (page) => gotoSubTab(page, 'Web Interface');
 
 test.describe('Settings tab', () => {
-  test('UART TX/RX swap posts to /settings and persists in mock state', async ({ page, mock }) => {
+  test('UART pins: board preset fills them and they persist on save', async ({ page, mock }) => {
     await openApp(page, mock);
     await gotoTab(page, 'Settings');
-    // The swap switch sits next to its text, not wrapping it — anchor on the
-    // innermost row div holding the exact span, then take ITS slider (a
-    // broader hasText match would catch the keep-awake switch further down)
-    const row = page.locator('#settings div', { has: page.locator('span', { hasText: /^Swap TX\/RX Pins$/ }) }).last();
-    await row.locator('label.switch .slider').click();
-    await expect.poll(async () => (await mock.state()).settings.txrx_swapped).toBe(true);
+    // UART is the default interface; a board preset fills the pins (mock=esp32)
+    const preset = page.locator('#uart-board-preset');
+    await expect(preset.locator('option', { hasText: 'Wemos' })).toHaveCount(1);
+    await preset.selectOption({ label: 'Wemos + OpenInverter (TX3 / RX1)' });
+    await expect(page.locator('#uart-rx-pin')).toHaveValue('1');
+    await expect(page.locator('#uart-tx-pin')).toHaveValue('3');
+    // Tweak one and save via the interface Save button
+    await page.locator('#uart-tx-pin').fill('17');
+    await page.locator('#iface-save').click();
+    await expect.poll(async () => (await mock.state()).settings.uart_tx_pin).toBe(17);
+    expect((await mock.state()).settings.uart_rx_pin).toBe(1);
   });
 
   test('sub-tabs split device and web-interface cards', async ({ page, mock }) => {
@@ -28,8 +33,7 @@ test.describe('Settings tab', () => {
     await expect(page.locator('h3', { hasText: 'Appearance & Display' })).toBeVisible();
     await expect(page.locator('h3', { hasText: 'Data Interface' })).toHaveCount(0);
     await expect(page.locator('h3', { hasText: /^Theme$/ })).toHaveCount(0);
-    // Keep-awake renders as a full-size switch next to bold text (same pattern
-    // as Swap TX/RX Pins), not a ToggleRow
+    // Keep-awake renders as a full-size switch next to bold text, not a ToggleRow
     const wrap = page.locator('div', { has: page.locator('span', { hasText: /^Keep screen awake$/ }) }).last();
     await expect(wrap.locator('label.switch input[type="checkbox"]')).toHaveCount(1);
   });

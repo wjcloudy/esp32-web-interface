@@ -2842,9 +2842,17 @@ const CAN_BOARD_PRESETS = [
   { id: 't-2can', name: 'LilyGO T-2CAN', arch: 'esp32s3', rx: 6, tx: 7 },
 ];
 
+// UART (serial-to-inverter) pin presets, filtered by build arch like the CAN
+// ones. Wemos + OpenInverter/ZombieVerter wires the inverter UART as TX3/RX1.
+const UART_BOARD_PRESETS = [
+  { id: 'wemos-oi', name: 'Wemos + OpenInverter (TX3 / RX1)', arch: 'esp32', rx: 1, tx: 3 },
+  { id: 'esp32-uart0', name: 'ESP32 default UART0 (TX1 / RX3)', arch: 'esp32', rx: 3, tx: 1 },
+];
+
 const Settings = () => {
   const { state, dispatch } = useContext(Store);
-  const [txrxSwapped, setTxrxSwapped] = useState(true);
+  const [uartRxPin, setUartRxPin] = useState(1); // configurable UART pins (default GPIO1/3)
+  const [uartTxPin, setUartTxPin] = useState(3);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [theme, setThemeState] = useState(getTheme);
@@ -2985,7 +2993,7 @@ const Settings = () => {
   const [boardArch, setBoardArch] = useState(''); // '' = unknown → offer no presets (don't guess the wrong chip's pins)
   // Interface settings as persisted on the device — drives the unsaved-change
   // hint and gates scanning (a scan runs on the SAVED config, not the form)
-  const [savedCan, setSavedCan] = useState({ mode: false, speed: 2, rx: 4, tx: 5, pwr: '', pwrInv: false, en: '', enInv: false });
+  const [savedCan, setSavedCan] = useState({ mode: false, speed: 2, rx: 4, tx: 5, pwr: '', pwrInv: false, en: '', enInv: false, uartRx: 1, uartTx: 3 });
   const [scanState, setScanState] = useState(''); // '' | 'scanning' | result message
 
   useEffect(() => {
@@ -2994,7 +3002,8 @@ const Settings = () => {
         const r = await fetch('/settings');
         if (r.ok) {
           const data = await r.json();
-          setTxrxSwapped(data.txrx_swapped !== false);
+          if (data.uart_rx_pin != null) setUartRxPin(data.uart_rx_pin);
+          if (data.uart_tx_pin != null) setUartTxPin(data.uart_tx_pin);
           setApFb(data.ap_fallback === true);
           if (typeof data.dev_name === 'string') setDevName(data.dev_name);
           setCanMode(data.can_mode === true);
@@ -3012,6 +3021,7 @@ const Settings = () => {
             speed: data.can_speed !== undefined ? data.can_speed : 2,
             rx: data.can_rx_pin || 4, tx: data.can_tx_pin || 5,
             pwr, pwrInv: data.can_pwr_inv === true, en, enInv: data.can_en_inv === true,
+            uartRx: data.uart_rx_pin != null ? data.uart_rx_pin : 1, uartTx: data.uart_tx_pin != null ? data.uart_tx_pin : 3,
           });
         }
       } catch (e) { /* use default */ }
@@ -3032,15 +3042,6 @@ const Settings = () => {
       setLoading(false);
     })();
   }, []);
-
-  const toggleTxRx = async (val) => {
-    setTxrxSwapped(val);
-    setSaving(true);
-    try {
-      await fetch('/settings?txrx_swap=' + (val ? '1' : '0'), { method: 'POST' });
-      setTimeout(() => setSaving(false), 2000);
-    } catch (e) { setTxrxSwapped(!val); setSaving(false); }
-  };
 
   // The default-flagged node is what the device should boot on / return to
   const defaultNodeId = () => {
@@ -3065,7 +3066,8 @@ const Settings = () => {
   // CAN config, so the Scan button stays disabled until then.
   const canDirty = canMode !== savedCan.mode ||
     (canMode && (canSpeed !== savedCan.speed || canRxPin !== savedCan.rx || canTxPin !== savedCan.tx ||
-      canPwrPin !== savedCan.pwr || canPwrInv !== savedCan.pwrInv || canEnPin !== savedCan.en || canEnInv !== savedCan.enInv));
+      canPwrPin !== savedCan.pwr || canPwrInv !== savedCan.pwrInv || canEnPin !== savedCan.en || canEnInv !== savedCan.enInv)) ||
+    uartRxPin !== savedCan.uartRx || uartTxPin !== savedCan.uartTx;
   const scanReady = savedCan.mode && !canDirty;
   // Board presets fill the CAN pins in one go; only offer those built for this
   // chip (ESP32 vs ESP32-S3 have different valid GPIOs)
@@ -3076,6 +3078,10 @@ const Settings = () => {
     setCanPwrPin(bp.pwr != null ? String(bp.pwr) : ''); setCanPwrInv(!!bp.pwrInv);
     setCanEnPin(bp.en != null ? String(bp.en) : ''); setCanEnInv(!!bp.enInv);
     if (bp.speed != null) setCanSpeed(bp.speed);
+  };
+  const applyUartPreset = (id) => {
+    const bp = UART_BOARD_PRESETS.find(b => b.id === id);
+    if (bp) { setUartRxPin(bp.rx); setUartTxPin(bp.tx); }
   };
 
   if (loading) return html`<div class="tabdiv main-content" style="display:flex"><p>Loading...</p></div>`;
@@ -3110,6 +3116,8 @@ const Settings = () => {
                 params.set('can_speed', canSpeed);
                 params.set('can_rx_pin', canRxPin);
                 params.set('can_tx_pin', canTxPin);
+                params.set('uart_rx_pin', uartRxPin);
+                params.set('uart_tx_pin', uartTxPin);
                 params.set('can_pwr_pin', canPwrPin); // blank = unused
                 params.set('can_pwr_inv', canPwrInv ? '1' : '0');
                 params.set('can_en_pin', canEnPin);
@@ -3118,7 +3126,7 @@ const Settings = () => {
                 await fetch('/settings?' + params.toString(), { method: 'POST' });
                 dispatch({ type: 'SET_CAN_CONFIG', payload: { canMode, canNodeId: bootNode } });
                 if (canMode) dispatch({ type: 'SET_CAN_NODE', payload: bootNode });
-                setSavedCan({ mode: canMode, speed: canSpeed, rx: canRxPin, tx: canTxPin, pwr: canPwrPin, pwrInv: canPwrInv, en: canEnPin, enInv: canEnInv });
+                setSavedCan({ mode: canMode, speed: canSpeed, rx: canRxPin, tx: canTxPin, pwr: canPwrPin, pwrInv: canPwrInv, en: canEnPin, enInv: canEnInv, uartRx: uartRxPin, uartTx: uartTxPin });
                 setTimeout(() => setSaving(false), 2000);
               } catch (e) { setSaving(false); }
             }} style="font-size:.75rem;padding:4px 14px;margin-left:auto;${canDirty ? 'border-color:var(--amber);color:var(--amber)' : ''}" disabled=${saving}><${Icon} n="save" />${saving ? 'Saving...' : 'Save'}</button>
@@ -3131,27 +3139,35 @@ const Settings = () => {
 
           ${!canMode && html`
             <p class="settings-subhead">UART</p>
-            <div style="display:flex;align-items:center;gap:12px;margin-bottom:.25rem">
-              <label class="switch">
-                <input type="checkbox" checked=${txrxSwapped} onchange=${e => toggleTxRx(e.target.checked)} disabled=${saving} />
-                <span class="slider"></span>
-              </label>
-              <span style="font-weight:600">Swap TX/RX Pins</span>
-              ${saving && html`<span style="color:var(--accent);font-size:.75rem">Reinitializing UART...</span>`}
+            ${boardArch && html`<p style="font-size:.72rem;color:var(--text3);margin:0 0 .35rem">This build: <b>${boardArch}</b></p>`}
+            ${(() => {
+              const boards = UART_BOARD_PRESETS.filter(b => b.arch === boardArch);
+              return boards.length ? html`
+                <label style="font-size:.75rem;display:block;margin-bottom:.35rem">Board preset
+                  <select id="uart-board-preset" class="styled" style="font-size:.7rem;margin-left:6px"
+                    onchange=${e => { if (e.target.value) applyUartPreset(e.target.value); }}>
+                    <option value="">Custom / choose a board…</option>
+                    ${boards.map(b => html`<option value=${b.id}>${b.name}</option>`)}
+                  </select>
+                </label>` : '';
+            })()}
+            <div style="display:flex;gap:10px;align-items:center;margin-bottom:.25rem">
+              <label style="font-size:.75rem">RX Pin <input id="uart-rx-pin" type="number" value=${uartRxPin} oninput=${e => setUartRxPin(parseInt(e.target.value) || 0)} style="width:4em;padding:2px 4px" /></label>
+              <label style="font-size:.75rem">TX Pin <input id="uart-tx-pin" type="number" value=${uartTxPin} oninput=${e => setUartTxPin(parseInt(e.target.value) || 0)} style="width:4em;padding:2px 4px" /></label>
+              ${saving && html`<span style="color:var(--accent);font-size:.75rem">Reinitializing UART…</span>`}
             </div>
             <p style="color:var(--text2);font-size:.8rem;margin:0">
-              TX/RX are swapped on Wemos boards used with OpenInverter / ZombieVerter VCU boards.
-              ${txrxSwapped ? 'Currently using TX=3, RX=1 (swapped).' : 'Currently using TX=1, RX=3 (normal).'}
+              Serial pins to the inverter/VCU. Wemos + OpenInverter/ZombieVerter use TX=3, RX=1. Press <b>Save</b> to apply.
             </p>
           `}
 
           ${canMode && html`
             <p class="settings-subhead">CAN Bus</p>
+            ${boardArch && html`<p style="font-size:.72rem;color:var(--text3);margin:0 0 .35rem">This build: <b>${boardArch}</b></p>`}
             ${(() => {
               const boards = CAN_BOARD_PRESETS.filter(b => b.arch === boardArch);
               return boards.length ? html`
                 <label style="font-size:.75rem;display:block;margin-bottom:.35rem">Board preset
-                  <span style="color:var(--text3)">(${boardArch} build)</span>
                   <select id="can-board-preset" class="styled" style="font-size:.7rem;margin-left:6px"
                     onchange=${e => { if (e.target.value) applyBoardPreset(e.target.value); }}>
                     <option value="">Custom / choose a board…</option>

@@ -90,6 +90,8 @@ bool fastUart = false;
 bool fastUartAvailable = true;
 uint8_t fastUartAttempts = 0; // negotiation storms per boot are bounded — wrong-baud bytes can upset some inverter consoles
 bool txrxSwapped = true; // default: swapped for Wemos/OI/Zombie boards
+int uartRxPin = INVERTER_RX; // configurable UART pins (the swap toggle flips their roles)
+int uartTxPin = INVERTER_TX;
 bool apFallback = false; // true = AP broadcasts only while the station link is down
 bool canMode = false; // true = CAN bus mode, false = UART mode
 int canNodeId = CAN_NODE_ID_MIN;
@@ -1024,16 +1026,15 @@ bool uart_readStartsWith(const char *val)
 
 static void initUART(bool reinit = false)
 {
+  // uart_set_pin(port, tx_io, rx_io, ...) — the configured pins are used
+  // directly (a board preset in the UI fills them; Wemos = TX3/RX1)
   if (reinit) {
-    // Just swap the pins — no need to delete/reinstall driver
-    uart_set_pin(INVERTER_PORT,
-      txrxSwapped ? INVERTER_TX : INVERTER_RX,
-      txrxSwapped ? INVERTER_RX : INVERTER_TX,
-      UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-    DBG_OUTPUT_PORT.println(txrxSwapped ? "UART: swapped mode (TX=3, RX=1)" : "UART: normal mode (TX=1, RX=3)");
+    // Just move the pins — no need to delete/reinstall driver
+    uart_set_pin(INVERTER_PORT, uartTxPin, uartRxPin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    DBG_OUTPUT_PORT.printf("UART: TX=%d RX=%d\n", uartTxPin, uartRxPin);
     return;
   }
-  
+
   uart_config_t uart_config = {
         .baud_rate = 115200,
         .data_bits = UART_DATA_8_BITS,
@@ -1042,17 +1043,8 @@ static void initUART(bool reinit = false)
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE};
 
   uart_param_config(INVERTER_PORT, &uart_config);
-  
-  if (txrxSwapped)
-  {
-    uart_set_pin(INVERTER_PORT, INVERTER_TX, INVERTER_RX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-    DBG_OUTPUT_PORT.println("UART: swapped mode (TX=3, RX=1)");
-  }
-  else
-  {
-    uart_set_pin(INVERTER_PORT, INVERTER_RX, INVERTER_TX, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-    DBG_OUTPUT_PORT.println("UART: normal mode (TX=1, RX=3)");
-  }
+  uart_set_pin(INVERTER_PORT, uartTxPin, uartRxPin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+  DBG_OUTPUT_PORT.printf("UART: TX=%d RX=%d\n", uartTxPin, uartRxPin);
   
   uart_driver_install(INVERTER_PORT, SDIO_BUFFER_SIZE * 3, 0, 0, NULL, 0);
   delay(100);
@@ -2038,9 +2030,10 @@ static void saveSettings(const String& canNodesJson)
 {
   File f = SPIFFS.open("/settings.json", "w");
   if (f) {
-    f.printf("{\"dev_name\":\"%s\",\"txrx_swapped\":%s,\"ap_fallback\":%s,\"can_mode\":%s,\"can_node_id\":%d,\"can_speed\":%d,\"can_rx_pin\":%d,\"can_tx_pin\":%d,\"can_pwr_pin\":%d,\"can_pwr_inv\":%s,\"can_en_pin\":%d,\"can_en_inv\":%s,\"can_nodes\":%s}",
+    f.printf("{\"dev_name\":\"%s\",\"txrx_swapped\":%s,\"uart_rx_pin\":%d,\"uart_tx_pin\":%d,\"ap_fallback\":%s,\"can_mode\":%s,\"can_node_id\":%d,\"can_speed\":%d,\"can_rx_pin\":%d,\"can_tx_pin\":%d,\"can_pwr_pin\":%d,\"can_pwr_inv\":%s,\"can_en_pin\":%d,\"can_en_inv\":%s,\"can_nodes\":%s}",
              jsonEscape(deviceName).c_str(),
              txrxSwapped ? "true" : "false",
+             uartRxPin, uartTxPin,
              apFallback ? "true" : "false",
              canMode ? "true" : "false",
              canNodeId, canSpeed, canRxPin, canTxPin,
@@ -2062,6 +2055,17 @@ static void loadSettings()
       String json = f.readString();
       f.close();
       txrxSwapped = json.indexOf("\"txrx_swapped\":false") < 0;
+
+      int ur = json.indexOf("\"uart_rx_pin\":");
+      int ut = json.indexOf("\"uart_tx_pin\":");
+      if (ur >= 0) uartRxPin = json.substring(ur + 14).toInt();
+      if (ut >= 0) uartTxPin = json.substring(ut + 14).toInt();
+      // Migrate settings saved before the pins were configurable: derive them
+      // from the old txrx_swapped flag (swapped = TX3/RX1, normal = TX1/RX3)
+      if (ur < 0 && ut < 0) {
+        uartTxPin = txrxSwapped ? INVERTER_TX : INVERTER_RX;
+        uartRxPin = txrxSwapped ? INVERTER_RX : INVERTER_TX;
+      }
 
       apFallback = json.indexOf("\"ap_fallback\":true") >= 0;
 
@@ -2121,7 +2125,11 @@ static void loadSettings()
 static void handleSettings()
 {
   if (server.hasArg("txrx_swap")) {
+    // Back-compat for older web UIs that still post the swap toggle — map it
+    // onto the pins (swapped = TX3/RX1, normal = TX1/RX3)
     txrxSwapped = (server.arg("txrx_swap") == "1");
+    uartTxPin = txrxSwapped ? INVERTER_TX : INVERTER_RX;
+    uartRxPin = txrxSwapped ? INVERTER_RX : INVERTER_TX;
     saveSettings();
     initUART(true);
     server.send(200, "text/json", "{\"result\":\"ok\"}");
@@ -2146,6 +2154,11 @@ static void handleSettings()
     if (server.hasArg("can_speed")) canSpeed = server.arg("can_speed").toInt();
     if (server.hasArg("can_rx_pin")) canRxPin = server.arg("can_rx_pin").toInt();
     if (server.hasArg("can_tx_pin")) canTxPin = server.arg("can_tx_pin").toInt();
+    // UART pins ride along on the interface save so a single Save applies them
+    if (server.hasArg("uart_rx_pin")) uartRxPin = server.arg("uart_rx_pin").toInt();
+    if (server.hasArg("uart_tx_pin")) uartTxPin = server.arg("uart_tx_pin").toInt();
+    if (uartRxPin < 0 || uartRxPin > 48) uartRxPin = INVERTER_RX;
+    if (uartTxPin < 0 || uartTxPin > 48) uartTxPin = INVERTER_TX;
     // Optional transceiver enable pins: blank/absent → -1 (unused)
     if (server.hasArg("can_pwr_pin")) { String v = server.arg("can_pwr_pin"); canPwrPin = v.length() ? v.toInt() : -1; }
     if (server.hasArg("can_pwr_inv")) canPwrInv = (server.arg("can_pwr_inv") == "1");
@@ -2177,12 +2190,17 @@ static void handleSettings()
       canParamJson = "";
     } else {
       canDriverStop();
+      initUART(true); // UART mode: apply any changed RX/TX pins
     }
     server.send(200, "text/json", "{\"result\":\"ok\"}");
   } else {
     String json = "{\"dev_name\":\"" + jsonEscape(deviceName) + "\"";
     json += ",\"txrx_swapped\":";
     json += txrxSwapped ? "true" : "false";
+    json += ",\"uart_rx_pin\":";
+    json += uartRxPin;
+    json += ",\"uart_tx_pin\":";
+    json += uartTxPin;
     json += ",\"ap_fallback\":";
     json += apFallback ? "true" : "false";
     json += ",\"can_mode\":";
