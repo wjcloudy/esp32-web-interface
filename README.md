@@ -391,7 +391,9 @@ Versions come from git tags (`git describe`) and show in the UI and at `/version
   the [web interface ↔ inverter protocol](PROTOCOL.md).
 
 After editing a file in `data/`, regenerate its `.gz` twin with `python gzip_assets.py` (any
-`pio run` does it too) and upload with `uploadfs` or the Update page.
+`pio run` does it too) and upload with `uploadfs` or the Update page. The SPIFFS image only
+carries the `.gz` of files that have one (`fs_stage.py` stages it in `.pio/fsdata`): the ESP
+always serves the gzip, so the raw sources stay in `data/` for the demo and tests.
 
 ## Credits
 

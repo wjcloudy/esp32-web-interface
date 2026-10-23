@@ -69,6 +69,7 @@ export function isUiAsset(path) {
   let p = path.endsWith('.gz') ? path.slice(0, -3) : path;
   if (p.length === 1) return true;
   if (p === '/subscription.js') return false;
+  if (/^\/img-.+\.(png|jpe?g|webp|gif)$/.test(p)) return false; // image-tile uploads are data
   return UI_EXTS.some(e => p.endsWith(e)) || p === '/manifest.json';
 }
 

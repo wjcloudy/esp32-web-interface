@@ -477,7 +477,8 @@ void test_staticPerm()
                          "/manifest.json", "/wifi.html", "/sw.js", "/docstrings.js" })
     TEST_ASSERT_EQUAL_INT_MESSAGE(PERM_PUBLIC, staticPerm(p), p);
   for (const char* p : { "/settings.json", "/presets.json", "/paramlog.json", "/uiprefs.json", "/firmware.bin",
-                         "/0000000001.bin", "/gauges-sample.json", "/notes.txt", "/manifest.json.bak", "/subscription.js" })
+                         "/0000000001.bin", "/gauges-sample.json", "/notes.txt", "/manifest.json.bak", "/subscription.js",
+                         "/img-logo.png", "/img-car.jpg", "/img-a.jpeg", "/img-a.webp", "/img-a.gif", "/img-a.png.gz" })
     TEST_ASSERT_EQUAL_INT_MESSAGE(PERM_READ, staticPerm(p), p);
   for (const char* p : { "", "app.js", "/../x", "/a\\b", "/a\nb" })
     TEST_ASSERT_EQUAL_INT_MESSAGE(PERM_DENY, staticPerm(p), p);
@@ -487,12 +488,15 @@ void test_staticPerm()
 void test_filePerm()
 {
   for (const char* p : { "favorites.json", "/gauges.json", "presets.json", "paramlog.json", "uiprefs.json",
-                         "/stm32_sine.bin", "virtualvals.json", "subscription.js", "/subscription.js.gz" })
+                         "/stm32_sine.bin", "virtualvals.json", "subscription.js", "/subscription.js.gz",
+                         "img-logo.png", "/img-car.jpg", "/img-a.webp", "/img-a.gif" })
     TEST_ASSERT_EQUAL_INT_MESSAGE(PERM_WRITE, filePerm(p), p);
   // An operator must not be able to replace the UI (stored script against
   // the next admin) or the settings file
   for (const char* p : { "app.js", "/app.js.gz", "index.html", "/", "style.css", "sw.js", "manifest.json",
-                         "settings.json", "/settings.json.gz", "/x/subscription.js" })
+                         "settings.json", "/settings.json.gz", "/x/subscription.js",
+                         // only raster pictures under the img- prefix are data
+                         "/img-x.svg", "/img-x.js", "/img-.png", "/logo.png", "/x/img-a.png", "icon-180.png" })
     TEST_ASSERT_EQUAL_INT_MESSAGE(PERM_ADMIN, filePerm(p), p);
   TEST_ASSERT_EQUAL_INT(PERM_ADMIN, filePerm(std::string(100, 'a').c_str()));
   TEST_ASSERT_EQUAL_INT(PERM_DENY, filePerm("a\nb"));

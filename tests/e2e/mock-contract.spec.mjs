@@ -259,10 +259,12 @@ test.describe('Mock ESP contract: permission model matches the firmware', () => 
 
   test('static and file classification', () => {
     for (const p of ['/', '/app.js', '/app.js.gz', '/manifest.json', '/wifi.html']) expect(staticPerm(p), p).toBe(PERM.PUBLIC);
-    for (const p of ['/settings.json', '/presets.json', '/subscription.js', '/x.bin']) expect(staticPerm(p), p).toBe(PERM.READ);
+    for (const p of ['/settings.json', '/presets.json', '/subscription.js', '/x.bin', '/img-logo.png', '/img-a.png.gz']) expect(staticPerm(p), p).toBe(PERM.READ);
     for (const p of ['/../x', 'app.js', '/a\\b']) expect(staticPerm(p), p).toBe(PERM.DENY);
-    for (const p of ['favorites.json', 'subscription.js', '/x.bin']) expect(filePerm(p), p).toBe(PERM.WRITE);
-    for (const p of ['app.js', '/index.html', 'app.js.gz', 'settings.json', '/']) expect(filePerm(p), p).toBe(PERM.ADMIN);
+    for (const p of ['favorites.json', 'subscription.js', '/x.bin', 'img-logo.png', '/img-car.jpg', '/img-a.webp', '/img-a.gif']) expect(filePerm(p), p).toBe(PERM.WRITE);
+    // image-tile uploads: only raster pictures under the img- prefix are data
+    for (const p of ['app.js', '/index.html', 'app.js.gz', 'settings.json', '/', '/img-x.svg', '/img-x.js', '/img-.png', '/logo.png', '/x/img-a.png'])
+      expect(filePerm(p), p).toBe(PERM.ADMIN);
   });
 
   test('auth replies: 401/403 JSON with the needed role; cookie attributes', async ({ mock }) => {

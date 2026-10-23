@@ -350,8 +350,11 @@ input:checked + .slider::before { transform: translateX(14px); }
 .dash-box {
   flex: 1; min-width: 0; padding: 1.25rem 1.5rem;
   position: relative;
+  /* No backdrop blur: an in-flow card only has the page behind it, and
+     Chrome's blur samples past the card's edge, so a card below another
+     showed a flickering light band along its top on every repaint.
+     Floating chrome (navbar, top bar, modals, toasts) keeps its blur */
   background: var(--card-bg);
-  backdrop-filter: blur(26px) saturate(125%); -webkit-backdrop-filter: blur(26px) saturate(125%);
   border: 1px solid var(--border);
   border-radius: var(--radius); box-shadow: var(--shadow);
   min-height: 160px; display: flex; flex-direction: column;
@@ -503,6 +506,27 @@ button:disabled:hover { background: var(--ctl-bg); border-color: var(--border); 
 .bar-gauge.vert .bar-hi { left: 50%; transform: translateX(-50%); top: 2px; }
 /* peak-hold marker: where the session's highest (lowest) value reached */
 .bar-gauge .bar-peak-tick { position: absolute; background: var(--text); opacity: .5; }
+/* Segmented: LED blocks with a small gap; lit ones take their --seg colour.
+   The blocks and bands sit in full-size wrappers (one per style) */
+.bar-gauge .bar-segs, .bar-gauge .bar-zones { position: absolute; inset: 0; }
+.bar-gauge.bar-segmented { background: transparent; border-color: transparent; }
+.bar-gauge .bar-seg { position: absolute; border-radius: 3px; background: color-mix(in srgb, var(--text) 13%, transparent); transition: background .2s; }
+.bar-gauge.horiz .bar-seg { top: 0; bottom: 0; border-left: 2px solid transparent; border-right: 2px solid transparent; background-clip: padding-box; }
+.bar-gauge.vert .bar-seg { left: 0; right: 0; border-top: 2px solid transparent; border-bottom: 2px solid transparent; background-clip: padding-box; }
+.bar-gauge .bar-seg.on { background-color: var(--seg); box-shadow: inset 0 0 0 1px rgba(255,255,255,.08); }
+/* A tall horizontal segmented bar puts its blocks in the lower half and the
+   value and end labels above them, clear of the bright blocks */
+.bar-gauge.seg-split .bar-seg { top: 50%; }
+.bar-gauge.seg-split .bar-val { bottom: 50%; }
+.bar-gauge.seg-split .bar-end { bottom: auto; top: 2px; }
+.bar-gauge.bar-segmented:not(.seg-split) .bar-val { text-shadow: 0 0 4px var(--bg), 0 0 10px var(--bg); }
+/* Zones: caution/danger bands along the top (or left) edge, a marker at the value */
+.bar-gauge .bar-zone { position: absolute; opacity: .75; }
+.bar-gauge.horiz .bar-zone { top: 0; height: 22%; }
+.bar-gauge.vert .bar-zone { left: 0; width: 22%; }
+.bar-gauge .bar-marker { position: absolute; background: var(--text); border-radius: 2px; transition: left .3s ease, bottom .3s ease; }
+.bar-gauge.horiz .bar-marker { top: 0; bottom: 0; width: 4px; margin-left: -2px; }
+.bar-gauge.vert .bar-marker { left: 0; right: 0; height: 4px; margin-bottom: -2px; }
 .bar-gauge.horiz .bar-peak-tick { top: 0; bottom: 0; width: 2px; margin-left: -1px; }
 .bar-gauge.vert .bar-peak-tick { left: 0; right: 0; height: 2px; margin-bottom: -1px; }
 
@@ -719,6 +743,11 @@ td { font-variant-numeric: tabular-nums; }
 .svg-gauge { position: relative; width: 230px; height: 230px; margin: 0 auto; }
 .svg-gauge svg { display: block; }
 .g-track { fill: none; stroke: var(--surface3); stroke-width: 13; stroke-linecap: round; }
+/* Segmented and Zone track radials: blocks and bands are plain arcs */
+.g-seg { transition: stroke .2s; }
+/* unlit blocks: a faint tint of the text colour, visible in either theme */
+.g-seg:not(.on) { stroke: color-mix(in srgb, var(--text) 13%, transparent); }
+.g-zone { opacity: .75; }
 .g-value {
   fill: none; stroke-width: 13; stroke-linecap: round;
   transition: stroke-dasharray .14s linear, stroke-dashoffset .14s linear, opacity .2s;
@@ -866,7 +895,34 @@ td { font-variant-numeric: tabular-nums; }
 .gauge-tile-name { font-weight: 600; font-size: .82rem; margin: 2px 0; max-width: 95%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* transparent tiles: the gauge floats on the page with no card chrome
    (the edit-mode dashed outline still shows, so they stay manipulable) */
-.gauge-tile.tile-clear { background: transparent; border-color: transparent; }
+.gauge-tile.tile-clear { background: transparent; border-color: transparent; box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+/* Badge text tile: a small frosted pill in theme colours (it keeps them even
+   over a picture with "Text on it" set, since it brings its own card; these
+   resolve at the root, so a tile's ink override doesn't reach them) */
+:root { --badge-text: var(--text); --badge-text2: var(--text2); --badge-text3: var(--text3); }
+.tile-badge { display: inline-flex; flex-direction: column; align-items: center; gap: 1px; padding: .3em .8em .35em;
+  border-radius: .7em; line-height: 1.1; max-width: 100%; overflow: hidden; text-shadow: none;
+  background: color-mix(in srgb, var(--surface) 82%, transparent); border: 1px solid var(--border2);
+  backdrop-filter: blur(10px) saturate(130%); -webkit-backdrop-filter: blur(10px) saturate(130%);
+  box-shadow: 0 4px 14px rgba(0,0,0,.25); }
+.tile-badge .tb-name { font: 600 .48em/1.2 var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--text3); white-space: nowrap; }
+.tile-badge .tb-val { font-family: var(--num); font-weight: 600; font-variant-numeric: tabular-nums; color: var(--text); white-space: nowrap; }
+.tile-badge .tb-unit { font-size: .55em; font-weight: 500; color: var(--text2); margin-left: .25em; }
+.gauge-tile.on-bg.ink-light .tile-badge, .gauge-tile.on-bg.ink-dark .tile-badge {
+  --text: var(--badge-text); --text2: var(--badge-text2); --text3: var(--badge-text3); }
+/* Clear tiles over a page background picture: text gets a soft halo so live
+   readouts stay legible on it; the background's "Text on it" can pin light
+   or dark text (a dark photo needs light text in either theme) */
+.gauge-tile.tile-clear.on-bg { text-shadow: 0 0 3px var(--bg), 0 0 8px var(--bg), 0 0 14px var(--bg); }
+.gauge-tile.tile-clear.on-bg.ink-light { --text: #f4f7fb; --text2: #d8dee7; --text3: #c2c9d4; color: var(--text);
+  text-shadow: 0 0 3px rgba(0,0,0,.85), 0 0 8px rgba(0,0,0,.6), 0 0 14px rgba(0,0,0,.45); }
+.gauge-tile.tile-clear.on-bg.ink-dark { --text: #111216; --text2: #3a3c44; --text3: #4a4d56; color: var(--text);
+  text-shadow: 0 0 3px rgba(255,255,255,.9), 0 0 8px rgba(255,255,255,.65), 0 0 14px rgba(255,255,255,.45); }
+/* Page background: behind the tiles, pinned to the grid's box (full width,
+   bg.rows x --gs-cell tall) so it moves and scales with them */
+.grid-stack > .page-bg { position: absolute; top: 0; left: 0; right: 0; z-index: 0; pointer-events: none; }
+.page-bg img { display: block; width: 100%; height: 100%; }
+.grid-stack > .page-bg-missing { position: absolute; top: 0; left: 0; margin: 4px 6px; font-size: .72rem; color: var(--text3); pointer-events: none; }
 /* view-mode gauge area: no text selection, so a mouse/touch page-swipe drag
    doesn't highlight tile labels/values as it moves. touch-action: pan-y keeps
    vertical scrolling but hands HORIZONTAL touch gestures to our swipe handler
@@ -1102,9 +1158,20 @@ button.danger { color: var(--red); background: color-mix(in srgb, var(--red) 7%,
   .wt-actions .widget-actions button { font-size: 0; gap: 0; padding: 6px 12px; }
   .wt-actions .widget-actions .btn-ic svg { width: 16px; height: 16px; }
 }
-/* Dashboard/gauge header: Record is a red dot in a ring; recording turns the
-   button red and the ring pulses */
-#rec-btn .btn-ic svg [fill="currentColor"] { fill: var(--red); }
+/* Image tiles: the picture takes the cell's size (zero flex basis, so it
+   never stretches the tile or makes it scroll, grid or phone stack alike)
+   and object-fit letterboxes or crops it into that box */
+.gauge-tile.widget-tile:has(.wt-image) { padding: 4px; overflow: hidden; }
+/* Clear: just the picture, edge to edge */
+.gauge-tile.widget-tile.tile-clear:has(.wt-image) { padding: 0; }
+.wt-image { gap: 4px; align-items: center; justify-content: center; }
+.wt-image .img-link { display: flex; flex-direction: column; flex: 1 1 0; min-height: 0; width: 100%; }
+.wt-image .img-pic { display: block; flex: 1 1 0; min-height: 0; width: 100%; height: 0; }
+.wt-image .img-caption { flex: none; max-width: 100%; font-size: .75rem; color: var(--text3); text-align: center;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.wt-image .img-empty { text-align: center; }
+/* Dashboard/gauge header: Record is a dot in a ring, in the text colour
+   while idle; recording turns the button red and the ring pulses */
 #rec-btn.recording { color: var(--red); border-color: var(--red); }
 #rec-btn.recording .btn-ic svg { animation: pulse-dot 1.6s ease infinite; }
 /* stack layout: on phones a 'stack' page lists its tiles in reading order,
@@ -1176,3 +1243,11 @@ body.kiosk #topbar, body.kiosk #bottombar { display: none !important; }
   #gauges-head button { min-width: 40px; min-height: 36px; justify-content: center; padding: 4px 10px !important; }
   .readonly-bar { bottom: calc(70px + env(safe-area-inset-bottom)); }
 }
+
+/* Native controls (a select's popup list, scrollbars, date pickers) follow
+   the theme: without this the browser draws a light popup with the dark
+   theme's light text, so the options read washed out */
+:root { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { color-scheme: dark; } }
+option { background: var(--surface2); color: var(--text); }

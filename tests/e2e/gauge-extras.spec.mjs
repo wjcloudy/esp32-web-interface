@@ -278,17 +278,36 @@ test.describe('Gauge extras', () => {
     await openApp(page, mock);
     await gotoTab(page, 'Gauges');
     await expect(page.locator('.page-pill.active')).toHaveText('Drive');
-    // Drag left starting over the gauge tile → next page
-    const tile = await page.locator('.gauge-tile').first().boundingBox();
+    // Drag left starting over the gauge tile → next page. The grid settles
+    // its cell size on a ResizeObserver tick, so wait for the tile to stop
+    // moving before aiming the drag at it
+    let tile = null;
+    await expect.poll(async () => {
+      const b = await page.locator('.gauge-tile').first().boundingBox();
+      const same = !!(tile && b && Math.abs(b.y - tile.y) < 1 && Math.abs(b.height - tile.height) < 1 && Math.abs(b.width - tile.width) < 1);
+      tile = b;
+      return same;
+    }, { intervals: [100] }).toBe(true);
     const y = tile.y + tile.height / 2;
+    // Mid-drag the edge-gradient hint is visible on the incoming-page side
+    // (dragging left → next page enters from the right edge). Checked on a
+    // gesture of its own that comes back to where it started: a swipe has to
+    // be brisk (under 800 ms), and pausing to assert mid-drag can outlast that
+    const hint = page.locator('.swipe-hint');
     await page.mouse.move(tile.x + tile.width * 0.75, y);
     await page.mouse.down();
     await page.mouse.move(tile.x + tile.width * 0.2, y, { steps: 8 });
-    // Mid-drag the edge-gradient hint is visible on the incoming-page side
-    // (dragging left → next page enters from the right edge)
-    const hint = page.locator('.swipe-hint');
     await expect(hint).toHaveClass(/right/);
     expect(await hint.evaluate(el => parseFloat(el.style.opacity))).toBeGreaterThan(0);
+    await page.mouse.move(tile.x + tile.width * 0.75, y, { steps: 4 });
+    await page.mouse.up();
+    await expect(page.locator('.page-pill.active')).toHaveText('Drive');
+    // A brisk swipe left flips to the next page (few move steps: each is a
+    // round trip to the browser, and under parallel load eight of them can
+    // outlast the 800 ms a swipe is allowed)
+    await page.mouse.move(tile.x + tile.width * 0.75, y);
+    await page.mouse.down();
+    await page.mouse.move(tile.x + tile.width * 0.2, y, { steps: 3 });
     await page.mouse.up();
     await expect(page.locator('.page-pill.active')).toHaveText('Batt');
     // Hint clears once the gesture ends
@@ -296,7 +315,7 @@ test.describe('Gauge extras', () => {
     // Drag right → back to the previous page
     await page.mouse.move(tile.x + tile.width * 0.2, y);
     await page.mouse.down();
-    await page.mouse.move(tile.x + tile.width * 0.75, y, { steps: 8 });
+    await page.mouse.move(tile.x + tile.width * 0.75, y, { steps: 3 });
     await page.mouse.up();
     await expect(page.locator('.page-pill.active')).toHaveText('Drive');
   });

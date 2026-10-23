@@ -10,7 +10,7 @@ import { buildDemoSite } from './build.mjs';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'application/javascript', '.css': 'text/css',
-  '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2',
+  '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.webp': 'image/webp', '.woff2': 'font/woff2',
 };
 
 export function serveStatic(dir, { port = 0, base = '/' } = {}) {

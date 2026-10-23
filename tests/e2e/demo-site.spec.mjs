@@ -121,3 +121,29 @@ test('the banner links to the browser installer, which offers both channels', as
   // Only the manifests missing in the first half may have 404'd
   expect(escaped.filter(e => !/\/flash\/manifest-(stable|dev)\.json$/.test(e))).toEqual([]);
 });
+
+test('the sample layout\'s example image renders; image uploads are refused', async ({ page }) => {
+  const escaped = await openDemo(page, '#gauges');
+  await page.locator('.page-pill', { hasText: 'Controls' }).click();
+  const img = page.locator('#gauges .wt-image img');
+  await expect.poll(() => img.evaluate(el => el.complete && el.naturalWidth)).toBe(480);
+  // The tile offers the bundled pictures, but the demo stores no uploads
+  await page.locator('button', { hasText: 'Edit Layout' }).click();
+  await page.locator('#gauges .gauge-tile:has(.wt-image)').click();
+  const modal = page.locator('.modal-content');
+  await expect(modal.locator('#image-file option', { hasText: 'example-badge.png' })).toHaveCount(1);
+  await modal.locator('#image-upload').setInputFiles({ name: 'car.png', mimeType: 'image/png',
+    buffer: fs.readFileSync(path.join(site, 'icon-180.png')) });
+  await expect(modal.locator('#image-error')).toContainText('Demo mode');
+  await expect(page.locator('#oi-demo-banner')).toContainText('Demo mode: no image was uploaded');
+  await expect(modal.locator('#image-file')).toHaveValue('example-badge.png');
+  expect(await page.evaluate(() => window.OI_DEMO.files.has('img-car.png'))).toBe(false);
+  expect(escaped).toEqual([]);
+});
+
+test('the sample Vehicle page shows its background picture', async ({ page }) => {
+  const escaped = await openDemo(page, '#gauges');
+  await page.locator('.page-pill', { hasText: 'Vehicle' }).click();
+  await expect.poll(() => page.locator('#gauges .page-bg img').evaluate(el => el.complete && el.naturalWidth)).toBe(1200);
+  expect(escaped).toEqual([]);
+});

@@ -770,6 +770,27 @@ const tabGroupOf = (id) => (TAB_GROUPS.find(([, ids]) => ids.includes(id)) || ['
 const BOTTOM_TABS = [['dashboard', 'Home'], ['gauges', 'Gauges'], ['spotvalues', 'Values'], ['parameters', 'Params']];
 const closeNavDrawer = () => document.body.classList.remove('nav-open');
 
+// The OpenInverter mark: a graded ring around three phase waves (blue,
+// yellow, red), as in favicon.svg. `idp` keeps its gradient/clip ids unique
+// where more than one is on the page (navbar, sign-in card)
+const PHASE_WAVE = 'M-30 24 C -24 11, -18 11, -12 24 C -6 37, 0 37, 6 24 C 12 11, 18 11, 24 24 C 30 37, 36 37, 42 24 C 48 11, 54 11, 60 24';
+const LogoMark = ({ idp, cls, onclick, title }) => html`
+  <svg class=${cls || undefined} viewBox="0 0 48 48" onclick=${onclick} title=${title} aria-hidden=${title ? undefined : 'true'}>
+    <defs>
+      <linearGradient id=${idp + '-ring'} x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#d4d4d4" />
+        <stop offset="100%" stop-color="#636363" />
+      </linearGradient>
+      <clipPath id=${idp + '-clip'}><circle cx="24" cy="24" r="19.6" /></clipPath>
+    </defs>
+    <circle cx="24" cy="24" r="21.4" fill="none" stroke=${'url(#' + idp + '-ring)'} stroke-width="2.4" />
+    <g clip-path=${'url(#' + idp + '-clip)'} fill="none" stroke-width="2.4" stroke-linecap="round">
+      <path stroke="#5b9dff" opacity=".95" d=${PHASE_WAVE} />
+      <path stroke="#ffcf54" opacity=".95" transform="translate(12 0)" d=${PHASE_WAVE} />
+      <path stroke="#ff6b6b" opacity=".95" transform="translate(24 0)" d=${PHASE_WAVE} />
+    </g>
+  </svg>`;
+
 const Navbar = () => {
   const { state, dispatch } = useContext(Store);
   const active = state.activeTab;
@@ -778,21 +799,7 @@ const Navbar = () => {
   return html`
     <aside id="navbar">
       <div id="logo">
-        <svg viewBox="0 0 48 48" onclick=${() => dispatch({ type: 'TOGGLE_NAVBAR' })} title="Toggle navigation">
-          <defs>
-            <linearGradient id="logo-ring" x1="0" y1="0" x2="1" y2="1">
-              <stop offset="0%" stop-color="#d4d4d4" />
-              <stop offset="100%" stop-color="#636363" />
-            </linearGradient>
-            <clipPath id="logo-clip"><circle cx="24" cy="24" r="19.6" /></clipPath>
-          </defs>
-          <circle cx="24" cy="24" r="21.4" fill="none" stroke="url(#logo-ring)" stroke-width="2.4" />
-          <g clip-path="url(#logo-clip)" fill="none" stroke-width="2.4" stroke-linecap="round">
-            <path stroke="#5b9dff" opacity=".95" d="M-30 24 C -24 11, -18 11, -12 24 C -6 37, 0 37, 6 24 C 12 11, 18 11, 24 24 C 30 37, 36 37, 42 24 C 48 11, 54 11, 60 24" />
-            <path stroke="#ffcf54" opacity=".95" transform="translate(12 0)" d="M-30 24 C -24 11, -18 11, -12 24 C -6 37, 0 37, 6 24 C 12 11, 18 11, 24 24 C 30 37, 36 37, 42 24 C 48 11, 54 11, 60 24" />
-            <path stroke="#ff6b6b" opacity=".95" transform="translate(24 0)" d="M-30 24 C -24 11, -18 11, -12 24 C -6 37, 0 37, 6 24 C 12 11, 18 11, 24 24 C 30 37, 36 37, 42 24 C 48 11, 54 11, 60 24" />
-          </g>
-        </svg>
+        <${LogoMark} idp="nav" onclick=${() => dispatch({ type: 'TOGGLE_NAVBAR' })} title="Toggle navigation" />
         <span class="brand-name navbar-text">OpenInverter</span>
       </div>
       <nav aria-label="Sections">
@@ -1678,7 +1685,10 @@ const exportUiSettings = async () => {
       if (v != null) prefs[k] = v;
     });
   } catch (e) {}
-  const bundle = { type: 'openinverter-ui-settings', version: 1, exported: new Date().toISOString(), favorites, gauges, plots, virtualvals, presets, prefs };
+  // The pictures the gauge pages show travel along as data URLs (a JSON
+  // bundle can't hold bytes); the UI's own images come with every update
+  const images = await readImages(layoutImages(gauges));
+  const bundle = { type: 'openinverter-ui-settings', version: 1, exported: new Date().toISOString(), favorites, gauges, plots, virtualvals, presets, prefs, images };
   const a = document.createElement('a');
   a.href = 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(bundle, null, 2));
   a.download = 'ui-settings.json';
@@ -1709,8 +1719,43 @@ async function stashFilesForUpdate() {
       if (r.ok) files[name] = await r.text();
     } catch (e) {}
   }));
-  try { localStorage.setItem(UPDATE_STASH_KEY, JSON.stringify({ at: Date.now(), files })); } catch (e) { return -1; }
+  // Uploaded images (img-*) ride along as data URLs when there's room, so
+  // image tiles don't come back empty; past the quota only layouts are kept
+  const images = present ? await readImages([...present].filter(isUserImage)) : {};
+  const save = (o) => { try { localStorage.setItem(UPDATE_STASH_KEY, JSON.stringify(o)); return true; } catch (e) { return false; } };
+  if (!save({ at: Date.now(), files, images }) && !save({ at: Date.now(), files })) return -1;
   return Object.keys(files).length;
+}
+// { name: dataURL } for the user images (img-*) among names, skipping any
+// that can't be read
+async function readImages(names) {
+  const out = {};
+  await Promise.all(names.filter(isUserImage).map(async name => {
+    try {
+      const r = await fetch('/' + name, { cache: 'no-store' });
+      if (r.ok) out[name] = await blobToDataUrl(await r.blob());
+    } catch (e) {}
+  }));
+  return out;
+}
+// The uploaded images a gauges.json shows, on every page: image tiles and
+// page backgrounds
+const layoutImages = (gauges) => [...new Set(((gauges && gauges.pages) || [])
+  .flatMap(p => [...(p.items || []).filter(g => g.type === 'image').map(g => g.file), p.bg && p.bg.file])
+  .filter(isUserImage))];
+const blobToDataUrl = (blob) => new Promise((resolve, reject) => {
+  const fr = new FileReader();
+  fr.onload = () => resolve(fr.result);
+  fr.onerror = () => reject(fr.error);
+  fr.readAsDataURL(blob);
+});
+function dataUrlToBlob(url) {
+  const m = /^data:([^;,]*);base64,(.*)$/.exec(url);
+  if (!m) throw new Error('not a data URL');
+  const bin = window.atob(m[2]);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Blob([bytes], { type: m[1] });
 }
 
 // Runs once at load (after sign-in when that's on). Only fills in files the
@@ -1731,11 +1776,15 @@ async function restoreFilesAfterUpdate() {
     present = new Set((await r.json()).map(f => String(f.name).replace(/^\/+/, '')));
   } catch (e) { return 0; }
   let restored = 0;
-  for (const [name, text] of Object.entries(stash.files)) {
+  const uploads = [
+    ...Object.entries(stash.files).map(([name, text]) => [name, () => new Blob([text], { type: 'application/json' })]),
+    ...Object.entries(stash.images || {}).map(([name, url]) => [name, () => dataUrlToBlob(url)]),
+  ];
+  for (const [name, blob] of uploads) {
     if (present.has(name)) continue; // already there (newer): leave it
     try {
       const fd = new FormData();
-      fd.append('updatefile', new Blob([text], { type: 'application/json' }), name);
+      fd.append('updatefile', blob(), name);
       const up = await fetch('/edit', { method: 'POST', body: fd });
       if (!up.ok) return restored;
       restored++;
@@ -2191,7 +2240,7 @@ const Update = () => {
           <p>A daily check flags newer releases with a badge in the sidebar (toggle it off with <b>Daily update check</b>). When one is available its release list loads automatically; otherwise <b>Get releases</b> lists them from the GitHub repo above (pre-filled with the repo this build came from). The image for your board is selected by default — then <b>Download & install</b>, or use <b>Install OTA image from file</b> to flash one you built locally.</p>
           <p><b>Update channel</b>: <b>Stable</b> (default) offers tested releases only. <b>Dev</b> also offers the pre-releases (<code>vX.Y-dev.N</code>) built from every change on the dev branch — newer, less tested; a dev device still moves on to the stable release that follows them.</p>
           <p>Use <b>Upload single file</b> for individual file tweaks.</p>
-          <p><b>Your settings survive updates.</b> The device keeps its own settings (pins, CAN, name, UI preferences) and user accounts outside the filesystem. Your layouts — gauges, plots, presets, favourites — are backed up in this browser just before flashing and put back automatically after the reboot. <b>Export settings (backup)</b> is still worth doing before flashing over USB or from another browser.</p>
+          <p><b>Your settings survive updates.</b> The device keeps its own settings (pins, CAN, name, UI preferences) and user accounts outside the filesystem. Your layouts — gauges, plots, presets, favourites, and the images on your gauge pages — are backed up in this browser just before flashing and put back automatically after the reboot. <b>Export settings (backup)</b> is still worth doing before flashing over USB or from another browser.</p>
           <p style="font-size:.8rem;color:var(--text3);margin:0">The bootloader and partition table aren't touched, so a bad image stays recoverable over USB. The web interface reboots and the page reloads when done.</p>
         </div>
       </div>
@@ -3379,11 +3428,26 @@ const Settings = () => {
     try {
       const bundle = JSON.parse(await file.text());
       if (bundle.type !== 'openinverter-ui-settings') { alert('Not a UI settings export file'); return; }
+      const upBlob = async (name, blob) => {
+        const fd = new FormData();
+        fd.append('updatefile', blob, name);
+        const r = await fetch('/edit', { method: 'POST', body: fd });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+      };
       const up = async (name, data) => {
         const fd = new FormData();
         fd.append('updatefile', new Blob([JSON.stringify(data)], { type: 'application/json' }), name);
         await fetch('/edit', { method: 'POST', body: fd });
       };
+      // Images go first so the restored pages find them; one that fails
+      // (no space, bad data) is reported but doesn't stop the layouts
+      const failed = [];
+      for (const [name, url] of Object.entries(bundle.images || {})) {
+        try {
+          if (!isUserImage(name)) throw new Error('not an image-tile file');
+          await upBlob(name, dataUrlToBlob(url));
+        } catch (err) { failed.push(name); }
+      }
       if (bundle.favorites) await up('favorites.json', bundle.favorites);
       if (bundle.gauges) await up('gauges.json', bundle.gauges);
       if (bundle.plots) await up('plots.json', bundle.plots);
@@ -3399,7 +3463,7 @@ const Settings = () => {
         await up('uiprefs.json', { theme: bundle.prefs.theme || 'system', accentColor: bundle.prefs.accentColor || '', dashMetrics: dm,
           updateCheck: getUpdateCheckAuto(), updateChannel: getUpdateChannel() });
       }
-      alert('Settings imported — reloading');
+      alert('Settings imported' + (failed.length ? ', except image' + (failed.length > 1 ? 's ' : ' ') + failed.join(', ') + ' (the tiles show a placeholder)' : '') + ' — reloading');
       location.reload();
     } catch (err) { alert('Import failed: ' + err.message); }
   };
@@ -3871,7 +3935,7 @@ const Settings = () => {
 
         <div class="dash-box compact">
           <h3>Backup & Restore</h3>
-          <p style="font-size:.8rem;margin:0 0 .5rem">Back up or restore favourites, gauge pages, presets, plot layouts and UI preferences as a single file.</p>
+          <p style="font-size:.8rem;margin:0 0 .5rem">Back up or restore favourites, gauge pages (with the images they show), presets, plot layouts and UI preferences as a single file.</p>
           <div style="display:flex;gap:8px;flex-wrap:wrap">
             <button onclick=${exportUiSettings} style="width:auto"><${Icon} n="download" />Export settings</button>
             <${Gate} need="operator">
@@ -4107,6 +4171,51 @@ const hueShift = (hex, deg) => {
 // one way and regen the other, pivoting on a tick at the centre mark.
 // invertScale mirrors the whole scale (max at the arc's start, min at its
 // end), fill and labels included.
+// ---- Shared by the Segmented and Zones styles of radial and bar gauges ----
+const isHex = (c) => !!c && /^#[0-9a-fA-F]{6}$/.test(c);
+const mixHex = (a, b, t) => '#' + [1, 3, 5].map(i =>
+  Math.round(parseInt(a.slice(i, i + 2), 16) * (1 - t) + parseInt(b.slice(i, i + 2), 16) * t).toString(16).padStart(2, '0')).join('');
+const ZONE_CAUTION = '#f59e0b', ZONE_DANGER = '#ef4444';
+// Warn, caution and danger colours sweep their hue only gently (the normal
+// fill's ±21° would turn amber yellow-to-orange and red orange-to-pink)
+const WARN_SWEEP = 8;
+// Zone bands along the scale, in DISPLAYED fractions (an inverted scale is
+// mirrored): the normal colour, an amber caution band over the last 15% of
+// the span below Warn, and the danger colour (the Warn colour when one is
+// chosen) from Warn up. No Warn: a single normal band. Every band is drawn
+// as a hue-offset sweep like the fill: the normal band the fill's own, the
+// caution and danger bands a subtle ±WARN_SWEEP° around their colour
+function gaugeZones(lo, hi, warn, warnColor, base, invert) {
+  const span = (hi - lo) || 1;
+  const f = (val) => Math.min(1, Math.max(0, (val - lo) / span));
+  const bands = [];
+  if (warn != null && warn > lo && warn < hi) {
+    const wf = f(warn), cf = Math.max(0, wf - 0.15);
+    if (cf > 0) bands.push([0, cf, base]);
+    bands.push([cf, wf, ZONE_CAUTION], [wf, 1, isHex(warnColor) ? warnColor : ZONE_DANGER]);
+  } else bands.push([0, 1, base]);
+  return bands.map(([a, b, col]) => invert ? [1 - b, 1 - a, col] : [a, b, col]);
+}
+// One segment of a Segmented gauge: lit when its middle falls inside the
+// displayed fill, coloured by the value it stands for. Normal blocks follow
+// the fill's hue-offset gradient along the scale (cyan to green, or the
+// custom colour swept +21° to -21°), so the look matches the filled arc
+function segColour({ m, startFrac, lenFrac, lo, hi, invert, warn, wc, center, revColor, custom, color }) {
+  if (lenFrac <= 0.004 || m < startFrac || m > startFrac + lenFrac) return null;
+  const val = lo + (invert ? 1 - m : m) * ((hi - lo) || 1);
+  if (warn != null && val >= warn) return isHex(wc) ? hueShift(wc, WARN_SWEEP * (1 - 2 * m)) : wc;
+  if (center != null && val < center && isHex(revColor)) return revColor;
+  return custom ? hueShift(color, 21 - 42 * m) : mixHex('#4cc9f0', '#54e6a4', m);
+}
+// A gradient across the whole scale, shown only over the band [f0, f1]: the
+// band shows its own slice of it, so bands line up with the full gradient
+const bandBg = (grad, f0, f1, horiz) => {
+  const len = Math.max(0.001, f1 - f0);
+  const pos = len >= 0.999 ? 0 : (horiz ? f0 / (1 - len) : 1 - f0 / (1 - len)) * 100;
+  return 'background:' + grad + ';background-size:' + (horiz ? (100 / len).toFixed(2) + '% 100%' : '100% ' + (100 / len).toFixed(2) + '%')
+    + ';background-position:' + (horiz ? pos.toFixed(2) + '% 0' : '0 ' + pos.toFixed(2) + '%');
+};
+
 const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decimals = 1, warn, warnColor, center, invertScale, peaks, gstyle, revColor }) => {
   const size = px || 230, c = size / 2, r = Math.round(size * 0.4);
   const sw = Math.max(8, Math.round(size * 0.057));
@@ -4140,7 +4249,15 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decim
   // Needle dial: pointer over the track instead of a fill arc; the value
   // moves into the arc's bottom gap, out of the pointer's way
   const needle = gstyle === 'needle';
+  // Segmented: the sweep as LED blocks; Zones: caution/danger bands with a
+  // pointer instead of a fill (both keep the value in the centre)
+  const segments = gstyle === 'segments';
+  const zones = gstyle === 'zones';
   const pointFrac = invertScale ? 1 - frac : frac;
+  const segN = Math.max(12, Math.min(30, Math.round(size / 9)));
+  const zoneList = zones ? gaugeZones(min, max, warn, warnColor, 'url(#' + grad + ')', invertScale) : null;
+  const arcSeg = (f0, f1, key, stroke, w, cls) => html`<circle key=${key} class=${cls || ''} cx=${c} cy=${c} r=${r} fill="none" stroke=${stroke}
+    stroke-dasharray=${(arc * (f1 - f0)).toFixed(2) + ' ' + circ.toFixed(2)} stroke-dashoffset=${(-arc * f0).toFixed(2)} style=${'stroke-width:' + w + 'px'} />`;
   // Fraction along the DISPLAYED sweep for an arbitrary value (peak ticks)
   const dispFrac = (val) => {
     const f = Math.min(1, Math.max(0, (val - min) / span));
@@ -4167,13 +4284,33 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decim
               <stop offset="100%" stop-color="#54e6a4" />
             `}
           </linearGradient>
+          ${zoneList && zoneList.filter(([, , col]) => isHex(col)).map(([, , col]) => html`
+            <linearGradient key=${col} id=${grad + col.slice(1)} x1="0" y1="1" x2="1" y2="0">
+              <stop offset="0%" stop-color=${hueShift(col, WARN_SWEEP)} />
+              <stop offset="50%" stop-color=${col} />
+              <stop offset="100%" stop-color=${hueShift(col, -WARN_SWEEP)} />
+            </linearGradient>`)}
         </defs>
         <g transform=${'rotate(135 ' + c + ' ' + c + ')'}>
+          ${segments ? Array.from({ length: segN }, (_, i) => {
+            const gap = 0.2 / segN;
+            const col = segColour({ m: (i + 0.5) / segN, startFrac, lenFrac, lo: min, hi: max, invert: invertScale,
+              warn, wc, center: hasCenter ? center : null, revColor, custom, color });
+            return arcSeg(i / segN + gap, (i + 1) / segN - gap, 's' + i, col || undefined, Math.round(sw * 1.15), col ? 'g-seg on' : 'g-seg');
+          })
+          : zones ? zoneList
+            .map(([f0, f1, col], i) => arcSeg(f0 + 0.003, f1 - 0.003, 'z' + i, isHex(col) ? 'url(#' + grad + col.slice(1) + ')' : col, Math.max(4, Math.round(sw * 0.5)), 'g-zone'))
+          : html`
           <circle class="g-track" cx=${c} cy=${c} r=${r} stroke-dasharray=${arc + ' ' + circ} style=${'stroke-width:' + sw + 'px'} />
           <circle class="g-value ${legacyOver ? 'over' : ''}" cx=${c} cy=${c} r=${r}
             stroke=${stroke} opacity=${!needle && lenFrac > 0.004 ? 1 : 0}
             stroke-dasharray=${(arc * lenFrac) + ' ' + circ}
-            stroke-dashoffset=${-(arc * startFrac)} style=${'stroke-width:' + sw + 'px'} />
+            stroke-dashoffset=${-(arc * startFrac)} style=${'stroke-width:' + sw + 'px'} />`}
+          ${zones && v != null && html`
+            <g class="g-needle g-pointer" style=${'transform-origin:' + c + 'px ' + c + 'px;transform:rotate(' + (pointFrac * SWEEP).toFixed(2) + 'deg)'}>
+              <line x1=${c + r - Math.round(sw * 1.3)} y1=${c} x2=${c + r + Math.round(sw * 0.7)} y2=${c}
+                stroke=${warned ? wc : 'var(--text)'} stroke-width=${Math.max(3, Math.round(size * 0.022))} stroke-linecap="round" />
+            </g>`}
           ${hasCenter && tickLine(tickFrac, 'g-center-tick', 'ct')}
           ${/* Peak-hold: markers at the session's highest (and, for centred
               gauges, lowest) value seen so far */ ''}
@@ -4242,8 +4379,8 @@ const tileStreamName = (g) => g.name || ((g.type === 'toggle' || g.type === 'sli
 // pages and the same editor as every gauge, so any tile can sit on the
 // Dashboard or on a gauge page (doc/REDESIGN.md, phase 3). The Dashboard tab
 // is simply the page gauges.json names as `dashboard`.
-const WIDGET_TYPES = new Set(['status', 'metric', 'messages', 'terminal', 'actions', 'cansend']);
-const NO_VALUE_TYPES = ['status', 'messages', 'terminal', 'actions', 'cansend'];
+const WIDGET_TYPES = new Set(['status', 'metric', 'messages', 'terminal', 'actions', 'cansend', 'image']);
+const NO_VALUE_TYPES = ['status', 'messages', 'terminal', 'actions', 'cansend', 'image'];
 const STATUS_NAMES = ['opmode', 'status', 'lasterr'];
 const statusFigs = (g) => (Array.isArray(g.figs) && g.figs.length ? g.figs : getDashMetrics());
 // Values a tile streams besides its own: the status tile follows the run
@@ -4369,6 +4506,7 @@ function migrateGauges(data) {
         name: p.name || 'Page ' + (pi + 1),
         cond: (p.cond && p.cond.name) ? p.cond : undefined,
         layout: p.layout === 'stack' ? 'stack' : undefined,
+        bg: pageBg(p.bg),
         items: (Array.isArray(p.items) ? p.items : []).map(g => {
           const type = g.type || 'radial';
           const floor = tileFloor(type);
@@ -4403,7 +4541,7 @@ function migrateGauges(data) {
 // Min = Max gates on EXACTLY that value (like page conditions): Min 3 / Max 3
 // lights only on 3, not 4. invert flips the lamp (lit while the value is
 // OFF/unlit) — the caption still names the value's real state.
-const IndicatorLamp = ({ value, min, max, color, enums, invert, px }) => {
+const IndicatorLamp = ({ value, min, max, color, enums, invert, px, bare }) => {
   const v = (value == null || isNaN(value)) ? null : value;
   const lo = (min == null) ? 0 : min;
   const hi = (max == null) ? lo : max;
@@ -4411,19 +4549,25 @@ const IndicatorLamp = ({ value, min, max, color, enums, invert, px }) => {
   const on = invert ? (v != null && !rawOn) : rawOn;
   const col = (color && /^#[0-9a-fA-F]{6}$/.test(color)) ? color : 'var(--accent)';
   // Lamp fills ~42% of the tile: enough presence to read at a glance while
-  // keeping clear air between it and the title above / state caption below
-  const d = Math.round(px * 0.42);
+  // keeping clear air between it and the title above / state caption below.
+  // A bare lamp (Lamp only) has neither: it's a glow that fades out by its
+  // edge, so its box is larger for a bright core about the same size
+  const d = Math.round(px * (bare ? 0.62 : 0.42));
   const label = v == null ? '—' : (enums ? enumLabel(enums, v) : (rawOn ? 'ON' : 'OFF'));
   return html`
     <div class="ind-wrap" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:${Math.round(px * 0.09)}px">
       <div class="ind-lamp ${on ? 'on' : ''}" style=${{
         width: d + 'px', height: d + 'px', borderRadius: '50%',
-        background: on ? col : 'var(--surface)',
-        border: '2px solid ' + (on ? col : 'var(--border2)'),
-        boxShadow: on ? ('0 0 ' + Math.round(px * 0.12) + 'px ' + col) : 'none',
+        // A bare lamp is invisible while off, so a lamp drawn in a background
+        // picture shows through, and lit it's a soft glow rather than a disc
+        background: bare
+          ? (on ? 'radial-gradient(circle, ' + col + ' 0 22%, color-mix(in srgb, ' + col + ' 45%, transparent) 42%, transparent 70%)' : 'transparent')
+          : (on ? col : 'var(--surface)'),
+        border: '2px solid ' + (bare ? 'transparent' : (on ? col : 'var(--border2)')),
+        boxShadow: on && !bare ? ('0 0 ' + Math.round(px * 0.12) + 'px ' + col) : 'none',
         transition: 'background .15s, box-shadow .15s',
       }}></div>
-      ${px >= 40 && html`<div class="g-unit" style=${'font-size:' + Math.max(0.7, px / 230 * 1.0).toFixed(2) + 'rem'}>${label}</div>`}
+      ${px >= 40 && !bare && html`<div class="g-unit" style=${'font-size:' + Math.max(0.7, px / 230 * 1.0).toFixed(2) + 'rem'}>${label}</div>`}
     </div>`;
 };
 
@@ -4431,7 +4575,7 @@ const IndicatorLamp = ({ value, min, max, color, enums, invert, px }) => {
 // level bar or a column depending on the tile's shape (wider = horizontal,
 // taller = vertical). Same range/gradient/over-range behaviour as the
 // radial; value overlaid in the centre, min/max in the corners.
-const BarGauge = ({ value, min = 0, max = 100, unit, color, enums, decimals = 1, w, h, warn, warnColor, center, invertScale, peaks, revColor }) => {
+const BarGauge = ({ value, min = 0, max = 100, unit, color, enums, decimals = 1, w, h, warn, warnColor, center, invertScale, peaks, revColor, gstyle }) => {
   const v = (value == null || isNaN(value)) ? null : value;
   const lo = min != null ? min : 0;
   const hi = (max == null || max === lo) ? lo + 100 : max;
@@ -4468,12 +4612,29 @@ const BarGauge = ({ value, min = 0, max = 100, unit, color, enums, decimals = 1,
   const vfs = Math.max(9, Math.min(30, Math.round(Math.min(w, h) * 0.42),
     Math.round((w * 1.7) / Math.max(2, disp.length + (!enums && unit ? 1 : 0)))));
   const showEnds = (horiz ? w : h) >= 70 && Math.min(w, h) >= 30;
+  // Segmented: LED blocks along the bar; Zones: caution/danger bands along
+  // one edge with a marker at the value, in place of the fill
+  const segments = gstyle === 'segments', zones = gstyle === 'zones';
+  const along = horiz ? 'left:' : 'bottom:', size = horiz ? 'width:' : 'height:';
+  const segN = Math.max(8, Math.min(40, Math.round((horiz ? w : h) / 14)));
   return html`
-    <div class="bar-gauge ${horiz ? 'horiz' : 'vert'}" style=${'width:' + w + 'px;height:' + h + 'px'}>
-      <div class="bar-fill ${over ? 'over' : ''}"
-        style=${(horiz ? 'left:' : 'bottom:') + (startFrac * 100).toFixed(1) + '%;'
-          + (horiz ? 'width:' : 'height:') + (lenFrac * 100).toFixed(1) + '%;'
-          + (warned ? 'background:' + wc : over ? '' : 'background:' + (revC || grad))}></div>
+    <div class="bar-gauge ${horiz ? 'horiz' : 'vert'} ${segments ? 'bar-segmented' + (horiz && h >= 44 ? ' seg-split' : '') : ''} ${zones ? 'bar-zoned' : ''}" style=${'width:' + w + 'px;height:' + h + 'px'}>
+      ${/* Each style in its own slot, so switching styles never swaps an
+          element for a list in one place */ ''}
+      ${!segments && !zones && html`<div class="bar-fill ${over ? 'over' : ''}"
+        style=${along + (startFrac * 100).toFixed(1) + '%;'
+          + size + (lenFrac * 100).toFixed(1) + '%;'
+          + (warned ? 'background:' + wc : over ? '' : 'background:' + (revC || grad))}></div>`}
+      ${segments && html`<div class="bar-segs">${Array.from({ length: segN }, (_, i) => {
+        const col = segColour({ m: (i + 0.5) / segN, startFrac, lenFrac, lo, hi, invert: invertScale,
+          warn, wc, center: hasCenter ? center : null, revColor, custom, color });
+        return html`<div key=${'s' + i} class=${'bar-seg' + (col ? ' on' : '')}
+          style=${along + (i / segN * 100).toFixed(2) + '%;' + size + (100 / segN).toFixed(2) + '%' + (col ? ';--seg:' + col : '')}></div>`;
+      })}</div>`}
+      ${zones && html`<div class="bar-zones">${gaugeZones(lo, hi, warn, warnColor, grad, invertScale).map(([f0, f1, col], i) => html`
+        <div key=${'z' + i} class="bar-zone" style=${along + (f0 * 100).toFixed(2) + '%;' + size + ((f1 - f0) * 100).toFixed(2) + '%;'
+          + (col === grad ? bandBg(grad, f0, f1, horiz) : 'background:linear-gradient(' + dir + ',' + hueShift(col, WARN_SWEEP) + ',' + col + ' 50%,' + hueShift(col, -WARN_SWEEP) + ')')}></div>`)}</div>`}
+      ${zones && v != null && html`<div class="bar-marker" style=${along + ((invertScale ? 1 - frac : frac) * 100).toFixed(2) + '%' + (warned ? ';background:' + wc : '')}></div>`}
       ${hasCenter && html`<div class="bar-center-tick" style=${(horiz ? 'left:' : 'bottom:') + (tickFrac * 100).toFixed(1) + '%'}></div>`}
       ${/* Peak-hold markers: session max (and min on centred bars) */ ''}
       ${peaks && (() => {
@@ -4497,6 +4658,21 @@ const BarGauge = ({ value, min = 0, max = 100, unit, color, enums, decimals = 1,
 // Plain text tile: the live value as large text (with unit / enum label),
 // or fixed caption text when "Static text" is set — handy for labelling
 // dashboard sections.
+// Text tile as a Badge: name, value and unit in one small pill, sized to the
+// tile but deliberately modest, like the readouts on a car's status screen
+const TextBadge = ({ title, value, unit, enums, decimals, w, h }) => {
+  const v = (value == null || isNaN(value)) ? null : value;
+  const disp = v == null ? '—' : (enums ? String(enumLabel(enums, v)) : v.toFixed(decimals));
+  const fs = Math.max(11, Math.min(26, Math.round(Math.min(h * 0.22, (w * 0.9) / Math.max(3, disp.length + 1.5)))));
+  // The name shrinks (in em of the value) to fit a narrow tile, e.g. on a phone
+  const nameEm = Math.min(0.48, (w * 0.7) / (fs * Math.max(1, String(title).length) * 0.72));
+  return html`
+    <div class="tile-badge" style=${'font-size:' + fs + 'px'}>
+      ${title && title !== '—' && html`<span class="tb-name" style=${'font-size:' + nameEm.toFixed(3) + 'em'}>${title}</span>`}
+      <span class="tb-val">${disp}${unit && !enums && v != null && html`<span class="tb-unit">${unit}</span>`}</span>
+    </div>`;
+};
+
 const TextTile = ({ value, unit, enums, text, decimals, w, h }) => {
   const isStatic = !!(text && String(text).trim());
   let disp;
@@ -4874,6 +5050,235 @@ const CanSendTile = () => {
     ${result && html`<p class="widget-note" style="font-family:var(--mono)">${result}</p>`}`;
 };
 
+// ---- Image tiles: a picture from the device's filesystem (a logo, a
+// wiring sketch). Uploads are saved as img-<name>.<ext>: the firmware treats
+// that prefix as layout data an operator may write, where any other .png/.jpg
+// is part of the UI and admin-only (src/web_logic.h). SVG is pickable but
+// never uploaded: a same-origin SVG opened directly can run script.
+const IMG_PREFIX = 'img-';
+const IMG_MAX = 200 * 1024; // the whole SPIFFS is ~1-1.5 MB, the UI included
+const IMG_TYPES = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp', 'image/gif': '.gif' };
+const isImageFile = (n) => /\.(png|jpe?g|webp|gif|svg)$/i.test(n);
+// The device files that are the user's own pictures (what backups and the
+// update stash carry). No file the firmware ships starts with img-, so an
+// update can never overwrite one (tests/e2e/image-tile.spec.mjs checks)
+const isUserImage = (n) => /^img-[\w-]+\.(png|jpe?g|webp|gif)$/i.test(String(n || ''));
+// Links open outside the app, and only to the web (no javascript: URLs);
+// checked where the tile renders, so a half-typed one just isn't a link yet
+const imgLink = (s) => (/^https?:\/\/\S+$/i.test(String(s || '').trim()) ? String(s).trim() : '');
+// SPIFFS names stop at 31 characters with the leading slash: keep the
+// user's name recognisable but short and URL-safe
+function imgFileName(file) {
+  const base = String(file.name || '').replace(/\.[^.]*$/, '').toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').replace(/^img-/, '').slice(0, 18);
+  return IMG_PREFIX + (base || 'image') + IMG_TYPES[file.type];
+}
+async function uploadImage(file) {
+  if (!IMG_TYPES[file.type]) throw new Error('Choose a PNG, JPEG, WebP or GIF image');
+  if (file.size > IMG_MAX) throw new Error('That image is ' + Math.round(file.size / 1024) + ' KB; the limit is ' + (IMG_MAX / 1024) + ' KB. Scale it down or save it as an optimised PNG/JPEG first.');
+  const name = imgFileName(file);
+  const fd = new FormData();
+  fd.append('updatefile', file, name);
+  const r = await fetch('/edit', { method: 'POST', body: fd });
+  // The reply's text is the reason (sign-in, permissions, the demo)
+  if (!r.ok) throw new Error((await r.text().catch(() => '')) || 'Upload failed (HTTP ' + r.status + ')');
+  // The firmware answers 200 even when SPIFFS filled up mid-write, so read
+  // the file back: a short one is dropped rather than shown half-drawn
+  let size = -1;
+  try { const b = await fetch('/' + name + '?v=' + Date.now(), { cache: 'no-store' }); if (b.ok) size = (await b.blob()).size; } catch (e) {}
+  if (size !== file.size) {
+    await api.deleteFile('/' + name).catch(() => {});
+    throw new Error('The device could not store the image (not enough free space?)');
+  }
+  return name;
+}
+
+// Relative src, so it resolves on the device and under the demo's base path
+// alike; ?v= (bumped by each upload) gets past the firmware's day-long image
+// cache when a file is replaced under the same name
+const ImageTile = ({ g, editing }) => {
+  // Remembered per src, not reset by an effect: a quick 404 can fire
+  // onerror before a mount effect runs, which would then clear it
+  const [brokenSrc, setBrokenSrc] = useState(null);
+  const src = g.file ? g.file + (g.v ? '?v=' + g.v : '') : '';
+  if (!src || brokenSrc === src) {
+    return html`<p class="widget-note img-empty">${!src ? (editing ? 'tap to choose an image' : '') : 'Image not found: ' + g.file}</p>`;
+  }
+  const img = html`<img class="img-pic" src=${src} alt=${g.label || ''} draggable=${false} onerror=${() => setBrokenSrc(src)}
+    style=${'object-fit:' + (g.fit === 'cover' ? 'cover' : 'contain')} />`;
+  const link = imgLink(g.href);
+  return html`
+    ${link ? html`<a class="img-link" href=${link} target="_blank" rel="noopener noreferrer">${img}</a>` : img}
+    ${g.label && html`<div class="img-caption">${g.label}</div>`}`;
+};
+
+// Pick a file already on the device or upload one (which is then picked).
+// Shared by image tiles and page backgrounds; `id` prefixes the controls.
+// onPick(name, v): v is set for a fresh upload (the cache-busting stamp)
+const ImagePicker = ({ id, file, onPick }) => {
+  const [names, setNames] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const refresh = () => api.getFileList()
+    .then(list => setNames(list.map(f => String(f.name).replace(/^\/+/, '')).filter(isImageFile).sort()))
+    .catch(() => setNames([]));
+  useEffect(() => { refresh(); }, []);
+  const opts = names ? [...new Set([...(file ? [file] : []), ...names])] : (file ? [file] : []);
+  const onFile = async (e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = ''; // the same file again is a new upload
+    if (!f) return;
+    setBusy(true); setErr('');
+    try {
+      const name = await uploadImage(f);
+      onPick(name, Date.now());
+      await refresh();
+      showToast('Uploaded ' + name, 'ok');
+    } catch (ex) { setErr(ex.message || String(ex)); }
+    setBusy(false);
+  };
+  return html`
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <label style="width:4.5em">File</label>
+      <select id=${id + '-file'} value=${file || ''} onchange=${e => onPick(e.target.value || undefined)}
+        style="width:auto;min-width:11em;max-width:100%;padding:5px 30px 5px 8px">
+        <option value="">${names ? '(none)' : 'Loading…'}</option>
+        ${opts.map(n => html`<option value=${n}>${n}</option>`)}
+      </select>
+      <${Gate} need="operator">
+        <input id=${id + '-upload'} type="file" accept=${Object.keys(IMG_TYPES).join(',')} hidden disabled=${busy} onchange=${onFile} />
+        <label class="butt" for=${id + '-upload'} style="font-size:.75rem;padding:4px 12px;margin:0" aria-disabled=${busy || undefined}>
+          <${Icon} n="upload" />${busy ? 'Uploading…' : 'Upload'}</label>
+      </${Gate}>
+    </div>
+    ${err && html`<p id=${id + '-error'} class="widget-note" style="color:var(--red)">${err}</p>`}`;
+};
+
+// The image section of the tile settings
+const ImageSettings = ({ cfg, update }) => html`
+    <p class="modal-sect">Image</p>
+    <${ImagePicker} id="image" file=${cfg.file} onPick=${(name, v) => { update('file', name); if (v) update('v', v); }} />
+    <div style="display:flex;gap:8px;align-items:center">
+      <label style="width:4.5em">Fit</label>
+      <select id="image-fit" value=${cfg.fit === 'cover' ? 'cover' : 'contain'} onchange=${e => update('fit', e.target.value === 'cover' ? 'cover' : undefined)}
+        style="width:auto;min-width:11em;padding:5px 30px 5px 8px">
+        <option value="contain">Whole image</option>
+        <option value="cover">Fill the tile (crops)</option>
+      </select>
+    </div>
+    <div style="display:flex;gap:8px;align-items:center">
+      <label style="width:4.5em">Link</label>
+      <input id="image-link" type="text" inputmode="url" value=${cfg.href || ''} placeholder="https://… (optional)"
+        oninput=${e => update('href', e.target.value.trim() || undefined)} style="flex:1;padding:5px 8px" />
+    </div>
+    <p style="font-size:.72rem;color:var(--text3);margin:0">PNG, JPEG, WebP or GIF up to ${IMG_MAX / 1024} KB, stored on the device as ${IMG_PREFIX}….
+      The Label above is shown as a caption; Clear drops the card behind the image.</p>`;
+
+// ---- Page backgrounds: one picture behind a gauge page's tiles (a car
+// with borderless lamp tiles over its real lamps). It is pinned to the
+// grid's own coordinates: a block of cells (`cols` wide from column `x`,
+// `rows` tall from row `y`; the full width from the top when unset) in the
+// cell height the grid itself uses (--gs-cell, set with it in
+// applyCellSize), so a tile over a spot in the picture stays over that spot
+// at every width. A block smaller than the page keeps a small picture from
+// being stretched past its resolution and leaves room for gauges beside it.
+// Stored on the page: bg { file, v?, fit?, pos?, opacity?, x?, y?, cols?, rows }
+const BG_MAX_ROWS = 20;
+function pageBg(bg) {
+  if (!bg || typeof bg !== 'object' || !bg.file) return undefined;
+  const op = Math.round(Number(bg.opacity));
+  const int = (v, lo, hi, dflt) => { const n = Math.round(Number(v)); return isNaN(n) ? dflt : Math.max(lo, Math.min(hi, n)); };
+  const x = int(bg.x, 0, GRID_COLS - 1, 0);
+  const cols = int(bg.cols, 1, GRID_COLS - x, GRID_COLS - x);
+  const y = int(bg.y, 0, BG_MAX_ROWS - 1, 0);
+  return {
+    file: String(bg.file), v: bg.v || undefined,
+    fit: bg.fit === 'cover' ? 'cover' : undefined,
+    pos: bg.pos === 'center' ? 'center' : undefined, // top-left otherwise
+    // Text colour for tiles over the picture: a dark photo needs light text
+    // in either theme (and vice versa); the theme's own colours when unset
+    ink: bg.ink === 'light' || bg.ink === 'dark' ? bg.ink : undefined,
+    opacity: op >= 10 && op < 100 ? op : undefined,   // percent; full when unset
+    x: x || undefined, y: y || undefined,
+    cols: cols < GRID_COLS - x ? cols : undefined,    // to the right edge when unset
+    rows: Math.max(1, Math.min(BG_MAX_ROWS, Math.round(Number(bg.rows)) || 6)),
+  };
+}
+// Rows the page must span to show its whole background
+const bgBottom = (bg) => bg ? (bg.y || 0) + bg.rows : 0;
+// Whether a tile overlaps the background's block of cells
+const onBg = (bg, g) => {
+  if (!bg) return false;
+  const x = bg.x || 0, y = bg.y || 0, cols = bg.cols || (GRID_COLS - x);
+  return (g.x || 0) < x + cols && (g.x || 0) + (g.w || 1) > x && (g.y || 0) < y + bg.rows && (g.y || 0) + (g.h || 1) > y;
+};
+// A missing file fails quietly: no picture, and a note only while editing
+const PageBackground = ({ bg, editing }) => {
+  const [brokenSrc, setBrokenSrc] = useState(null);
+  const src = bg.file + (bg.v ? '?v=' + bg.v : '');
+  if (brokenSrc === src) return editing ? html`<p class="page-bg-missing">Background image not found: ${bg.file}</p>` : null;
+  const x = bg.x || 0, cols = bg.cols || (GRID_COLS - x);
+  return html`<div class="page-bg" aria-hidden="true" style=${'left:' + (x / GRID_COLS * 100) + '%;width:' + (cols / GRID_COLS * 100) + '%;'
+    + 'top:calc(var(--gs-cell, 60px) * ' + (bg.y || 0) + ');height:calc(var(--gs-cell, 60px) * ' + bg.rows + ')'}>
+    <img src=${src} alt="" draggable=${false} onerror=${() => setBrokenSrc(src)}
+      style=${'object-fit:' + (bg.fit || 'contain') + ';object-position:' + (bg.pos === 'center' ? 'center' : 'left top')
+        + (bg.opacity ? ';opacity:' + bg.opacity / 100 : '')} />
+  </div>`;
+};
+// The page settings' Background section; Rows starts at the page's current
+// height so the picture covers what's already there
+const BackgroundSettings = ({ page, update }) => {
+  const bg = page.bg;
+  const pageRows = page.items.reduce((m, g) => Math.max(m, (g.y || 0) + (g.h || 1)), 0) || 6;
+  const sel = 'width:auto;min-width:9em;padding:4px 28px 4px 8px';
+  return html`
+    <div id="page-bg-settings" style="display:flex;flex-direction:column;gap:6px;font-size:.8rem">
+      <${ImagePicker} id="bg" file=${bg && bg.file}
+        onPick=${(name, v) => update(name ? { ...(bg || { rows: pageRows }), file: name, v: v || (bg && bg.v) } : null)} />
+      ${bg && html`
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <label style="width:4.5em">Fit</label>
+          <select id="bg-fit" value=${bg.fit || 'contain'} onchange=${e => update({ ...bg, fit: e.target.value })} style=${sel}>
+            <option value="contain">Whole image</option>
+            <option value="cover">Fill (crops)</option>
+          </select>
+          <select id="bg-pos" value=${bg.pos || 'top-left'} onchange=${e => update({ ...bg, pos: e.target.value })} style=${sel}>
+            <option value="top-left">Top left</option>
+            <option value="center">Centred</option>
+          </select>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <label style="width:4.5em">Text on it</label>
+          <select id="bg-ink" value=${bg.ink || 'theme'} onchange=${e => update({ ...bg, ink: e.target.value === 'theme' ? undefined : e.target.value })} style=${sel}>
+            <option value="theme">Theme colours</option>
+            <option value="light">Light (dark picture)</option>
+            <option value="dark">Dark (light picture)</option>
+          </select>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <label style="width:4.5em">Size</label>
+          <input id="bg-cols" type="number" min="1" max=${GRID_COLS - (bg.x || 0)} value=${bg.cols || (GRID_COLS - (bg.x || 0))} title="Columns"
+            oninput=${e => { const n = parseInt(e.target.value); if (n > 0) update({ ...bg, cols: n }); }} style="width:4.5em;padding:4px 6px" />
+          <span style="color:var(--text3)">×</span>
+          <input id="bg-rows" type="number" min="1" max=${BG_MAX_ROWS} value=${bg.rows} title="Rows"
+            oninput=${e => { const n = parseInt(e.target.value); if (n > 0) update({ ...bg, rows: n }); }} style="width:4.5em;padding:4px 6px" />
+          <label style="margin-left:6px">At</label>
+          <input id="bg-x" type="number" min="0" max=${GRID_COLS - 1} value=${bg.x || 0} title="Column"
+            oninput=${e => { const n = parseInt(e.target.value); if (n >= 0) update({ ...bg, x: n }); }} style="width:4.5em;padding:4px 6px" />
+          <span style="color:var(--text3)">,</span>
+          <input id="bg-y" type="number" min="0" max=${BG_MAX_ROWS - 1} value=${bg.y || 0} title="Row"
+            oninput=${e => { const n = parseInt(e.target.value); if (n >= 0) update({ ...bg, y: n }); }} style="width:4.5em;padding:4px 6px" />
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <label style="width:4.5em">Opacity</label>
+          <input id="bg-opacity" type="range" min="10" max="100" step="5" value=${bg.opacity || 100}
+            oninput=${e => update({ ...bg, opacity: parseInt(e.target.value) })} style="flex:1;min-width:5em" />
+        </div>
+        <button onclick=${() => update(null)} style="font-size:.72rem;padding:3px 10px;width:auto;align-self:flex-start;color:var(--red)"><${Icon} n="x" size=${11} />Remove background</button>`}
+      <p class="edit-help" style="font-size:.72rem;color:var(--text3);margin:0">A picture behind this page: Size is columns × rows (the page is ${GRID_COLS} columns wide), At is the top-left cell (column, row), counting from 0. Keep it to a block that suits the picture's resolution, with gauges beside it. It scales with the tiles, so a tile placed over a spot stays on it; tiles set to Clear sit on the picture with no card.</p>
+    </div>`;
+};
+
 // While editing, a widget is inert: a tap configures it instead of firing it
 const WidgetTile = ({ g, value, unit, enums, nameVals, editing }) => html`
   <div class="widget-body wt-${g.type}" inert=${editing || undefined}>
@@ -4882,6 +5287,7 @@ const WidgetTile = ({ g, value, unit, enums, nameVals, editing }) => html`
       : g.type === 'messages' ? html`<${MessagesTile} editing=${editing} />`
       : g.type === 'terminal' ? html`<${TerminalTile} />`
       : g.type === 'actions' ? html`<${ActionsTile} g=${g} />`
+      : g.type === 'image' ? html`<${ImageTile} g=${g} editing=${editing} />`
       : html`<${CanSendTile} />`}
   </div>`;
 
@@ -4935,7 +5341,13 @@ const GaugeTileBody = ({ g, title, value, value2, unit, enums, editing, canMode,
   // tile uses the SAME fixed name row, so titles read as one consistent
   // size across a page of mixed tile types.
   const compactName = (g.type === 'indicator' || g.type === 'text') && h < 48 && h >= 18;
-  const showName = title !== '—' && (h >= 48 || compactName);
+  // A Lamp only indicator is just the light (e.g. over a page background
+  // picture); its title attribute still names it
+  const bareLamp = g.type === 'indicator' && !!g.lampOnly;
+  // A Badge text tile is a compact pill (name, value, unit) on its own card,
+  // readable wherever it sits, e.g. on a busy background photo
+  const badge = g.type === 'text' && !!g.badge && !(g.text && String(g.text).trim());
+  const showName = !bareLamp && !badge && title !== '—' && (h >= 48 || compactName);
   const nameH = !showName ? 0
     : compactName ? Math.max(8, Math.min(12, Math.round(h * 0.32)))
     : 16;
@@ -4958,7 +5370,10 @@ const GaugeTileBody = ({ g, title, value, value2, unit, enums, editing, canMode,
             w=${w - 4} h=${gh - 2} />`
         : (g.type === 'indicator')
         ? html`<${IndicatorLamp} value=${value} min=${g.min} max=${g.max} color=${g.color || ''} enums=${enums}
-            invert=${!!g.invert} px=${Math.max(14, Math.min(w, gh) - 4)} />`
+            invert=${!!g.invert} bare=${bareLamp} px=${Math.max(14, Math.min(w, gh) - 4)} />`
+        : badge
+        ? html`<${TextBadge} title=${title} value=${value} unit=${unit} enums=${enums}
+            decimals=${g.decimals != null ? g.decimals : 1} w=${w} h=${h} />`
         : (g.type === 'text')
         ? html`<${TextTile} value=${value} unit=${unit} enums=${enums} text=${g.text || ''}
             decimals=${g.decimals != null ? g.decimals : 1} w=${w - 6} h=${gh - (gh < 20 ? 0 : 4)} />`
@@ -4968,7 +5383,7 @@ const GaugeTileBody = ({ g, title, value, value2, unit, enums, editing, canMode,
         ? html`<${BarGauge} value=${value} unit=${unit} enums=${enums} color=${g.color || ''}
             decimals=${g.decimals != null ? g.decimals : 1} min=${g.min != null ? g.min : 0}
             max=${(g.max == null || g.max === 0) ? 4000 : g.max} w=${w - 8} h=${gh - 4}
-            warn=${g.warn} warnColor=${g.warnColor} center=${g.center} invertScale=${!!g.invertScale} peaks=${peaks} revColor=${g.revColor || ''} />`
+            warn=${g.warn} warnColor=${g.warnColor} center=${g.center} invertScale=${!!g.invertScale} peaks=${peaks} revColor=${g.revColor || ''} gstyle=${g.gstyle || ''} />`
         : (g.type === 'toggle')
         ? html`<${Gate} need="operator"><${ToggleTile} g=${g} value=${value} canMode=${canMode} editing=${editing} px=${Math.max(20, Math.min(w, gh) - 4)} /></${Gate}>`
         : (g.type === 'slider')
@@ -5108,12 +5523,16 @@ const Gauges = ({ dash = false }) => {
   const shownPages = pages.filter(p => (dash ? p.id === dashId : p.id !== dashId));
   const page = pages.find(p => p.id === activePage) || shownPages[0] || pages[0];
   const items = page.items;
-  // On phones a 'stack' page lists its tiles in reading order
-  const stacked = page.layout === 'stack' && narrow && !editing;
+  // On phones a 'stack' page lists its tiles in reading order, unless it
+  // has a background: reflowed tiles couldn't stay on their spots in it
+  const stacked = page.layout === 'stack' && narrow && !editing && !page.bg;
   const stackRef = useRef(false);
   stackRef.current = page.layout === 'stack';
   const itemsRef = useRef(items);
   itemsRef.current = items;
+  const bgRows = bgBottom(page.bg);
+  const bgRowsRef = useRef(bgRows);
+  bgRowsRef.current = bgRows;
   const pagesRef = useRef(pages);
   pagesRef.current = pages;
   const editingRef = useRef(editing);
@@ -5216,7 +5635,7 @@ const Gauges = ({ dash = false }) => {
       const availW = availWidth();
       if (!(availW > 0)) return 1;
       let cell = availW / GRID_COLS;
-      const rows = itemsRef.current.reduce((m, g) => Math.max(m, (g.y || 0) + (g.h || 1)), 0);
+      const rows = itemsRef.current.reduce((m, g) => Math.max(m, (g.y || 0) + (g.h || 1)), bgRowsRef.current);
       // A 'stack' page (the Dashboard) reads like a page and scrolls; only
       // gauge pages shrink to fit the screen height, and not on phones,
       // where the top and bottom bars leave too little height for it
@@ -5240,11 +5659,13 @@ const Gauges = ({ dash = false }) => {
         el.style.maxWidth = ''; el.style.marginLeft = ''; el.style.marginRight = '';
       }
       grid.cellHeight(cell);
+      el.style.setProperty('--gs-cell', cell + 'px'); // the page background's row unit
     };
     const grid = GridStack.init({
       column: GRID_COLS,
       cellHeight: squareCell(),
       margin: MARGIN,
+      minRow: bgRowsRef.current, // at least as tall as the page background
       float: true,
       animate: false,
       staticGrid: !editing,
@@ -5313,11 +5734,12 @@ const Gauges = ({ dash = false }) => {
       ro.disconnect();
       window.removeEventListener('resize', applyCellSize);
       el.style.maxWidth = ''; el.style.marginLeft = ''; el.style.marginRight = '';
+      el.style.removeProperty('--gs-cell');
       grid.destroy(false); gridApi.current = null;
     };
     // types join: a type switch (e.g. radial -> indicator) changes the
     // engine minimums, so re-init to reapply them
-  }, [activePage, layoutGen, items.length, editing, pages.length, items.map(g => g.type).join(), stacked]);
+  }, [activePage, layoutGen, items.length, editing, pages.length, items.map(g => g.type).join(), stacked, bgRows]);
 
   // Enter edit mode, snapshotting the layout so Cancel can restore it
   const startEditing = () => {
@@ -5541,6 +5963,8 @@ const Gauges = ({ dash = false }) => {
     }));
   const clearPageCond = () =>
     setPages(ps => ps.map(p => p.id !== activePage ? p : { ...p, cond: undefined }));
+  const updatePageBg = (bg) =>
+    setPages(ps => ps.map(p => p.id !== activePage ? p : { ...p, bg: pageBg(bg) }));
 
   // High-rate spot value fetching for the active page (pauses main json refresh)
   useEffect(() => {
@@ -5719,10 +6143,12 @@ const Gauges = ({ dash = false }) => {
           <button onclick=${() => updatePageCond('name', '')} style="font-size:.75rem;padding:4px 10px;width:auto"><${Icon} n="plus" />Add condition</button>
           <p class="edit-help" style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">A condition switches to this page automatically while a value is in range — e.g. opmode 3 to 3, or lasterr 0 to 0 inverted (any error).</p>
         `}
+        <h3 class="underline">Page background</h3>
+        <${BackgroundSettings} page=${page} update=${updatePageBg} />
         <p class="edit-help" style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">Tap a tile to configure its value, type, colour and range — or to duplicate or remove it.</p>
         <h3 class="underline">Starter Layout</h3>
         <button onclick=${loadSampleLayout} style="font-size:.75rem;padding:4px 10px"><${Icon} n="cloud" />Load sample layout</button>
-        <p class="edit-help" style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">Six example pages (Driving, Battery, Temps, Charging, Debug, Controls) using standard value names — every gauge type included. Replaces your current gauges after confirmation.</p>
+        <p class="edit-help" style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">Seven example pages (Driving, Battery, Temps, Charging, Debug, Controls, Vehicle) using standard value names — every gauge type included, and a page background with lamp tiles over it. Replaces your current gauges after confirmation.</p>
         </div>
         `}
       </div>
@@ -5770,8 +6196,9 @@ const Gauges = ({ dash = false }) => {
           `)}
           ${editing && html`<button class="page-pill" title="Add page" onclick=${addPage}>+</button>`}
         </div>`}
-        ${items.length === 0 && !editing && html`<p style="color:var(--text3);font-size:.85rem;text-align:center;padding:2rem 0">Click Edit Layout to add a gauge.</p>`}
+        ${items.length === 0 && !editing && !page.bg && html`<p style="color:var(--text3);font-size:.85rem;text-align:center;padding:2rem 0">Click Edit Layout to add a gauge.</p>`}
         <div class=${'grid-stack' + (stacked ? ' stacked' : '')} ref=${gridRef} key=${'page-' + activePage + '-g' + layoutGen}>
+          ${page.bg && html`<${PageBackground} key=${'bg-' + page.bg.file} bg=${page.bg} editing=${editing} />`}
           ${items.map(g => {
             const sv = state.spotValues && state.spotValues[g.name];
             // Formula tiles carry their own unit text (there's no spot value
@@ -5786,7 +6213,7 @@ const Gauges = ({ dash = false }) => {
               ${/* In edit mode a tap opens the tile's settings (no overlay
                   buttons — on a 1x1 mobile tile they'd all overlap the
                   resize handle); drags are filtered by dragBusyRef */ ''}
-              <div class="grid-stack-item-content gauge-tile ${WIDGET_TYPES.has(g.type) ? 'widget-tile' : ''} ${g.type === 'status' ? 'hero-card' : ''} ${alarming ? 'alarming' : ''} ${g.transparent ? 'tile-clear' : ''}" title=${g.label || g.name || ''}
+              <div class="grid-stack-item-content gauge-tile ${WIDGET_TYPES.has(g.type) ? 'widget-tile' : ''} ${g.type === 'status' ? 'hero-card' : ''} ${alarming ? 'alarming' : ''} ${g.transparent ? 'tile-clear' : ''} ${onBg(page.bg, g) ? 'on-bg' + (page.bg.ink ? ' ink-' + page.bg.ink : '') : ''}" title=${g.label || g.name || ''}
                 style=${alarming ? '--alarmc:' + ((g.warnColor && /^#[0-9a-fA-F]{6}$/.test(g.warnColor)) ? g.warnColor : '#ef4444') : ''}
                 onclick=${editing ? (() => { if (!dragBusyRef.current) setConfigId(g.id); }) : undefined}>
                 ${/* 'tap to set up' only for truly unconfigured tiles — a
@@ -5861,6 +6288,7 @@ const Gauges = ({ dash = false }) => {
                     <option value="terminal">Command terminal</option>
                     <option value="actions">Action buttons</option>
                     <option value="cansend">CAN frame sender</option>
+                    <option value="image">Image</option>
                   </optgroup>
                 </select>
                 <label style="margin-left:8px">Colour</label>
@@ -5870,7 +6298,7 @@ const Gauges = ({ dash = false }) => {
               </div>
               <div style="display:flex;gap:8px;align-items:center">
                 <label style="width:4.5em">Label</label>
-                <input type="text" value=${cfg.label || ''} placeholder="(shows the value name)" maxlength="24"
+                <input type="text" value=${cfg.label || ''} placeholder=${cfg.type === 'image' ? '(caption, optional)' : '(shows the value name)'} maxlength="24"
                   oninput=${e => updateGaugeConfig(cfg.id, 'label', e.target.value)} style="flex:1;padding:5px 8px" />
               </div>
               <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
@@ -6046,6 +6474,11 @@ const Gauges = ({ dash = false }) => {
                       oninput=${e => updateGaugeConfig(cfg.id, 'text', e.target.value)} style="flex:1;padding:5px 8px" />
                   </div>
                   <p style="font-size:.72rem;color:var(--text3);margin:0">Leave Text empty to show the selected value as large text; set it for a static caption (section headers etc.).</p>
+                  <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+                    <span style="width:4.5em">Badge</span>
+                    <input type="checkbox" id="gauge-badge" checked=${!!cfg.badge} onchange=${e => updateGaugeConfig(cfg.id, 'badge', e.target.checked ? true : undefined)} style="width:auto" />
+                    <span style="font-size:.72rem;color:var(--text3)">name, value and unit in a small pill — readable over a background picture</span>
+                  </label>
                 ` : ''}
                 ${cfg.type === 'line' ? html`
                   <div style="display:flex;gap:8px;align-items:center">
@@ -6121,22 +6554,34 @@ const Gauges = ({ dash = false }) => {
                   <input id="gauge-peak" type="checkbox" checked=${!!cfg.peak} onchange=${e => updateGaugeConfig(cfg.id, 'peak', e.target.checked || undefined)} style="width:auto" />
                   <span style="font-size:.72rem;color:var(--text3)">hold a marker at the session's highest value (and lowest, on centred gauges)</span>
                 </label>
-                ${(cfg.type || 'radial') === 'radial' && html`
+                ${(() => {
+                  // Style: the default fill, or an alternative look; Zones
+                  // reads its bands from Warn, so it nudges toward setting one
+                  const radial = (cfg.type || 'radial') === 'radial';
+                  const opts = radial
+                    ? [['', 'Filled arc'], ['needle', 'Needle dial'], ['segments', 'Segmented'], ['zones', 'Zone track']]
+                    : [['', 'Filled bar'], ['segments', 'Segmented LED'], ['zones', 'Zone bands']];
+                  return html`
                   <div style="display:flex;gap:8px;align-items:center">
                     <label style="width:4.5em">Style</label>
-                    <select id="gauge-style" value=${cfg.gstyle || 'arc'} onchange=${e => updateGaugeConfig(cfg.id, 'gstyle', e.target.value === 'needle' ? 'needle' : undefined)}
+                    <select id="gauge-style" value=${cfg.gstyle || ''} onchange=${e => updateGaugeConfig(cfg.id, 'gstyle', e.target.value || undefined)}
                       style="width:auto;min-width:9.5em;padding:5px 30px 5px 8px">
-                      <option value="arc">Filled arc</option>
-                      <option value="needle">Needle dial</option>
+                      ${opts.map(([v, label]) => html`<option key=${v} value=${v}>${label}</option>`)}
                     </select>
                   </div>
-                `}
+                  ${cfg.gstyle === 'zones' && cfg.warn == null && html`<p style="font-size:.72rem;color:var(--text3);margin:0">Set Warn ≥ to get caution and danger bands — without it the track is one band.</p>`}`;
+                })()}
               `}
               ${cfg.type === 'indicator' && html`
                 <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
                   <span style="width:4.5em">Invert</span>
                   <input type="checkbox" checked=${!!cfg.invert} onchange=${e => updateGaugeConfig(cfg.id, 'invert', e.target.checked)} style="width:auto" />
                   <span style="font-size:.72rem;color:var(--text3)">lamp lit while the value is OFF</span>
+                </label>
+                <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
+                  <span style="width:4.5em">Lamp only</span>
+                  <input type="checkbox" id="gauge-lamp-only" checked=${!!cfg.lampOnly} onchange=${e => updateGaugeConfig(cfg.id, 'lampOnly', e.target.checked ? true : undefined)} style="width:auto" />
+                  <span style="font-size:.72rem;color:var(--text3)">no name or ON/OFF text — with Clear, just the light (e.g. over a background picture)</span>
                 </label>
                 <p style="font-size:.72rem;color:var(--text3);margin:0">The lamp lights in the chosen colour when the value rises past the midpoint between Min and Max — e.g. Min 0 / Max 1 switches at 0.5. Set Min = Max to light only on exactly that value (e.g. 3 and 3 for opmode 3).</p>`}
               ${cfg.type === 'line' && html`
@@ -6210,6 +6655,7 @@ const Gauges = ({ dash = false }) => {
                       updateGaugeConfig(cfg.id, 'btns', next);
                     }} />${a.label}</label>`;
                 })}`}
+              ${cfg.type === 'image' && html`<${ImageSettings} cfg=${cfg} update=${(f, v) => updateGaugeConfig(cfg.id, f, v)} />`}
               ${cfg.type === 'metric' && html`
                 <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
                   <span style="width:4.5em">Spark</span>
@@ -6477,10 +6923,7 @@ const LoginScreen = ({ note }) => {
   return html`
     <main id="login" class="login-wrap">
       <form class="login-card" onsubmit=${submit} autocomplete="on">
-        <svg class="login-logo" viewBox="0 0 48 48" aria-hidden="true">
-          <circle cx="24" cy="24" r="21.4" fill="none" stroke="currentColor" stroke-width="2.4" opacity=".5" />
-          <path fill="none" stroke="#5b9dff" stroke-width="2.4" stroke-linecap="round" d="M6 24 C 12 11, 18 11, 24 24 C 30 37, 36 37, 42 24" />
-        </svg>
+        <${LogoMark} idp="login" cls="login-logo" />
         <h1>Sign in</h1>
         <p class="login-sub">OpenInverter web interface</p>
         ${note && html`<p class="login-note" role="status">${note}</p>`}

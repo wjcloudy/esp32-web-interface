@@ -315,6 +315,14 @@ inline bool isUiAsset(const char* path)
   // The Parameters tab's database subscription is stored as a .js file but
   // is data (it holds an openinverter.org token), not part of the UI
   if (n == 16 && memcmp(path, "/subscription.js", 16) == 0) return false;
+  // Pictures uploaded for image tiles ("/img-<name>.png") are layout data,
+  // so an operator can add them. Raster formats only: a same-origin SVG can
+  // run script, so "/img-x.svg" stays the UI's
+  if (n > 5 && memcmp(path, "/img-", 5) == 0) {
+    static const char* const img[] = { ".png", ".jpg", ".jpeg", ".webp", ".gif" };
+    for (size_t i = 0; i < sizeof(img) / sizeof(img[0]); i++)
+      if (n > 5 + strlen(img[i]) && endsWith(path, n, img[i])) return false; // a name, not just "/img-.png"
+  }
   static const char* const exts[] = { ".html", ".htm", ".js", ".mjs", ".css", ".svg", ".png", ".ico",
                                       ".jpg", ".jpeg", ".gif", ".woff", ".woff2", ".webmanifest" };
   for (size_t i = 0; i < sizeof(exts) / sizeof(exts[0]); i++)

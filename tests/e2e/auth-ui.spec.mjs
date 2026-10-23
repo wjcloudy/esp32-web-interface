@@ -62,6 +62,8 @@ test.describe('Sign-in on', () => {
 
   test('sign in, wrong password, sign out', async ({ page, mock }) => {
     await page.goto(mock.url);
+    // The card carries the full mark: ring and all three phase waves
+    await expect(page.locator('#login .login-logo path')).toHaveCount(3);
     await signInUi(page, 'admin', 'wrong-password');
     await expect(page.locator('#login-error')).toContainText('Incorrect');
     await expect(page.locator('#login-password')).toHaveValue('');

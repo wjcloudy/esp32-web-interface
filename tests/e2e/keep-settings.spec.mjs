@@ -42,6 +42,54 @@ test.describe('Settings kept across a web-interface update', () => {
     expect(await page.evaluate(() => localStorage.getItem('oi-update-restore'))).toBeNull();
   });
 
+  test('with sign-in on: everyone is signed out by the reboot, and the layouts come back at the next writer\'s sign-in', async ({ page, mock }) => {
+    await mock.addUser('admin', 'admin-pass-1', 'admin');
+    await mock.addUser('vera', 'viewer-pass', 'viewer');
+    await mock.putFile('gauges.json', JSON.stringify(GAUGES));
+    await mock.putFile('presets.json', JSON.stringify(PRESETS));
+    await mock.putFile('uiprefs.json', JSON.stringify(PREFS));
+    const signIn = async (user, password) => {
+      await expect(page.locator('#login')).toBeVisible();
+      await page.locator('#login-user').fill(user);
+      await page.locator('#login-password').fill(password);
+      await page.locator('#login-submit').click();
+      await expect(page.locator('#whoami')).toBeVisible();
+    };
+    await page.goto(mock.url);
+    await signIn('admin', 'admin-pass-1');
+    await gotoTab(page, 'Update');
+    page.on('dialog', d => d.accept());
+    await page.locator('#esp-ota-file').setInputFiles({
+      name: 'esp32_v9.9-ota.bin', mimeType: 'application/octet-stream', buffer: Buffer.from('OIWEBOTA-test-image'),
+    });
+    await expect.poll(async () => (await mock.state()).otaFlashes).toBe(1);
+    // The reboot drops every session (RAM); accounts and device config stay
+    const st = await mock.state();
+    expect(st.sessions).toBe(0);
+    expect(st.users.map(u => u.name)).toEqual(['admin', 'vera']);
+    expect(st.files).not.toContain('gauges.json');
+    expect(st.files).toContain('uiprefs.json');
+
+    // A viewer signing in first can't write: nothing restored, stash kept
+    await page.reload();
+    await signIn('vera', 'viewer-pass');
+    await expect(page.locator('#whoami')).toContainText('Read-only');
+    expect(await page.evaluate(() => localStorage.getItem('oi-update-restore'))).not.toBeNull();
+    expect((await mock.state()).files).not.toContain('gauges.json');
+
+    // The admin signs in next: the layouts come back, the stash is used up
+    await page.locator('#whoami').click();
+    await page.locator('#signout').click();
+    await signIn('admin', 'admin-pass-1');
+    await expect(page.locator('body')).toContainText('Restored 2 layout files after the update');
+    // (read through the signed-in page: with sign-in on, files need a session)
+    const asSignedIn = (name) => page.evaluate(n => fetch('/' + n).then(r => r.ok ? r.json() : null), name);
+    await expect.poll(() => asSignedIn('gauges.json')).toEqual(GAUGES);
+    expect(await asSignedIn('presets.json')).toEqual(PRESETS);
+    expect(await asSignedIn('uiprefs.json')).toEqual(PREFS);
+    expect(await page.evaluate(() => localStorage.getItem('oi-update-restore'))).toBeNull();
+  });
+
   test('a file already on the device is newer and is not overwritten', async ({ page, mock }) => {
     await openApp(page, mock);
     const newer = { pages: [{ name: 'Newer', items: [] }] };

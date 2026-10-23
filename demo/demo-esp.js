@@ -182,6 +182,12 @@
   // The device path a same-origin URL names, with or without the site's base
   const appPath = (u) => u.pathname.startsWith(BASE) ? '/' + u.pathname.slice(BASE.length) : u.pathname;
 
+  // Pictures the site ships for image tiles: /list offers them to pick,
+  // the static host serves them. Uploading images is not part of the demo
+  const SITE_IMAGES = ['example-badge.png', 'example-vehicle.webp', 'logo.png'];
+  const isImageUpload = (body) => body instanceof FormData && [...body.values()].some(v =>
+    v && typeof v === 'object' && (/^image\//.test(v.type) || /\.(png|jpe?g|webp|gif|svg)$/i.test(v.name || '')));
+
   async function readUploads(body) {
     if (!(body instanceof FormData)) return;
     for (const [, v] of body.entries()) {
@@ -227,8 +233,12 @@
       case '/settings': return settingsReply(q);
       case '/version': return reply(D.webVersion);
       case '/otainfo': return reply({ version: D.webVersion, repo: D.repo, target: settings.arch });
-      case '/list': return reply([...files.keys()].map(name => ({ type: 'file', name })), 200, 'text/json');
+      case '/list': return reply([...new Set([...files.keys(), ...SITE_IMAGES])].map(name => ({ type: 'file', name })), 200, 'text/json');
       case '/edit':
+        if (method === 'POST' && isImageUpload(init && init.body)) {
+          notice('no image was uploaded');
+          return reply(DEMO_NO + ' (images cannot be uploaded here; pick one of the bundled ones)', 400);
+        }
         if (method === 'POST') { await readUploads(init && init.body); return reply(''); }
         if (method === 'DELETE') { files.delete(String(q.get('f') || '').replace(/^\/+/, '')); return reply(''); }
         if (method === 'PUT') { files.set(String(q.get('f') || '').replace(/^\/+/, ''), ''); return reply(''); }

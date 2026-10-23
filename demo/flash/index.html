@@ -36,6 +36,8 @@ h1 { margin: 2px 0 0; font-size: 1.6rem; letter-spacing: -.02em; line-height: 1.
   -webkit-mask-composite: xor; mask-composite: exclude; }
 h2 { margin: 0 0 .6rem; font: 600 .7rem/1.4 var(--mono); text-transform: uppercase; letter-spacing: .11em; color: var(--text3); }
 p { margin: 0 0 .6rem; color: var(--text2); }
+.pick { border: 0; padding: 0; margin: 10px 0 0; min-width: 0; }
+.pick legend { padding: 0; margin-bottom: 8px; font: 600 .66rem/1.4 var(--mono); text-transform: uppercase; letter-spacing: .11em; color: var(--text3); }
 .seg { display: inline-flex; gap: 4px; padding: 4px; border-radius: 14px; background: var(--ctl); border: 1px solid var(--border); flex-wrap: wrap; }
 .seg label { display: flex; flex-direction: column; padding: 8px 16px; border-radius: 10px; cursor: pointer; color: var(--text2); min-width: 9.5rem; }
 .seg input { position: absolute; opacity: 0; pointer-events: none; }
@@ -75,10 +77,12 @@ footer { color: var(--text3); font-size: .82rem; text-align: center; }
     <h2 id="install-h">Install from your browser</h2>
     <p>Plug the board into this computer with a USB data cable, pick a release and press Install. The right image for your chip
       (classic ESP32 or ESP32-S3) is chosen automatically.</p>
-    <fieldset class="seg" id="channel" style="border:0;margin:6px 0 0">
-      <legend class="muted" style="padding:0 0 6px">Release</legend>
-      <label><input type="radio" name="channel" value="stable" checked><b>Stable</b><small id="ver-stable">…</small></label>
-      <label><input type="radio" name="channel" value="dev"><b>Dev</b><small id="ver-dev">…</small></label>
+    <fieldset class="pick" id="channel">
+      <legend>Release</legend>
+      <div class="seg">
+        <label><input type="radio" name="channel" value="stable" checked><b>Stable</b><small id="ver-stable">…</small></label>
+        <label><input type="radio" name="channel" value="dev"><b>Dev</b><small id="ver-dev">…</small></label>
+      </div>
     </fieldset>
     <div class="install">
       <esp-web-install-button id="installer" manifest="manifest-stable.json">

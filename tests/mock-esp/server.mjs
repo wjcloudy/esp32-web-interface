@@ -53,6 +53,7 @@ const DATA_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '
 const MIME = {
   '.html': 'text/html', '.htm': 'text/html', '.js': 'application/javascript', '.css': 'text/css',
   '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2',
+  '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif',
 };
 
 // Firmware limits (esp32-web-interface.ino)
@@ -740,6 +741,9 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
         for (const name of ['settings.json', 'uiprefs.json']) if (files.has(name)) kept.set(name, files.get(name));
         files = kept;
         otaFlashes++;
+        // The device then reboots: its session table is in RAM, so everyone
+        // is signed out (accounts are in NVS and stay)
+        auth.revokeAll();
         return json({ ok: true });
       }
       if (p === '/reboot') return text('Rebooting...');

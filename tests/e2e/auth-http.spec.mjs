@@ -148,10 +148,12 @@ test.describe('Sign-in on: every entry point', () => {
   });
 
   test('an admin can do everything, including the UI files', async ({ mock }) => {
-    const { admin } = await withUsers(mock);
+    let { admin } = await withUsers(mock);
     for (const [path, bits] of writeRoutes) {
       const r = await mock.call(path, { method: methodFor(bits), cookie: admin });
       expect([401, 403], path).not.toContain(r.status);
+      // A web-interface update reboots the device, signing everyone out
+      if ((await mock.state()).sessions === 0) admin = (await mock.signIn(...ADMIN)).cookie;
     }
     const fd = new FormData();
     fd.append('updatefile', new Blob(['// custom']), 'custom.js');

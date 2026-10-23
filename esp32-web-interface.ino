@@ -747,7 +747,8 @@ String getContentType(String filename){
   else if(filename.endsWith(".js")) return "application/javascript";
   else if(filename.endsWith(".png")) return "image/png";
   else if(filename.endsWith(".gif")) return "image/gif";
-  else if(filename.endsWith(".jpg")) return "image/jpeg";
+  else if(filename.endsWith(".jpg") || filename.endsWith(".jpeg")) return "image/jpeg";
+  else if(filename.endsWith(".webp")) return "image/webp";
   else if(filename.endsWith(".ico")) return "image/x-icon";
   else if(filename.endsWith(".svg")) return "image/svg+xml";
   else if(filename.endsWith(".woff2")) return "font/woff2";
@@ -771,7 +772,8 @@ bool handleFileRead(String path, bool allowSd = true){
   // Decide cacheability from the requested path (before the .gz fallback):
   // long-cache images/fonts, always revalidate code so UI updates take effect
   bool longCache = path.endsWith(".png") || path.endsWith(".gif") ||
-                   path.endsWith(".jpg") || path.endsWith(".ico") ||
+                   path.endsWith(".jpg") || path.endsWith(".jpeg") ||
+                   path.endsWith(".webp") || path.endsWith(".ico") ||
                    path.endsWith(".woff2") || path.endsWith(".svg");
   String pathWithGz = path + ".gz";
   if(SPIFFS.exists(pathWithGz) || SPIFFS.exists(path)){

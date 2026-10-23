@@ -662,7 +662,7 @@ test.describe('Gauges grid', () => {
     await expect(page.locator('.gauge-tile-name', { hasText: 'Motor' })).toBeVisible();
     await expect(page.locator('.gauge-tile-name', { hasText: 'udc' })).toHaveCount(0);
     // Persisted straight to the device, conditional Charging page included
-    await expect.poll(async () => (await savedLayout(mock)).pages.length).toBe(6);
+    await expect.poll(async () => (await savedLayout(mock)).pages.length).toBe(7);
     const saved = await savedLayout(mock);
     expect(saved.autoPage).toBe(true);
     expect(saved.pages[3].cond).toEqual({ name: 'opmode', min: 4, max: 4 });
