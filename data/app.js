@@ -5109,30 +5109,64 @@ const TerminalTile = () => {
 // and clears it only on starting. Left set while one blocks, the inverter
 // would start by itself later, so it's cleared again unless the start
 // happens within a few seconds, and on Stop
-let usedManualStart = false;
 const parseNum = (t) => { const m = /-?\d+(\.\d+)?/.exec(t || ''); return m ? parseFloat(m[0]) : NaN; };
+// Clear manualstart, retrying a dropped request (inverter EMI can cut the
+// Wi-Fi). True once the device has answered: "Set OK", or "Unknown
+// parameter" from firmware without it (nothing to clear)
+async function disarmManualStart() {
+  for (let i = 0; i < 3; i++) {
+    const r = await api.getText('set manualstart 0', 0, 3000).catch(() => '');
+    if (/ok|unknown parameter/i.test(r || '')) return true;
+    await new Promise(res => setTimeout(res, 400));
+  }
+  return false;
+}
+// True from setting manualstart until the start is seen or it's cleared. A
+// page closed or reloaded meanwhile sends one last clear on its way out (a
+// keepalive request the browser delivers after the page is gone)
+let manualStartArmed = false;
+// Every way a page goes: beforeunload (reload, navigation), visibilitychange
+// to hidden (a phone switching apps, often the last event it gets) and
+// pagehide; a repeated clear is harmless
+const disarmOnExit = () => {
+  if (manualStartArmed) fetch('/cmd?cmd=' + encodeURIComponent('set manualstart 0'), { keepalive: true }).catch(() => {});
+};
+window.addEventListener('beforeunload', disarmOnExit);
+window.addEventListener('pagehide', disarmOnExit);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') disarmOnExit(); });
+const DISARM_FAILED = ' WARNING: manualstart could not be cleared (no answer from the device), so the inverter may still start by itself once the interlock clears. Press Stop, or check manualstart on the Parameters page.';
 async function startInverter(statusEnums) {
   const r = await api.getText('start 2');
   if (!/not implemented in foc/i.test(r)) return r;
-  usedManualStart = true;
-  const s = await api.getText('set manualstart 1');
-  if (!/ok/i.test(s || '')) return 'FOC firmware: could not set manualstart: ' + (s || '').trim();
+  manualStartArmed = true;
+  const s = await api.getText('set manualstart 1').catch(() => '');
+  if (!/ok/i.test(s || '')) {
+    // Unknown whether it took: make sure it isn't left set
+    const cleared = await disarmManualStart();
+    if (cleared) manualStartArmed = false;
+    return 'FOC firmware: could not set manualstart' + (s ? ': ' + s.trim() : '') + '.' + (cleared ? '' : DISARM_FAILED);
+  }
   for (let i = 0; i < 10; i++) {
     await new Promise(res => setTimeout(res, 300));
     const op = parseNum(await api.getText('get opmode').catch(() => ''));
-    if (op > 0) return 'FOC firmware has no manual run mode: started in Run with manualstart.';
+    if (op > 0) { manualStartArmed = false; return 'FOC firmware has no manual run mode: started in Run with manualstart.'; }
   }
   // Didn't start: disarm it, and say what held it back
-  await api.getText('set manualstart 0').catch(() => {});
+  const cleared = await disarmManualStart();
+  if (cleared) manualStartArmed = false;
   const st = parseNum(await api.getText('get status').catch(() => ''));
   const why = isNaN(st) ? '' : ' Status: ' + enumText(st, statusEnums) + '.';
-  return 'FOC firmware: the inverter did not start (an interlock is holding it), so manualstart was cleared again; it won\'t start by itself later.' + why;
+  return cleared
+    ? 'FOC firmware: the inverter did not start (an interlock is holding it), so manualstart was cleared again; it won\'t start by itself later.' + why
+    : 'FOC firmware: the inverter did not start (an interlock is holding it).' + why + DISARM_FAILED;
 }
+// Stop always clears manualstart too, whoever set it (another browser, the
+// terminal, a page since reloaded): a pending start must not fire after Stop
 async function stopInverter() {
   const r = await api.getText('stop');
-  // A start still pending from manualstart must not fire after a Stop
-  if (usedManualStart) await api.getText('set manualstart 0').catch(() => {});
-  return r;
+  const cleared = await disarmManualStart();
+  if (cleared) manualStartArmed = false;
+  return cleared ? r : r + DISARM_FAILED;
 }
 
 // Start/stop and reboot buttons
@@ -5140,13 +5174,19 @@ const ActionsTile = ({ g }) => {
   const { state, dispatch } = useContext(Store);
   const [confirmAction, setConfirmAction] = useState(null); // 'start' | 'inverter' | 'esp32'
   const want = Array.isArray(g.btns) && g.btns.length ? g.btns : DASH_ACTIONS.map(a => a.id);
+  // Into the messages box; a manualstart that couldn't be cleared is also an
+  // alert, since the regular errors poll soon replaces the box's text
+  const show = (r) => {
+    dispatch({ type: 'SET_MESSAGES', payload: r });
+    if (r && r.indexOf(DISARM_FAILED) >= 0) alert(DISARM_FAILED.trim());
+  };
   const start = () => {
     const statusEnums = state.spotValues && state.spotValues.status && state.spotValues.status.enums;
-    startInverter(statusEnums).then(r => dispatch({ type: 'SET_MESSAGES', payload: r })).catch(() => {});
+    startInverter(statusEnums).then(show).catch(() => {});
   };
   // Starting drives the motor, so it asks first, like the reboots; Stop never waits
   const run = (id) => {
-    if (id === 'stop') stopInverter().then(r => dispatch({ type: 'SET_MESSAGES', payload: r })).catch(() => {});
+    if (id === 'stop') stopInverter().then(show).catch(() => {});
     else setConfirmAction(id === 'start' ? 'start' : id === 'resetinv' ? 'inverter' : 'esp32');
   };
   return html`
