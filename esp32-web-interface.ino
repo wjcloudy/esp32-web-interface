@@ -1214,15 +1214,22 @@ void handleFileList() {
     return;
   }
 
+  // The full path, not file.name(): that is only the base name in
+  // arduino-esp32 2.x, so a file in a folder (fonts/OFL.txt) was listed as
+  // OFL.txt and a delete or download of it missed. Without the leading '/',
+  // so files at the root keep the names the UI already uses. Sizes too
   File file = root.openNextFile();
   while(file){
     if (output != "[") output += ',';
-    bool isDir = false;
+    String name = String(file.path());
+    if (name.startsWith("/")) name = name.substring(1);
     output += "{\"type\":\"";
     output += file.isDirectory()?"dir":"file";
     output += "\",\"name\":\"";
-    output += String(file.name());
-    output += "\"}";
+    output += name;
+    output += "\",\"size\":";
+    output += String((unsigned long)file.size());
+    output += "}";
     file = root.openNextFile();
   }
   

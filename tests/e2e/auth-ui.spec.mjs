@@ -110,6 +110,7 @@ test.describe('Sign-in on', () => {
     await expect(page.locator('.perm-gate[inert]', { hasText: 'Start inverter' })).toHaveCount(0);
     await expect(page.locator('.perm-gate[inert]', { hasText: 'Reboot ESP32' })).toHaveCount(1);
     await page.locator('button', { hasText: 'Start inverter in manual mode' }).click();
+    await page.locator('#start-confirm').click();
     await expect.poll(async () => (await mock.commands()).includes('start 2')).toBe(true);
   });
 

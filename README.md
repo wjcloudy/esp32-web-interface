@@ -170,6 +170,9 @@ accounts, enforced by the module itself ([details](#users-and-access)).
 ## On your phone
 
 The interface adapts to a phone and can be added to the home screen (PWA manifest, iOS standalone mode).
+The manifest asks for standalone display (full screen, no browser bars). Browsers that only
+install apps from https may still open a home-screen shortcut in a normal tab, since the ESP is
+served over plain http.
 
 <p align="center">
   <img src="doc/screenshots/mobile.jpg" alt="On a phone: dashboard, gauges, spot values and parameters">

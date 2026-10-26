@@ -147,3 +147,23 @@ test('the sample Vehicle page shows its background picture', async ({ page }) =>
   await expect.poll(() => page.locator('#gauges .page-bg img').evaluate(el => el.complete && el.naturalWidth)).toBe(1200);
   expect(escaped).toEqual([]);
 });
+
+test('the plotter streams from the simulated inverter', async ({ page }) => {
+  const escaped = await openDemo(page);
+  await gotoTab(page, 'Plot');
+  // The demo answers device calls inside window.fetch: note the commands sent
+  await page.evaluate(() => {
+    const f = window.fetch; window.__cmds = [];
+    window.fetch = (input, init) => { const u = new URL(typeof input === 'string' ? input : input.url, window.location.href);
+      if (u.pathname.endsWith('/cmd')) window.__cmds.push(u.searchParams.get('cmd')); return f(input, init); };
+  });
+  await page.getByRole('button', { name: 'Start' }).click();
+  // The demo answers the inverter's `stream` command: points keep arriving
+  const points = () => page.evaluate(() => {
+    const ch = window.Chart.getChart(document.querySelector('#plot canvas'));
+    return ch ? ch.data.datasets[0].data.length : 0;
+  });
+  await expect.poll(points).toBeGreaterThan(5);
+  expect(await page.evaluate(() => window.__cmds.some(c => /^stream \d+ speed,torque,potnom,udc,idc$/.test(c)))).toBe(true);
+  expect(escaped).toEqual([]);
+});

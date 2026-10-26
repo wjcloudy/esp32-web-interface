@@ -3,7 +3,7 @@
   "short_name": "Inverter",
   "description": "OpenInverter web management console",
   "start_url": "/",
-  "display": "browser",
+  "display": "standalone",
   "background_color": "#07090e",
   "theme_color": "#0b0f15",
   "icons": [

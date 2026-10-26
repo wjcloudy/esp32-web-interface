@@ -156,7 +156,8 @@ test.describe('Mock ESP contract: files', () => {
     fd.append('updatefile', new Blob(['hello']), 'note.txt');
     expect((await fetch(mock.url + '/edit', { method: 'POST', body: fd })).status).toBe(200);
     const list = await fetch(mock.url + '/list').then(r => r.json());
-    expect(list).toEqual([{ type: 'file', name: 'note.txt' }]);
+    // As handleFileList: the full path (no leading '/') and the size
+    expect(list).toEqual([{ type: 'file', name: 'note.txt', size: 5 }]);
     expect(await fetch(mock.url + '/note.txt').then(r => r.text())).toBe('hello');
     // /edit GET is the (absent) editor page
     expect((await fetch(mock.url + '/edit')).status).toBe(404);

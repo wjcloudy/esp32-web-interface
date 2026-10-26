@@ -16,8 +16,8 @@ without an in-file license banner, so their attribution is recorded here.
 | chartjs-plugin-annotation (`data/chartjs-annotation.min.js`) | 0.5.7 | MIT | © 2016 Evert Timberg | https://github.com/chartjs/chartjs-plugin-annotation |
 | NoSleep.js (`data/nosleep.js`) | 0.12.0 | MIT | © Rich Tibbett | https://github.com/richtr/NoSleep.js |
 | GridStack.js (`data/gridstack-all.js.gz`, `data/gridstack.min.css.gz`) | 12.6.0 | MIT | © 2019 Alain Dumesny | https://github.com/gridstack/gridstack.js |
-| Inter Tight font (`data/fonts/intertight.woff2`) | @fontsource-variable 5.2.5, Latin subset | SIL OFL 1.1 | © The Inter Tight Project Authors | https://github.com/googlefonts/inter-tight |
-| JetBrains Mono font (`data/fonts/jbmono.woff2`) | @fontsource-variable 5.2.5, Latin subset | SIL OFL 1.1 | © The JetBrains Mono Project Authors | https://github.com/JetBrains/JetBrainsMono |
+| Inter Tight font (`data/fonts/intertight.woff2`) | 3.004, via @fontsource-variable 5.2.5, Latin subset | SIL OFL 1.1 | © 2022 The Inter Project Authors | https://github.com/rsms/inter-tight |
+| JetBrains Mono font (`data/fonts/jbmono.woff2`) | 2.211, via @fontsource-variable 5.2.5, Latin subset | SIL OFL 1.1 | © 2020 The JetBrains Mono Project Authors | https://github.com/JetBrains/JetBrainsMono |
 
 The project's GitHub Pages site (live demo and browser installer, not the device image) also serves:
 
@@ -276,6 +276,13 @@ Miller and htm contributors). The complete license text follows.
 ---
 
 ## SIL Open Font License 1.1 — Inter Tight, JetBrains Mono
+
+Neither font declares a Reserved Font Name, so the Latin subsets bundled here
+(a Modified Version under the OFL) keep their original names. Each font's own
+metadata carries its copyright notice and a link to the license, and the full
+license with both notices ships beside them as `data/fonts/OFL.txt`, so every
+copy (the device image and the GitHub Pages site) includes it. Neither font is
+sold on its own.
 
 ```
 This Font Software is licensed under the SIL Open Font License, Version 1.1.

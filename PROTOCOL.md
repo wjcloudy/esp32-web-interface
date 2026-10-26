@@ -38,7 +38,7 @@ state of the inverter. These are useful for monitoring and debugging.
 |`start [opmode]`|start the inverter in a specified modemode 2 is manual run|
 |`stop`|stop the inverter|
 |`get [parameter]`|get the value of a parameter|
-|`stream [repetitions] [val1,val2,val3]`| repeatedly read and return one or more values|
+|`stream [repetitions] [val1,val2,val3]`| repeatedly read and return one or more values, one comma-separated row per repetition, sampled back-to-back (at most 10 values; UART terminal only). The Plot tab reads with it over UART|
 |`json [hidden]`| return an JSON encoded mapping of all parameters and values - see JSON format below|
 |`errors`|print information about all currently active error states, or indicate that everything is okay|
 |`reset`|reboot the device|

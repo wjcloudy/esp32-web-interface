@@ -34,6 +34,9 @@
 //   GET  /__test/add-user?name=&password=&role= -> create an account directly
 //   GET  /__test/clock?advance=ms    -> move the mock's clock (session expiry)
 //   GET  /__test/auth-reset          -> the BOOT-button / serial lockout recovery
+//   GET  /__test/foc[?blocked=1]     -> behave like the FOC build: no `start`
+//                                       command, a manualstart test parameter
+//                                       (blocked: an interlock holds the start)
 //
 // Users & sign-in (auth.mjs) follow the firmware: off with no users; with
 // users every request passes the same permission table, sessions are
@@ -158,6 +161,13 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
         if (!p) return 'Unknown parameter';
         if (isNaN(value) || value < p.minimum || value > p.maximum) return 'Value out of range';
         p.value = value;
+        // FOC build: manualstart latches until every interlock passes, then
+        // the firmware enters Run and clears it. focBlocked stands for an
+        // interlock that holds (throttle pressed, udc below udcsw...)
+        if (inverter.foc && name === 'manualstart' && value === 1) {
+          if (inverter.focBlocked) inverter.spot.status.value = 4 | 256; // UdcBelowUdcSw, WaitStart
+          else { inverter.spot.opmode.value = 1; p.value = 0; }
+        }
         return 'Set OK';
       }
       case 'get':
@@ -173,7 +183,7 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
           const v = findParamByName(n.trim());
           return v === undefined ? '0' : fmt2(v.value);
         }).join(',');
-        return Array.from({ length: Math.min(parseInt(reps) || 1, 100) }, line).join('\n') + '\n';
+        return Array.from({ length: Math.min(parseInt(reps) || 1, 500) }, line).join('\n') + '\n';
       }
       case 'save': return 'Parameters saved';
       case 'load': return 'Parameters loaded';
@@ -181,7 +191,10 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
         for (const n in inverter.params) inverter.params[n].value = inverter.params[n].default;
         return 'Defaults restored';
       case 'errors': return 'No errors';
-      case 'start': return 'Starting in mode ' + args;
+      case 'start':
+        // stm32-sine's FOC build prints this instead of starting
+        if (inverter.foc) return 'Not implemented in FOC variant: openinverter.org/forum/viewtopic.php?t=2809\r\n';
+        return 'Starting in mode ' + args;
       case 'stop': return 'Stopped';
       case 'reset': return 'Resetting';
       case 'fastuart': return 'OK fast uart on';
@@ -384,6 +397,12 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
       }
       if (p === '/__test/clock') { clockOffset += toInt(q.get('advance')); return text(String(clockOffset)); }
       if (p === '/__test/auth-reset') { auth.clear(); return text('ok'); }
+      if (p === '/__test/foc') {
+        inverter.foc = true;
+        inverter.focBlocked = q.get('blocked') === '1';
+        inverter.params.manualstart = { unit: '0=Off, 1=On', value: 0, isparam: true, minimum: 0, maximum: 1, default: 0, category: 'Testing', i: 90, id: 150 };
+        return text('ok');
+      }
       if (p === '/__test/reset') {
         auth.clear(); clockOffset = 0;
         inverter = freshInverterState(); files = new Map(); commandLog = []; fwSteps = []; otaFlashes = 0;
@@ -620,7 +639,8 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
         }
       }
       if (p === '/list' && req.method === 'GET') {
-        return json([...files.keys()].map(name => ({ type: 'file', name })), 'text/json');
+        // As the firmware: full path without the leading '/', and the size
+        return json([...files.keys()].map(name => ({ type: 'file', name, size: files.get(name).length })), 'text/json');
       }
 
       // UI layout files: stored file, else firmware defaults

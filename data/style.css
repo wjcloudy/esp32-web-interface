@@ -841,7 +841,9 @@ td { font-variant-numeric: tabular-nums; }
      eats most of the screen — drop the explanatory help text there */
   .edit-help { display: none; }
   table { font-size: .8rem; }
-  #spotValues { font-size: .9rem; }
+  /* full width whatever the layout, so long names wrap instead of
+     stretching the table past the screen */
+  #spotValues { font-size: .9rem; width: 100% !important; }
   thead th, tbody td { padding: 6px 6px; }
   /* compact fixed columns so names get the space (!important beats the
      inline header widths) */
@@ -1251,3 +1253,27 @@ body.kiosk #topbar, body.kiosk #bottombar { display: none !important; }
 :root[data-theme="dark"] { color-scheme: dark; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { color-scheme: dark; } }
 option { background: var(--surface2); color: var(--text); }
+/* Group headings in the list (e.g. "Dashboard widgets"): a muted label on
+   the list's own background, not the browser's white strip */
+optgroup { background: var(--surface2); color: var(--text3); font-style: normal; font-weight: 600; }
+/* Chrome builds a select's popup from the select's own background colour: the
+   dark theme's translucent --ctl-bg made it fall back to its light palette
+   (white group headings, a pale highlight behind light text). A solid colour
+   that looks the same (the tint over the surface) keeps the popup dark */
+:root[data-theme="dark"] select:not(.styled) { background-color: color-mix(in srgb, #fff 5.5%, var(--surface)); }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) select:not(.styled) { background-color: color-mix(in srgb, #fff 5.5%, var(--surface)); }
+}
+
+/* Files page: a compact list, Download beside Delete */
+.files-table tbody td { padding: 3px 10px; }
+.files-table .file-actions { display: flex; gap: 6px; justify-content: flex-start; white-space: nowrap; }
+.files-table .file-actions .butt, .files-table .file-actions button { padding: 3px 10px; font-size: .75rem; gap: 4px; text-decoration: none; }
+.files-table .files-group-head th { padding: 10px 10px 4px; background: transparent; border-bottom: 1px solid var(--border2); position: static; }
+.files-table .files-count { color: var(--text3); font-weight: 500; margin-left: 4px; }
+.files-table .file-size { color: var(--text2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.file-badge { display: inline-block; margin-left: 6px; padding: 0 7px; border-radius: 999px; font: 600 .62rem/1.6 var(--mono); letter-spacing: .04em; vertical-align: 1px; }
+.file-badge.original { color: var(--text3); background: color-mix(in srgb, var(--text) 7%, transparent); }
+.file-badge.modified { color: var(--amber); background: color-mix(in srgb, var(--amber) 14%, transparent); }
+.file-badge.missing { color: var(--red); background: color-mix(in srgb, var(--red) 12%, transparent); }
+.files-table tr.file-missing td:first-child { color: var(--text3); }

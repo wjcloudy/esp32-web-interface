@@ -75,6 +75,20 @@
         const v = allValues(dt);
         return args.split(',').map(n => v[n.trim()] === undefined ? 'Unknown parameter' : fmt2(v[n.trim()].value)).join('\n') + '\n';
       }
+      case 'stream': {
+        // stream <n> <a,b,...>: n CSV rows sampled back-to-back, as the
+        // inverter's terminal does (a row every ~0.6 ms at 921600 baud)
+        const sp = args.indexOf(' ');
+        const reps = Math.max(1, Math.min(500, parseInt(args) || 1));
+        const names = sp > 0 ? args.slice(sp + 1).split(',').map(n => n.trim()) : [];
+        if (!names.length) return 'Usage: stream n val1,val2...\n';
+        let out = '';
+        for (let i = 0; i < reps; i++) {
+          const v = allValues(dt + i * 0.0006);
+          out += names.map(n => v[n] === undefined ? '0.00' : fmt2(v[n].value)).join(',') + '\n';
+        }
+        return out;
+      }
       case 'set': return setParam(args);
       case 'save': return 'Parameters saved';
       case 'load': return 'Parameters loaded';
@@ -184,7 +198,7 @@
 
   // Pictures the site ships for image tiles: /list offers them to pick,
   // the static host serves them. Uploading images is not part of the demo
-  const SITE_IMAGES = ['example-badge.png', 'example-vehicle.webp', 'logo.png'];
+  const SITE_IMAGES = ['example-badge.png', 'example-vehicle.webp'];
   const isImageUpload = (body) => body instanceof FormData && [...body.values()].some(v =>
     v && typeof v === 'object' && (/^image\//.test(v.type) || /\.(png|jpe?g|webp|gif|svg)$/i.test(v.name || '')));
 
@@ -234,6 +248,9 @@
       case '/version': return reply(D.webVersion);
       case '/otainfo': return reply({ version: D.webVersion, repo: D.repo, target: settings.arch });
       case '/list': return reply([...new Set([...files.keys(), ...SITE_IMAGES])].map(name => ({ type: 'file', name })), 200, 'text/json');
+      // What the firmware image ships (fs_stage.py writes it on a device):
+      // here, the bundled pictures, sizes unknown
+      case '/fs-manifest.json': return reply({ v: 2, files: Object.fromEntries(SITE_IMAGES.map(n => [n, null])) }, 200, 'application/json');
       case '/edit':
         if (method === 'POST' && isImageUpload(init && init.body)) {
           notice('no image was uploaded');

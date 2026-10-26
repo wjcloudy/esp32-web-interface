@@ -112,6 +112,16 @@ for (const scheme of ['dark', 'light']) {
     await page.close();
   });
 
+  // The sample layout's car status page: the photo background with lamps
+  // and badges over it (waits for the picture, a real fetch, to decode)
+  await shot(`vehicle${sfx}.png`, async () => {
+    const page = await open(ctx, 'gauges/Vehicle');
+    await page.locator('#gauges .page-bg img').evaluate(img => img.complete ? null : new Promise(r => { img.onload = r; img.onerror = r; }));
+    await run(page, DRIVE);
+    await shoot(page, `vehicle${sfx}.png`);
+    await page.close();
+  });
+
   if (scheme === 'light') { await ctx.close(); continue; }
 
   await shot('plot.png', async () => {
