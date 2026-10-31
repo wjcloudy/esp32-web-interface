@@ -107,6 +107,8 @@ function freshInverterState() {
 function freshSettings() {
   return {
     dev_name: '', txrx_swapped: false, uart_rx_pin: 1, uart_tx_pin: 3, ap_fallback: false,
+    // SD support built in (SD_AVAILABLE), probing off by default (SD_DEFAULT_ENABLED 0), so no card
+    sd_available: true, sd_enabled: false, sd_card: false,
     can_mode: false, can_node_id: 1, can_speed: 2, can_rx_pin: 4, can_tx_pin: 5,
     can_pwr_pin: -1, can_pwr_inv: false, can_en_pin: -1, can_en_inv: false, arch: 'esp32',
   };
@@ -436,6 +438,8 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
         if (a) settings.arch = a; else delete settings.arch;
         return text('ok');
       }
+      // A reboot's SD probe: finds the card only if probing is on
+      if (p === '/__test/sd-boot') { settings.sd_card = settings.sd_enabled && q.get('card') === '1'; return text('ok'); }
       if (p === '/__test/can-cache') { canCacheLoaded = q.get('loaded') !== '0'; return text('ok'); }
       if (p === '/__test/sse') {
         const mode = q.get('mode') || 'on';
@@ -564,7 +568,19 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
       if (p === '/auth/users') {
         if (req.method !== 'POST') return ok({ enabled: auth.enabled(), me: me ? me.name : null, max: USER_MAX, users: auth.users().map(u => ({ name: u.name, role: u.role })) });
         if (!csrf()) return refuse(403, 'cross-site request refused');
-        const op = q.get('op'), name = (q.get('user') || '').slice(0, 40).trim().toLowerCase(), r = q.get('role') || '';
+        const op = q.get('op');
+        if (op === 'disable') {
+          // authDisable(): the signed-in admin's own password, then every account goes
+          if (!auth.enabled() || slot < 0) return refuse(400, 'sign-in is off');
+          const wait = auth.allowed(ipOf, me.name);
+          if (wait) { res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': String(wait) }); return res.end('{"error":"too many attempts, wait a few minutes"}'); }
+          if (auth.verify(me.name, (q.get('password') || '').slice(0, PASSWORD_MAX + 1)) < 0) { auth.failure(ipOf, me.name); return refuse(403, 'password is incorrect'); }
+          auth.removeAll();
+          auth.revokeAll();
+          slot = -1; me = null;
+          return ok({ ok: true }, { 'Set-Cookie': 'oisess=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0' });
+        }
+        const name = (q.get('user') || '').slice(0, 40).trim().toLowerCase(), r = q.get('role') || '';
         const actor = me ? me.name : null;
         const wasEnabled = auth.enabled();
         let err;
@@ -572,7 +588,7 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
         else if (op === 'remove') { err = auth.remove(name, actor); if (!err) auth.revokeUser(name); }
         else if (op === 'role') { err = auth.setRole(name, r, actor); if (!err) auth.revokeUser(name); }
         else if (op === 'password') { err = auth.setPassword(name, q.get('password') || ''); if (!err) auth.revokeUser(name); }
-        else return refuse(400, 'op must be add, remove, role or password');
+        else return refuse(400, 'op must be add, remove, role, password or disable');
         if (err) return refuse(auth.resultStatus(err), err);
         const extra = {};
         if (!wasEnabled && auth.enabled()) {
@@ -674,6 +690,8 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
         }
         if (mayWrite && q.has('dev_name')) { settings.dev_name = q.get('dev_name').slice(0, 32); return ok(); }
         if (mayWrite && q.has('ap_fallback')) { settings.ap_fallback = q.get('ap_fallback') === '1'; return ok(); }
+        // Saved, but the card is only probed at boot: sd_card doesn't change here
+        if (mayWrite && q.has('sd_enabled')) { settings.sd_enabled = q.get('sd_enabled') === '1'; return ok(); }
         if (mayWrite && q.has('can_mode')) {
           const s = settings;
           s.can_mode = q.get('can_mode') === '1';

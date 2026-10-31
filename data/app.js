@@ -3348,7 +3348,8 @@ const FirstAdminCard = () => {
         <button id="setup-create" class="primary" onclick=${create} disabled=${busy}><${Icon} n="check" />${busy ? 'Creating…' : 'Create admin and turn on sign-in'}</button>
       </div>
       <p class="auth-hint">Forgot the password later? Hold the board's BOOT button for 10 seconds (or type <code>auth reset</code>
-        on its serial port) to delete all users and turn sign-in off again. Passwords are stored hashed (PBKDF2), never in plain text.
+        on its serial port) to delete all users and turn sign-in off again; a signed-in admin can also turn it off
+        here. Passwords are stored hashed (PBKDF2), never in plain text.
         The connection is plain HTTP, so use this on a network you trust.</p>
     </div>`;
 };
@@ -3486,11 +3487,54 @@ const UserListCard = () => {
     </div>`;
 };
 
+// Admin only: back to no accounts (sign-in off). Deletes every user, so it
+// asks first and needs your own password again; the device checks both
+// the role and the password.
+const TurnOffSignInCard = () => {
+  const [open, setOpen] = useState(false);
+  const [pw, setPw] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const turnOff = async () => {
+    if (!pw) { setErr('Enter your password.'); return; }
+    setBusy(true); setErr('');
+    try {
+      await authPost('/auth/users', { op: 'disable', password: pw });
+      location.reload(); // no users now: the open, no-sign-in interface
+    } catch (e) {
+      setErr(e.status === 429 ? 'Too many attempts — try again in a few minutes.' : e.message);
+      setBusy(false);
+    }
+  };
+  return html`
+    <div class="dash-box compact" id="signin-off">
+      <h3>Turn off sign-in</h3>
+      <p class="auth-lead">Deletes <b>every</b> user account and turns sign-in off: anyone who can reach this module can
+        then view and change everything again, as before sign-in was set up. Settings, layouts and Wi-Fi are kept.</p>
+      <button id="signin-off-open" class="danger" onclick=${() => { setOpen(true); setPw(''); setErr(''); }}><${Icon} n="trash" />Turn off sign-in…</button>
+      ${open && html`
+        <${Modal} id="signin-off-dlg" title="Turn off sign-in?" onClose=${() => setOpen(false)}>
+          <div class="auth-form">
+            <p class="auth-lead">All users are deleted and everyone is signed out. To use sign-in again you would create
+              a new admin account.</p>
+            <label class="auth-field">Your password (${AUTH.user})
+              <input id="signin-off-pw" type="password" autocomplete="current-password" value=${pw} oninput=${e => setPw(e.target.value)} />
+            </label>
+            ${err && html`<p class="auth-err" role="alert">${err}</p>`}
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button onclick=${() => setOpen(false)}>Cancel</button>
+              <button id="signin-off-confirm" class="danger" onclick=${turnOff} disabled=${busy}><${Icon} n="trash" />${busy ? 'Turning off…' : 'Delete all users and turn off sign-in'}</button>
+            </div>
+          </div>
+        </${Modal}>`}
+    </div>`;
+};
+
 const UsersPanel = () => {
   if (!AUTH.enabled) return html`<${FirstAdminCard} />`;
   return html`
     <${MyAccountCard} />
-    ${can('admin') ? html`<${UserListCard} />` : html`
+    ${can('admin') ? html`<${UserListCard} /><${TurnOffSignInCard} />` : html`
       <div class="dash-box compact"><h3>Users</h3><p class="auth-lead">Only an admin can add or change users.</p></div>`}`;
 };
 
@@ -3670,7 +3714,8 @@ const Settings = () => {
           setApFb(data.ap_fallback === true);
           // Older firmware doesn't report SD state — keep the box hidden
           if (data.sd_available !== undefined)
-            setSdInfo({ available: data.sd_available === true, enabled: data.sd_enabled !== false, card: data.sd_card === true });
+            // probed = what this boot did (the toggle only applies after a reboot)
+            setSdInfo({ available: data.sd_available === true, enabled: data.sd_enabled === true, probed: data.sd_enabled === true, card: data.sd_card === true });
           if (typeof data.dev_name === 'string') setDevName(data.dev_name);
           setCanMode(data.can_mode === true);
           if (data.can_node_id) setCanNodeId(data.can_node_id);
@@ -3979,16 +4024,17 @@ const Settings = () => {
         </div>
 
         ${sdInfo && sdInfo.available && html`
-        <div class="dash-box compact">
+        <div class="dash-box compact" id="sd-card-box">
           <h3>SD Card</h3>
           <div style="max-width:350px">
             <${ToggleRow} label="Probe for an SD card at boot" checked=${sdInfo.enabled}
               onChange=${v => { setSdInfo({ ...sdInfo, enabled: v }); fetch('/settings?sd_enabled=' + (v ? '1' : '0'), { method: 'POST' }).catch(() => {}); }} />
           </div>
-          <p style="font-size:.72rem;color:var(--text3);margin:.35rem 0 0;max-width:350px">
-            Turn off on boards with no SD slot wired to the SDIO pins (e.g. Wemos D1 Mini ESP32)
-            if they fail to boot. Applies after the next reboot.
-            <b>${sdInfo.card ? 'Card detected.' : 'No card detected.'}</b>
+          <p id="sd-card-help" style="font-size:.72rem;color:var(--text3);margin:.35rem 0 0;max-width:350px">
+            Off by default. Turn on if your board has an SD card wired to the SDIO pins (for data logging),
+            then reboot; leave it off on boards without one (e.g. Wemos D1 Mini ESP32), which can hang probing for it.
+            Applies after the next reboot.
+            <b>${!sdInfo.probed ? 'Not probed at this boot.' : sdInfo.card ? 'Card detected.' : 'No card detected.'}</b>
           </p>
         </div>`}
 

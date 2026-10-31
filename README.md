@@ -221,7 +221,10 @@ another ESP32-S3 board matches before flashing it, or build your own environment
 CAN runs at 125k, 250k or 500k bit/s.
 
 Optional on the classic ESP32:
-- **SD card** (SDIO) for data logging - CLK 14, CMD 15, D0 2, D1 4, D2 12, D3 13
+- **SD card** (SDIO) for data logging - CLK 14, CMD 15, D0 2, D1 4, D2 12, D3 13. The module doesn't
+  look for a card unless told to (most boards have no slot, and some hang probing for one): turn on
+  **Settings → SD Card → Probe for an SD card at boot** and reboot. Builds can make probing the default
+  with `-D SD_DEFAULT_ENABLED=1`; a saved setting always wins.
 - **RTC** (PCF8523 as standard, anything RTClib supports with a sketch change) - SCL 22, SDA 21
 
 ### UART or CAN?
@@ -265,6 +268,10 @@ interface does, a page on another site can't.)
   flash - not in the filesystem, so they are never served, listed, exported or erased by an OTA update.
 - **While sign-in is on**, the network-flashing port (ArduinoOTA, `espota`) is switched off; update
   through the **Update** page as an admin instead.
+- **Turning sign-in off**: an admin can go back to no accounts with **Settings → Users & Access →
+  Turn off sign-in**, which asks for their password again and then deletes every user; the module
+  then behaves as it did before sign-in was set up (ArduinoOTA included). An admin can't remove
+  their own account or demote the last admin, so nobody is locked out while other users remain.
 - **Plain HTTP**: the module has no TLS, so passwords and session cookies cross the network
   unencrypted. Use sign-in on a network you trust (the module's own access point with a strong
   passphrase, or your own Wi-Fi), not on a public one.

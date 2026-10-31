@@ -76,10 +76,11 @@ using weblogic::findArrayEnd;
 #else
 #define SD_AVAILABLE 0
 #endif
-// Factory default for the runtime "sd_enabled" setting (boards without an
-// SD slot can be built with -D SD_DEFAULT_ENABLED=0; users can toggle it)
+// Factory default for the runtime "sd_enabled" setting: off, so boards with
+// no SD slot (most) don't probe the SDIO pins at boot. SD users switch it on
+// in Settings (a saved setting always wins); builds may pass -D SD_DEFAULT_ENABLED=1
 #ifndef SD_DEFAULT_ENABLED
-#define SD_DEFAULT_ENABLED 1
+#define SD_DEFAULT_ENABLED 0
 #endif
 
 #define INVERTER_PORT UART_NUM_0
@@ -2843,7 +2844,45 @@ static void handleAuthPassword()
   server.send(200, "application/json", "{\"ok\":true}");
 }
 
-// Admin user management. GET lists; POST op=add|remove|role|password.
+// Turn sign-in off again (op=disable): deletes every account, so the device
+// is back to its no-users state exactly as after a BOOT-button reset, but
+// without the reboot. Admin only (the route), and the admin must re-enter
+// their own password (rate-limited like sign-in), so a browser left signed
+// in can't do it in passing.
+static void authDisable()
+{
+  if (!authEnabled() || authReq.session < 0) { authSendError(400, "sign-in is off"); return; }
+  String me = authReq.user; // copy: the table is about to be wiped
+  uint32_t ip = (uint32_t)server.client().remoteIP();
+  uint32_t wait = 0;
+  if (!authLimiter.allowed(ip, me.c_str(), nowMs(), &wait)) {
+    server.sendHeader("Retry-After", String(wait));
+    authSendError(429, "too many attempts, wait a few minutes");
+    return;
+  }
+  String pw = server.arg("password").substring(0, weblogic::PASSWORD_MAX + 1);
+  if (authUsers.verify(me.c_str(), pw.c_str()) < 0) {
+    authLimiter.failure(ip, me.c_str(), nowMs());
+    authSendError(403, "password is incorrect");
+    return;
+  }
+  authUsers.clear();
+  if (!authSave()) {
+    authLoad(); // NVS still holds the accounts: keep them in RAM too
+    authSendError(500, "could not save, sign-in is still on");
+    return;
+  }
+  DBG_OUTPUT_PORT.printf("Auth: all users deleted by %s, sign-in is now off\n", me.c_str());
+  authSessions.revokeAll();
+  authReq = AuthReq();
+  authReq.role = weblogic::ROLE_ADMIN;
+  authClearCookie();
+  ArduinoOTA.begin(); // as at a boot with sign-in off (does nothing if already running)
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json", "{\"ok\":true}");
+}
+
+// Admin user management. GET lists; POST op=add|remove|role|password|disable.
 // With sign-in off this is how the first account (an admin) is created,
 // which switches sign-in on and signs its creator in.
 static void handleAuthUsers()
@@ -2865,6 +2904,7 @@ static void handleAuthUsers()
   }
   if (!authCsrfOk()) { authSendError(403, "cross-site request refused"); return; }
   String op = server.arg("op");
+  if (op == "disable") { authDisable(); return; }
   String name = authArgLower("user", 40);
   weblogic::Role role = weblogic::roleFromName(server.arg("role").c_str());
   const char* actor = authReq.user;
@@ -2885,7 +2925,7 @@ static void handleAuthUsers()
     r = authUsers.setPassword(name.c_str(), server.arg("password").c_str());
     if (r == weblogic::USER_OK) authUsersChanged(name.c_str());
   } else {
-    authSendError(400, "op must be add, remove, role or password");
+    authSendError(400, "op must be add, remove, role, password or disable");
     return;
   }
   if (r != weblogic::USER_OK) {
@@ -2930,7 +2970,7 @@ static void handleStreamTicket()
 static void authRecoveryReset(const char* how)
 {
   DBG_OUTPUT_PORT.printf("Auth: all users deleted (%s), rebooting with sign-in off\n", how);
-  authUsers.count = 0;
+  authUsers.clear();
   authSave();
   authSessions.revokeAll();
   delay(200);

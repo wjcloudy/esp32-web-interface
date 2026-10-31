@@ -236,6 +236,50 @@ test.describe('Sessions', () => {
     expect(JSON.stringify(list)).not.toMatch(/hash|salt|password/);
   });
 
+  test('turning sign-in off: admin only, own password, then no users and the open device', async ({ mock }) => {
+    const { admin, oper, view } = await withUsers(mock);
+    const disable = (cookie, password, opts = {}) => mock.call('/auth/users', { method: 'POST', cookie, form: { op: 'disable', password }, ...opts });
+    // Not signed in, or not an admin: refused by the route before any password check
+    expect((await disable(null, ADMIN[1])).status).toBe(401);
+    expect((await disable(oper, OPER[1])).status).toBe(403);
+    expect((await disable(view, VIEW[1])).status).toBe(403);
+    // Cross-site: refused even for the admin with the right password
+    expect((await disable(admin, ADMIN[1], { csrf: false })).status).toBe(403);
+    // Wrong or missing password
+    let r = await disable(admin, 'wrong-password');
+    expect(r.status).toBe(403);
+    expect(r.text).toContain('password is incorrect');
+    expect((await disable(admin, '')).status).toBe(403);
+    expect((await mock.state()).users).toHaveLength(3);
+    expect((await mock.state()).otaRunning).toBe(false);
+    // Right password: every account gone, sessions over, cookie cleared
+    r = await disable(admin, ADMIN[1]);
+    expect(r.status).toBe(200);
+    expect(r.headers.get('set-cookie')).toMatch(/^oisess=;.*Max-Age=0/);
+    const st = await mock.state();
+    expect(st.users).toEqual([]);
+    expect(st.sessions).toBe(0);
+    expect(st.otaRunning).toBe(true);
+    expect(JSON.parse((await mock.call('/auth/state')).text)).toMatchObject({ enabled: false, user: null, role: 'admin' });
+    // Behaves as before sign-in existed: no credentials needed, CORS open
+    r = await mock.call('/cmd?cmd=save', { csrf: false });
+    expect(r.status).toBe(200);
+    expect(r.headers.get('access-control-allow-origin')).toBe('*');
+    expect((await mock.signIn(...ADMIN)).status).toBe(400); // sign-in is off
+    // Nothing left to turn off; and the next account must be an admin again
+    expect((await mock.call('/auth/users', { method: 'POST', form: { op: 'disable', password: ADMIN[1] } })).status).toBe(400);
+    expect((await mock.call('/auth/users', { method: 'POST', form: { op: 'add', user: 'vera', password: VIEW[1], role: 'viewer' } })).status).toBe(400);
+  });
+
+  test('turning sign-in off counts wrong passwords like sign-in', async ({ mock }) => {
+    const { admin } = await withUsers(mock);
+    for (let i = 0; i < 6; i++) expect((await mock.call('/auth/users', { method: 'POST', cookie: admin, form: { op: 'disable', password: 'nope-nope-' + i } })).status).toBe(403);
+    const r = await mock.call('/auth/users', { method: 'POST', cookie: admin, form: { op: 'disable', password: ADMIN[1] } });
+    expect(r.status).toBe(429);
+    expect(Number(r.headers.get('retry-after'))).toBeGreaterThan(0);
+    expect((await mock.state()).users).toHaveLength(3);
+  });
+
   test('changing your own password needs the current one and keeps this session', async ({ mock }) => {
     const { view } = await withUsers(mock);
     let r = await mock.call('/auth/password', { method: 'POST', cookie: view, form: { old: 'wrong-pass', new: 'another-pass' } });
