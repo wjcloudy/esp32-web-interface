@@ -13,7 +13,6 @@ without an in-file license banner, so their attribution is recorded here.
 | Preact Hooks (`data/preact-hooks.umd.js`) | UMD build | MIT | © Jason Miller and Preact contributors | https://github.com/preactjs/preact |
 | htm (`data/htm.umd.js`) | UMD build | Apache-2.0 | © Jason Miller and htm contributors | https://github.com/developit/htm |
 | Chart.js (`data/chart.min.js`) | 3.6.1 | MIT | © 2021 Chart.js Contributors | https://www.chartjs.org |
-| chartjs-plugin-annotation (`data/chartjs-annotation.min.js`) | 0.5.7 | MIT | © 2016 Evert Timberg | https://github.com/chartjs/chartjs-plugin-annotation |
 | NoSleep.js (`data/nosleep.js`) | 0.12.0 | MIT | © Rich Tibbett | https://github.com/richtr/NoSleep.js |
 | GridStack.js (`data/gridstack-all.js.gz`, `data/gridstack.min.css.gz`) | 12.6.0 | MIT | © 2019 Alain Dumesny | https://github.com/gridstack/gridstack.js |
 | Inter Tight font (`data/fonts/intertight.woff2`) | 3.004, via @fontsource-variable 5.2.5, Latin subset | SIL OFL 1.1 | © 2022 The Inter Project Authors | https://github.com/rsms/inter-tight |
@@ -35,7 +34,7 @@ Wake Lock API. They contain no third-party media.
 
 The following components are licensed under the MIT License, each under the
 copyright noted in the table above: **Preact, Preact Hooks, Chart.js,
-chartjs-plugin-annotation, and NoSleep.js**.
+and NoSleep.js**.
 
 ```
 MIT License

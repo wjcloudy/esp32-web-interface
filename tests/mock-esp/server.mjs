@@ -401,6 +401,12 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
         inverter.foc = true;
         inverter.focBlocked = q.get('blocked') === '1';
         inverter.params.manualstart = { unit: '0=Off, 1=On', value: 0, isparam: true, minimum: 0, maximum: 1, default: 0, category: 'Testing', i: 90, id: 150 };
+        // FOC-only (param_prj.h): the syncofs tuner's two knobs, and the
+        // d/q currents it reads back
+        inverter.params.syncofs = { unit: 'dig', value: 0, isparam: true, minimum: 0, maximum: 65535, default: 0, category: 'Motor', i: 91, id: 70 };
+        inverter.params.manualid = { unit: 'A', value: 0, isparam: true, minimum: -400, maximum: 400, default: 0, category: 'Testing', i: 92, id: 152 };
+        inverter.spot.id = { unit: 'A', value: 0, isparam: false, id: 2049 };
+        inverter.spot.iq = { unit: 'A', value: 0, isparam: false, id: 2050 };
         return text('ok');
       }
       if (p === '/__test/reset') {

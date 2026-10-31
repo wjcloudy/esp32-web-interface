@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" class="no-js" lang="en">
+<html lang="en">
 <head>
 <!--
  * This file is part of the esp32 web interface
@@ -21,255 +21,448 @@
  *
 -->
 <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
-<meta http-equiv="X-UA-Compatible" content="IE=edge" >
-<title>Syncofs</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Syncofs tuner</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg" />
+<link href="style.css" rel="stylesheet" type="text/css" />
+<script>
+    // Same theme and accent as the main interface (its localStorage cache;
+    // guarded: blocked site data makes localStorage throw)
+    (function() {
+        try {
+            var t = localStorage.getItem('theme');
+            if (t && t !== 'system') document.documentElement.setAttribute('data-theme', t);
+            var a = localStorage.getItem('accentColor');
+            if (a && /^#[0-9a-fA-F]{6}$/.test(a)) document.documentElement.style.setProperty('--accent', a);
+        } catch (e) {}
+    })();
+</script>
 <script src="inverter.js" type="text/javascript"></script>
 <script src="chart.min.js" type="text/javascript"></script>
-<script src="chartjs-annotation.min.js" type="text/javascript"></script>
-<script src="jquery.core.min.js" type="text/javascript"></script>
-<script src="jquery.knob.min.js" type="text/javascript"></script>
 <script type="text/javascript">
 
-    var knobValue_syncofs = 0;
-    var knobValue_manualid = 0;
-    var ctxFont = 14;
-    var ctxFontColor = '#808080';
-    var ctxDashColor = 'black';
-    document.addEventListener('DOMContentLoaded', function(event)
-    {
-        $('#syncofs').val(0).trigger('change');
-        $('#manualid').val(0).trigger('change');
+    // Sync offset tuner for permanent-magnet motors on the FOC firmware.
+    // Hold the rotor angle with a d-axis current (manualid) and sweep syncofs:
+    // at the right offset the d current makes no torque and the motor stays
+    // still, anywhere else it turns. The graph keeps the speed seen at each
+    // syncofs, so the dip marks the offset to keep.
+    //
+    // The knobs used to be jQuery Knob, which went with jQuery in the v4
+    // rewrite; these are plain SVG with the same feel (drag, wheel, arrow
+    // keys, or type the value).
 
-        var loader = $('<div>',{ class:'spinner-border text-dark'});
-        var canvas = $('<canvas>');
+    var SYNCOFS_MAX = 65535, SYNCOFS_STEP = 10, SYNCOFS_JUMP = 10000;
+    var MANUALID_MAX = 100, MANUALID_JUMP = 10;
+    var SPEED_CLIP = 100; // rpm: the graph shows slow spots, anything faster is "not here"
+    var BINS = Math.floor(SYNCOFS_MAX / SYNCOFS_STEP) + 1;
 
-        $('#syncofsTuningGraph').append(loader);
-        $('#syncofsTuningGraph').append(canvas);
+    // Values the inverter has confirmed: jump checks compare against these
+    var committed = { syncofs: 0, manualid: 0 };
+    var knobs = {};
+    var chart = null;
 
-        var chart_speed_datasets = {
-            type: 'line',
-            label: 'speed',
-            backgroundColor: 'rgba(255,99,132, 0.5)',
-            borderColor: 'rgba(255,99,132)',
-            borderWidth: 2,
-            data: [],
-            yAxisID: 'y-axis-0',
-        };
+    // One command at a time over the bridge: the inverter's terminal is a
+    // single serial line, and a held arrow key must not pile up requests
+    var queue = [], busy = false;
+    function send(cmd, cb) {
+        queue.push({ cmd: cmd, cb: cb });
+        if (!busy) next();
+    }
+    function next() {
+        var job = queue.shift();
+        if (!job) { busy = false; return; }
+        busy = true;
+        inverter.sendCmd(job.cmd, function(reply) {
+            reply = (reply || '').trim();
+            if (job.cmd.indexOf('set ') === 0) showReply(job.cmd, reply);
+            try { if (job.cb) job.cb(reply); } finally { next(); }
+        });
+    }
+    function isError(reply) {
+        return /^Error|Unknown|out of range|Usage/i.test(reply);
+    }
+    function showReply(cmd, reply) {
+        var el = document.getElementById('lastcmd');
+        el.textContent = cmd + ' → ' + (reply || '(no reply)');
+        el.classList.toggle('bad', isError(reply));
+    }
 
-        var syncofs_variable = [];
+    // ---------- knob ----------
+    // 270° dial, value grows clockwise from the bottom left. onRelease runs
+    // when a change is finished: pointer up, key up, a pause in wheel turns,
+    // or a typed value.
+    var ARC = 270, R = 52;
+    function polar(deg) {
+        var a = (deg - 90) * Math.PI / 180;
+        return [60 + R * Math.cos(a), 60 + R * Math.sin(a)];
+    }
+    function arcPath(from, to) {
+        var p0 = polar(from), p1 = polar(to);
+        return 'M' + p0[0].toFixed(2) + ' ' + p0[1].toFixed(2) +
+            ' A' + R + ' ' + R + ' 0 ' + (to - from > 180 ? 1 : 0) + ' 1 ' + p1[0].toFixed(2) + ' ' + p1[1].toFixed(2);
+    }
+    function Knob(id, opts) {
+        var self = this;
+        var wrap = document.getElementById(id);
+        self.min = opts.min; self.max = opts.max; self.step = opts.step || 1;
+        self.unit = opts.unit || '';
+        self.value = self.min;
+        wrap.innerHTML =
+            '<svg class="knob-dial" viewBox="0 0 120 120" role="slider" tabindex="0" aria-label="' + id + '"' +
+            ' aria-valuemin="' + self.min + '" aria-valuemax="' + self.max + '">' +
+            '<path class="knob-track" d="' + arcPath(-ARC / 2, ARC / 2) + '"/>' +
+            '<path class="knob-fill"/>' +
+            '<circle class="knob-thumb" r="6"/>' +
+            '<text class="knob-value" x="60" y="64" text-anchor="middle"></text>' +
+            '<text class="knob-unit" x="60" y="82" text-anchor="middle">' + self.unit + '</text>' +
+            '</svg>' +
+            '<input type="number" class="knob-input" min="' + self.min + '" max="' + self.max + '" step="' + self.step + '" aria-label="' + id + ' value">';
+        self.svg = wrap.querySelector('svg');
+        self.fill = wrap.querySelector('.knob-fill');
+        self.thumb = wrap.querySelector('.knob-thumb');
+        self.text = wrap.querySelector('.knob-value');
+        self.input = wrap.querySelector('input');
+        self.onRelease = opts.release;
 
-        for (var i = 0; i <= 65530 ; i+=10) {
-            syncofs_variable.push(i);
-            chart_speed_datasets.data.push(100);
+        var dragging = false, wheelTimer = null;
+        function fromPointer(e) {
+            var b = self.svg.getBoundingClientRect();
+            var x = e.clientX - (b.left + b.width / 2), y = e.clientY - (b.top + b.height / 2);
+            var deg = Math.atan2(x, -y) * 180 / Math.PI; // 0 = top, clockwise positive
+            deg = Math.max(-ARC / 2, Math.min(ARC / 2, deg)); // stopper: no wrap past the ends
+            self.set(self.min + (deg + ARC / 2) / ARC * (self.max - self.min));
         }
-
-        data = {
-            labels: syncofs_variable,
-            datasets: [chart_speed_datasets]
-        };
-
-        options = {
-            responsive: true,
-            //maintainAspectRatio: true,
-            elements: {
-                point:{
-                    radius: 0
-                }
-            },
-            tooltips: {
-                enabled: false,
-            },
-            scales: {
-                xAxes: [{
-                    id: 'x-axis-0',
-                    position: 'bottom',
-                    scaleLabel: {
-                        display: true,
-                        fontColor: ctxFontColor,
-                        fontSize: ctxFont,
-                        labelString: 'syncofs'
-                    },
-                    ticks: {
-                        fontColor: ctxFontColor,
-                        fontSize: ctxFont
-                    },
-                    gridLines: {
-                        color: ctxFontColor
-                    }
-                }],
-                yAxes: [{
-                    id: 'y-axis-0',
-                    position: 'right',
-                    ticks: {
-                        display: false,
-                        suggestedMin: 0,
-                        suggestedMax: 100
-                    },
-                    gridLines: {
-                        drawOnChartArea: false,
-                    }
-                },{
-                    id: 'y-axis-1',
-                    position: 'left',
-                    scaleLabel: {
-                        display: true,
-                        labelString: 'manualid (Amps)',
-                        fontColor: ctxFontColor,
-                        fontSize: ctxFont
-                    },
-                    ticks: {
-                        reverse: true,
-                        display: true,
-                        fontColor: ctxFontColor,
-                        fontSize: ctxFont,
-                        suggestedMin: 0,
-                        suggestedMax: 100
-                    },
-                    gridLines: {
-                        drawOnChartArea: false,
-                        color: ctxFontColor
-                    }
-                }]
-            },
-            annotation: {
-                annotations: [{
-                    type: 'line',
-                    id: 'a-line-0',
-                    mode: 'vertical',
-                    scaleID: 'x-axis-0',
-                    value: knobValue_syncofs,
-                    borderColor: 'rgb(0, 0, 0)',
-                    borderWidth: 2,
-                    label: {
-                      content: "syncofs=" + knobValue_syncofs,
-                      enabled: true,
-                      position: 'left'
-                    }
-                }]
-            }
-        };
-
-        loader.hide();
-        
-        var chart = new Chart(canvas, {
-            type: 'line',
-            data: data,
-            options: options
+        self.svg.addEventListener('pointerdown', function(e) {
+            if (self.disabled) return;
+            dragging = true;
+            self.svg.setPointerCapture(e.pointerId);
+            self.svg.focus();
+            fromPointer(e);
+            e.preventDefault();
         });
-
-        $('#syncofs').knob({
-            min: 0,
-            max: 65535,
-            step: 10,
-            stopper: true,
-            value: 0,
-            release: function(value) {
-               if (value <= knobValue_syncofs + 10000) { //Avoid hard jumps
-                    //console.log(value);
-                    knobValue_syncofs = value;
-
-                    inverter.sendCmd('set syncofs ' + value, function () {
-                        chart.annotation.elements['a-line-0'].options.value = knobValue_syncofs;
-                        chart.annotation.elements['a-line-0'].options.label.content = 'syncofs=' + knobValue_syncofs;
-                        chart.update();
-                    });
-                } else {
-                    //console.log('!' + value + '>' + knobValue_syncofs);
-                    syncofsTuning_slow();
-                    setTimeout(function () {
-                        $('#syncofs').val(knobValue_syncofs).trigger('change');
-                    }, 100);
-                }
-            }
+        self.svg.addEventListener('pointermove', function(e) { if (dragging) fromPointer(e); });
+        function endDrag() {
+            if (!dragging) return;
+            dragging = false;
+            self.release();
+        }
+        self.svg.addEventListener('pointerup', endDrag);
+        self.svg.addEventListener('pointercancel', endDrag);
+        self.svg.addEventListener('wheel', function(e) {
+            if (self.disabled) return;
+            e.preventDefault();
+            self.set(self.value + (e.deltaY < 0 ? 1 : -1) * self.step * (e.shiftKey ? 10 : 1));
+            clearTimeout(wheelTimer);
+            wheelTimer = setTimeout(function() { self.release(); }, 400);
+        }, { passive: false });
+        var KEYS = { ArrowUp: 1, ArrowRight: 1, ArrowDown: -1, ArrowLeft: -1, PageUp: 10, PageDown: -10 };
+        self.svg.addEventListener('keydown', function(e) {
+            if (self.disabled || !(e.key in KEYS)) return;
+            e.preventDefault();
+            self.set(self.value + KEYS[e.key] * self.step);
         });
-        $('#manualid').knob({
-            min: 0,
-            max: 100,
-            stopper: true,
-            value: 0,
-            release: function(value) {
-                if (value <= knobValue_manualid + 10) { //Avoid hard jumps
-                    //console.log(value);
-                    knobValue_manualid = value;
-
-                    if(value != 0) {
-                        inverter.sendCmd('set syncofs ' + value, function () {
-                            inverter.sendCmd('get speed', function (v) {
-                                var t = knobValue_syncofs/10;
-                                if(v < 100) {
-                                    for (var i = t; i <= (t+100); i++) {
-                                        chart.data.datasets[0].data[i] = v;
-                                    }
-                                    chart.update();
-                                }
-                            });
-                        });
-                    }
-                } else {
-                    //console.log('!' + value + '>' + knobValue_manualid);
-                    syncofsTuning_slow();
-                    setTimeout(function () {
-                        $('#manualid').val(0).trigger('change'); //Zero immediately!
-                    }, 100);
-                }
-            }
+        self.svg.addEventListener('keyup', function(e) {
+            if (!self.disabled && e.key in KEYS) self.release();
         });
-    });
-    function syncofsTuning_slow() {
+        self.input.addEventListener('change', function() {
+            var v = parseFloat(self.input.value);
+            if (isNaN(v)) { self.set(self.value); return; }
+            self.set(v);
+            self.release();
+        });
+        self.set(self.min);
+    }
+    Knob.prototype.set = function(v) {
+        v = Math.round(v / this.step) * this.step;
+        v = Math.max(this.min, Math.min(this.max, v));
+        this.value = v;
+        var deg = -ARC / 2 + (v - this.min) / (this.max - this.min) * ARC;
+        this.fill.setAttribute('d', deg > -ARC / 2 ? arcPath(-ARC / 2, deg) : '');
+        var p = polar(deg);
+        this.thumb.setAttribute('cx', p[0].toFixed(2));
+        this.thumb.setAttribute('cy', p[1].toFixed(2));
+        this.text.textContent = v;
+        this.svg.setAttribute('aria-valuenow', v);
+        this.input.value = v;
+    };
+    Knob.prototype.release = function() {
+        if (this.onRelease) this.onRelease(this.value);
+    };
+    Knob.prototype.setDisabled = function(d) {
+        this.disabled = d;
+        this.input.disabled = d;
+        this.svg.classList.toggle('disabled', d);
+        this.svg.setAttribute('aria-disabled', d ? 'true' : 'false');
+    };
 
+    // ---------- tuning logic ----------
+    function circularDistance(a, b) {
+        var d = Math.abs(a - b) % (SYNCOFS_MAX + 1);
+        return Math.min(d, SYNCOFS_MAX + 1 - d); // syncofs is an angle: 65530 → 0 is one step
+    }
+
+    function releaseSyncofs(value) {
+        if (circularDistance(value, committed.syncofs) > SYNCOFS_JUMP) { // Avoid hard jumps
+            slowDown();
+            knobs.syncofs.set(committed.syncofs);
+            return;
+        }
+        if (value === committed.syncofs) return;
+        send('set syncofs ' + value, function(reply) {
+            if (isError(reply)) { knobs.syncofs.set(committed.syncofs); return; }
+            committed.syncofs = value;
+            updateMarker();
+            if (committed.manualid !== 0) sampleSpeed();
+        });
+    }
+
+    function releaseManualid(value) {
+        if (value > committed.manualid + MANUALID_JUMP) { // Avoid hard jumps
+            slowDown();
+            knobs.manualid.set(0);
+            zeroManualid(); // Zero immediately!
+            return;
+        }
+        if (value === committed.manualid) return;
+        send('set manualid ' + value, function(reply) {
+            if (isError(reply)) { knobs.manualid.set(committed.manualid); return; }
+            committed.manualid = value;
+            if (value !== 0) sampleSpeed();
+        });
+    }
+
+    function zeroManualid() {
+        send('set manualid 0', function(reply) {
+            if (!isError(reply)) committed.manualid = 0;
+        });
+    }
+
+    // Speed seen at the current syncofs, spread over ±500 dig around it
+    function sampleSpeed() {
+        var at = committed.syncofs;
+        send('get speed', function(reply) {
+            var v = parseFloat(reply);
+            if (isNaN(v)) return;
+            v = Math.min(Math.abs(v), SPEED_CLIP);
+            var t = Math.round(at / SYNCOFS_STEP), data = chart ? chart.data.datasets[0].data : null;
+            if (!data) return;
+            for (var i = t - 50; i <= t + 50; i++) data[(i + BINS) % BINS].y = v;
+            chart.update('none');
+        });
+    }
+
+    function slowDown() {
+        var el = document.getElementById('text_slowdown');
         var i = 10;
-
+        el.classList.remove('hidden');
         var blink = setInterval(function() {
             i--;
-            if(i < 1) {
-                clearInterval(blink);
-            }
-            if (i%2 == 0){
-                document.getElementById('text_slowdown').classList.add('hidden');
-            }else{
-                document.getElementById('text_slowdown').classList.remove('hidden');
-            }
+            el.classList.toggle('hidden', i % 2 === 0);
+            if (i < 1) { clearInterval(blink); el.classList.add('hidden'); }
         }, 200);
+    }
+
+    // ---------- graph ----------
+    function cssVar(name) {
+        return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    }
+    var markerPlugin = {
+        id: 'syncofsMarker',
+        afterDatasetsDraw: function(c) {
+            var x = c.scales.x.getPixelForValue(committed.syncofs), area = c.chartArea, ctx = c.ctx;
+            ctx.save();
+            ctx.strokeStyle = cssVar('--accent');
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(x, area.top);
+            ctx.lineTo(x, area.bottom);
+            ctx.stroke();
+            ctx.fillStyle = cssVar('--accent');
+            ctx.font = '12px ' + cssVar('--mono');
+            var label = 'syncofs=' + committed.syncofs;
+            var w = ctx.measureText(label).width;
+            ctx.fillText(label, x + 6 + w > area.right ? x - 6 - w : x + 6, area.top + 14);
+            ctx.restore();
+        }
     };
+    function chartColors() {
+        return { text: cssVar('--text3'), grid: cssVar('--border'), line: cssVar('--green') };
+    }
+    function buildChart() {
+        if (typeof Chart === 'undefined') return;
+        var data = [];
+        for (var i = 0; i < BINS; i++) data.push({ x: i * SYNCOFS_STEP, y: SPEED_CLIP });
+        var col = chartColors();
+        chart = new Chart(document.getElementById('syncofsChart'), {
+            type: 'line',
+            data: { datasets: [{ label: 'speed', data: data, borderColor: col.line, borderWidth: 2, pointRadius: 0, fill: false }] },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: false,
+                parsing: false,
+                plugins: { legend: { display: false }, tooltip: { enabled: false } },
+                scales: {
+                    x: { type: 'linear', min: 0, max: SYNCOFS_MAX, title: { display: true, text: 'syncofs (dig)', color: col.text }, ticks: { color: col.text }, grid: { color: col.grid } },
+                    y: { min: 0, max: SPEED_CLIP, title: { display: true, text: '|speed| (rpm, clipped at ' + SPEED_CLIP + ')', color: col.text }, ticks: { color: col.text }, grid: { color: col.grid } }
+                }
+            },
+            plugins: [markerPlugin]
+        });
+    }
+    function updateMarker() { if (chart) chart.update('none'); }
+    function recolor() {
+        if (!chart) return;
+        var col = chartColors(), s = chart.options.scales;
+        chart.data.datasets[0].borderColor = col.line;
+        ['x', 'y'].forEach(function(k) {
+            s[k].title.color = col.text; s[k].ticks.color = col.text; s[k].grid.color = col.grid;
+        });
+        chart.update('none');
+    }
+
+    // ---------- live readout ----------
+    var OPMODES = ['Off', 'Run', 'ManualRun', 'Boost', 'Buck', 'Sine', 'AcHeat'];
+    function poll() {
+        if (document.hidden || busy) return;
+        send('get speed,id,iq,opmode', function(reply) {
+            var v = reply.split('\n').map(function(l) { return parseFloat(l); });
+            if (v.length < 4 || v.some(isNaN)) return;
+            document.getElementById('rd-speed').textContent = v[0].toFixed(0);
+            document.getElementById('rd-id').textContent = v[1].toFixed(1);
+            document.getElementById('rd-iq').textContent = v[2].toFixed(1);
+            document.getElementById('rd-opmode').textContent = OPMODES[v[3]] || v[3];
+            document.getElementById('notrunning').classList.toggle('hidden', v[3] === 1);
+        });
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        knobs.syncofs = new Knob('syncofs', { min: 0, max: SYNCOFS_MAX, step: SYNCOFS_STEP, unit: 'dig', release: releaseSyncofs });
+        knobs.manualid = new Knob('manualid', { min: 0, max: MANUALID_MAX, step: 1, unit: 'A', release: releaseManualid });
+        knobs.syncofs.setDisabled(true);
+        knobs.manualid.setDisabled(true);
+        buildChart();
+        if (window.matchMedia) {
+            var mq = window.matchMedia('(prefers-color-scheme: dark)');
+            if (mq.addEventListener) mq.addEventListener('change', recolor);
+        }
+
+        document.getElementById('zero').addEventListener('click', function() {
+            knobs.manualid.set(0);
+            zeroManualid();
+        });
+        document.getElementById('clear').addEventListener('click', function() {
+            if (!chart) return;
+            chart.data.datasets[0].data.forEach(function(p) { p.y = SPEED_CLIP; });
+            chart.update('none');
+        });
+
+        // Start from what the inverter has: a knob at 0 against a stored
+        // syncofs of 30000 would make the first turn a huge jump
+        send('get syncofs,manualid', function(reply) {
+            var lines = reply.split('\n'), so = parseFloat(lines[0]), id = parseFloat(lines[1]);
+            if (isNaN(so) || isNaN(id)) {
+                var el = document.getElementById('nofoc');
+                if (/^Error/.test(reply)) el.textContent = reply;
+                el.classList.remove('hidden');
+                return;
+            }
+            committed.syncofs = Math.round(so);
+            committed.manualid = Math.round(id);
+            knobs.syncofs.set(committed.syncofs);
+            knobs.manualid.set(committed.manualid);
+            knobs.syncofs.setDisabled(false);
+            knobs.manualid.setDisabled(false);
+            updateMarker();
+            poll();
+            setInterval(poll, 1000);
+        });
+    });
+
+    // Leaving the page must not leave a d current flowing
+    window.addEventListener('pagehide', function() {
+        if (committed.manualid === 0) return;
+        try {
+            fetch('/cmd?cmd=' + encodeURIComponent('set manualid 0'),
+                { keepalive: true, credentials: 'same-origin', headers: { 'X-OI-Auth': '1' } });
+        } catch (e) {}
+    });
 </script>
 <style>
-    .hidden {
-      display: none;
-    }
-    .text-danger{
-        color:#dc3545!important
-    }
+    body { padding: 16px; }
+    .tuner { max-width: 900px; margin: 0 auto; }
+    .tuner-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: .5rem; }
+    .tuner-head h2 { margin: 0; }
+    .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 16px; margin-bottom: 16px; }
+    .help { font-size: .85rem; color: var(--text2); margin: 0 0 .25rem; }
+    .knobs { display: flex; justify-content: center; gap: 24px 48px; flex-wrap: wrap; }
+    .knob { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+    .knob h3 { margin: 0; }
+    .knob-body { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+    .knob-dial { width: 170px; height: 170px; touch-action: none; cursor: grab; outline: none; user-select: none; }
+    .knob-dial:focus-visible { filter: drop-shadow(0 0 4px var(--accent)); }
+    .knob-dial.disabled { opacity: .45; cursor: not-allowed; }
+    .knob-track { fill: none; stroke: var(--surface3); stroke-width: 10; stroke-linecap: round; }
+    .knob-fill { fill: none; stroke: var(--accent); stroke-width: 10; stroke-linecap: round; }
+    .knob-thumb { fill: var(--surface); stroke: var(--accent); stroke-width: 3; }
+    .knob-value { font: 600 20px var(--num); fill: var(--text); }
+    .knob-unit { font: 500 11px var(--mono); fill: var(--text3); }
+    .knob-input { text-align: center; }
+    .status { min-height: 2.2rem; text-align: center; }
+    .status h2 { margin: 0; }
+    .readout { display: flex; justify-content: center; gap: 8px 24px; flex-wrap: wrap; font-size: .85rem; color: var(--text2); }
+    .readout b { font-family: var(--num); color: var(--text); font-weight: 600; }
+    .actions { display: flex; justify-content: center; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+    .note { padding: 10px 14px; border-radius: var(--radius-xs); font-size: .85rem; margin-bottom: 12px; }
+    .note.warn { color: var(--tone-warn); background: var(--tone-warn-bg); }
+    .note.danger { color: var(--tone-danger); background: var(--tone-danger-bg); }
+    #lastcmd { font: .75rem var(--mono); color: var(--text3); text-align: center; margin-top: 8px; min-height: 1.2em; }
+    #lastcmd.bad { color: var(--red); }
+    .chart-box { position: relative; height: 300px; }
+    .hidden { display: none !important; }
+    .text-danger { color: var(--red) !important; }
 </style>
 </head>
-<body style="background-color:#D3D3D3">
-<table width="100%">
-    <tr>
-        <td align="center">
-            <h3>syncofs</h3>
-        </td>
-        <td align="center">
-            <h3>manualid</h3>
-        </td>
-    </tr>
-    <tr height="80px">
-        <td align="center" colspan="2">
+<body>
+<div class="tuner">
+    <div class="tuner-head">
+        <h2>Syncofs tuner</h2>
+        <a href="/">← Back to the web interface</a>
+    </div>
+    <div class="card">
+        <p class="help">For permanent-magnet motors on the FOC firmware. Start the inverter (Run), raise <b>manualid</b> a few amps at a time, then turn <b>syncofs</b>: at the right offset the motor stays still. The graph keeps the speed seen at each offset; keep the syncofs of the dip and save the parameters. Turn manualid back to 0 when done.</p>
+    </div>
+    <div class="note danger hidden" id="nofoc">This inverter has no syncofs / manualid parameter. The tuner needs the stm32-sine FOC firmware.</div>
+    <div class="note warn hidden" id="notrunning">The inverter is not in Run: manualid only takes effect while it runs. Start it from the main interface first.</div>
+    <div class="card">
+        <div class="status">
             <h2 class="text-danger hidden" id="text_slowdown">Slow Down!</h2>
-            <h2 class="text-warning hidden" id="text_close">Getting Close</h2>
-            <h2 class="text-success hidden" id="text_found">Found!</h2>
-        </td>
-    </tr>
-    <tr>
-        <td align="center">
-            <input class="dial notstored adjuster" data-displayinput="true" data-min="0" data-max="100" data-fgcolor="#222222" data-bgcolor="#FFFFFF" value="0" id="syncofs">
-        </td>
-        <td align="center">
-            <input class="dial notstored adjuster" data-displayinput="true" data-min="0" data-max="100" data-fgcolor="#222222" data-bgcolor="#FFFFFF" value="0" id="manualid">
-        </td>
-    </tr>
-    <tr>
-        <td id="syncofsTuningGraph" colspan="2"></td>
-    </tr>
-</table>
+        </div>
+        <div class="knobs">
+            <div class="knob">
+                <h3>syncofs</h3>
+                <div class="knob-body" id="syncofs"></div>
+            </div>
+            <div class="knob">
+                <h3>manualid</h3>
+                <div class="knob-body" id="manualid"></div>
+            </div>
+        </div>
+        <div class="readout" aria-live="polite">
+            <span>speed <b id="rd-speed">–</b> rpm</span>
+            <span>id <b id="rd-id">–</b> A</span>
+            <span>iq <b id="rd-iq">–</b> A</span>
+            <span>opmode <b id="rd-opmode">–</b></span>
+        </div>
+        <div class="actions">
+            <button id="zero">manualid = 0</button>
+            <button id="clear">Clear graph</button>
+        </div>
+        <div id="lastcmd" role="status"></div>
+    </div>
+    <div class="card">
+        <div class="chart-box"><canvas id="syncofsChart"></canvas></div>
+    </div>
+</div>
 </body>
 </html>
-
