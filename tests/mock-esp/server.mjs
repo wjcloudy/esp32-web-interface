@@ -131,6 +131,13 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
   let otaFlashes = 0; // web-interface OTA images accepted by /espupdate
   let wifi = { apSSID: 'inverter', staSSID: 'mocknet' }; // what WiFi.softAPSSID()/SSID() report
   let sseMode = 'on';
+  let latencyMs = 0; // added before every reply on both ports (a far-away client)
+  // UART timing (off by default): with jsonMs set, a 'json' holds the
+  // serial link that long and every other /cmd and stream sample queues
+  // behind it, as loop() serialises them on the device
+  let jsonMs = 0;
+  let uartQueue = Promise.resolve();
+  const onUart = (ms, fn) => { uartQueue = uartQueue.then(() => new Promise(r => setTimeout(() => { fn(); r(); }, ms))); };
   let sseRes = null; // the one live stream (firmware: newest stream wins)
   let clockOffset = 0;
   const now = () => Date.now() + clockOffset;
@@ -403,7 +410,9 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
     const q = url.searchParams;
     const chunks = [];
     req.on('data', c => chunks.push(c));
-    req.on('end', () => {
+    // Test hooks always answer at once; everything else waits out the latency
+    req.on('end', () => (latencyMs && !p.startsWith('/__test/') ? setTimeout(handle, latencyMs) : handle()));
+    const handle = () => {
       const body = Buffer.concat(chunks);
       // WebServer: a urlencoded body's fields join the query arguments
       if ((req.headers['content-type'] || '').startsWith('application/x-www-form-urlencoded')) {
@@ -447,7 +456,7 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
       if (p === '/__test/reset') {
         auth.clear(); clockOffset = 0;
         inverter = freshInverterState(); files = new Map(); commandLog = []; fwSteps = []; otaFlashes = 0;
-        settings = freshSettings(); canNodes = null; wifi = { apSSID: 'inverter', staSSID: 'mocknet' }; canMap = []; canCacheLoaded = true; sseMode = 'on';
+        settings = freshSettings(); canNodes = null; wifi = { apSSID: 'inverter', staSSID: 'mocknet' }; canMap = []; canCacheLoaded = true; sseMode = 'on'; latencyMs = 0; jsonMs = 0;
         fwStatus = { state: 0 };
         return text('reset');
       }
@@ -479,10 +488,14 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
       }
       // A reboot's SD probe: finds the card only if probing is on
       if (p === '/__test/sd-boot') { settings.sd_card = settings.sd_enabled && q.get('card') === '1'; return text('ok'); }
+      if (p === '/__test/latency') { latencyMs = toInt(q.get('ms')); return text('ok'); }
+      if (p === '/__test/uart') { jsonMs = toInt(q.get('jsonMs')); return text('ok'); }
       if (p === '/__test/can-cache') { canCacheLoaded = q.get('loaded') !== '0'; return text('ok'); }
       if (p === '/__test/sse') {
         const mode = q.get('mode') || 'on';
-        if (!['on', 'off', '404'].includes(mode)) return send(400, 'bad mode');
+        // 'hang' = the port takes the connection and never answers (e.g. a
+        // router that only forwards port 80 and drops everything else)
+        if (!['on', 'off', '404', 'hang'].includes(mode)) return send(400, 'bad mode');
         sseMode = mode;
         if (mode !== 'on' && sseRes) { sseRes.destroy(); sseRes = null; }
         return text('ok');
@@ -666,6 +679,7 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
         commandLog.push(cmd);
         let out = uartCommand(cmd);
         for (let i = 0; i < repeat; i++) out += uartCommand(cmd);
+        if (jsonMs) return onUart(cmd === 'json' ? jsonMs : 0, () => text(out, 'text/json'));
         return text(out, 'text/json');
       }
 
@@ -830,11 +844,16 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
 
       // A table route the mock doesn't implement (rtc, sdcard, can-debug ...)
       send(404, 'FileNotFound', 'text/plain', { Refresh: '6; url=/update' });
-    });
+    };
   });
 
   // ---------------- SSE value stream (firmware: raw-TCP listener on :81) ----------------
   const sseServer = http.createServer((req, res) => {
+    if (sseMode === 'hang') return; // never answers; close() drops it
+    if (latencyMs) setTimeout(() => sseHandle(req, res), latencyMs);
+    else sseHandle(req, res);
+  });
+  function sseHandle(req, res) {
     const url = new URL(req.url, 'http://localhost');
     const names = url.searchParams.get('names') || '';
     // Firmware: spot value names only ([A-Za-z0-9_,.-], 1..120 chars), else 404
@@ -877,7 +896,7 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
     // req 'close' fires as soon as the (empty) body is consumed — the
     // response is what stays open until the client disconnects
     res.on('close', () => { clearInterval(timer); if (sseRes === res) sseRes = null; });
-  });
+  }
 
   const close = async () => {
     for (const s of [server, sseServer]) {

@@ -4284,7 +4284,9 @@ const Support = () => html`
 // remounts it (which would drop the accumulated history). `points` sets the
 // visible history length and `sampleMs` how often a sample is taken from the
 // ~100ms stream — together they control the scroll rate/time window.
-const GaugeLine = ({ name, name2, min, max, min2, max2, value, value2, unit, color, color2, enums, w = 230, h = 175, points = 20, sampleMs = 100, decimals = 1 }) => {
+// `tick` counts stream samples: the trace advances on every sample, so a
+// constant value keeps scrolling in step with its neighbours.
+const GaugeLine = ({ name, name2, min, max, min2, max2, value, value2, tick, unit, color, color2, enums, w = 230, h = 175, points = 20, sampleMs = 100, decimals = 1 }) => {
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
   const lastSampleRef = useRef(0);
@@ -4389,7 +4391,7 @@ const GaugeLine = ({ name, name2, min, max, min2, max2, value, value2, unit, col
     push(chart.data.datasets[0], value);
     if (dual) push(chart.data.datasets[1], value2);
     chart.update('none');
-  }, [value, value2]);
+  }, [tick]);
 
   return html`
     <div style=${'width:' + w + 'px;height:' + h + 'px;display:flex;flex-direction:column;align-items:center;overflow:hidden'}>
@@ -5124,7 +5126,7 @@ const SliderTile = ({ g, value, editing, w, h }) => {
 // ==================== Dashboard widgets ====================
 
 // The run state: what the Dashboard's hero card always showed
-const StatusTile = ({ g, nameVals }) => {
+const StatusTile = ({ g, nameVals, tick }) => {
   const { state } = useContext(Store);
   const sv = state.spotValues || {};
   const live = (n) => (nameVals && typeof nameVals[n] === 'number' && !isNaN(nameVals[n])) ? nameVals[n]
@@ -5132,6 +5134,7 @@ const StatusTile = ({ g, nameVals }) => {
   const show = (n) => { const v = live(n); return v == null ? null : (sv[n] && sv[n].enums ? enumText(v, sv[n].enums) : fmtNum(v)); };
   const figs = statusFigs(g);
   const hist = useRef({});
+  const lastTick = useRef(null);
   // A short tile shows the metric rows that fit and hides the rest whole,
   // rather than scrolling or cutting a row in half
   const metricsRef = useRef(null);
@@ -5146,12 +5149,18 @@ const StatusTile = ({ g, nameVals }) => {
     ro.observe(box);
     return () => ro.disconnect();
   }, [!!metricsRef.current, figs.length]);
-  figs.forEach(n => {
-    const v = live(n);
-    if (typeof v !== 'number' || isNaN(v)) return;
-    const a = hist.current[n] || (hist.current[n] = []);
-    if (a[a.length - 1] !== v) { a.push(v); if (a.length > 60) a.shift(); }
-  });
+  // One point per sample (stream tick, or json poll until the stream
+  // delivers), changed or not — a steady value still scrolls in time
+  const tickKey = tick || state.spotValues;
+  if (lastTick.current !== tickKey) {
+    lastTick.current = tickKey;
+    figs.forEach(n => {
+      const v = live(n);
+      if (typeof v !== 'number' || isNaN(v)) return;
+      const a = hist.current[n] || (hist.current[n] = []);
+      a.push(v); if (a.length > 60) a.shift();
+    });
+  }
   if (state.status == null && live('opmode') == null) return html`<${Spinner} />`;
   const opmode = show('opmode') || state.opmode;
   const offline = state.commError || (state.canMode && !state.canConnected);
@@ -5190,11 +5199,14 @@ const StatusTile = ({ g, nameVals }) => {
 };
 
 // One value with its unit and a sparkline of the last minute or so
-const MetricTile = ({ g, value, unit, enums }) => {
+const MetricTile = ({ g, value, unit, enums, tick }) => {
   const hist = useRef([]);
-  if (typeof value === 'number' && !isNaN(value)) {
+  const lastTick = useRef(null);
+  // One point per stream sample, changed or not (see StatusTile)
+  if (tick !== lastTick.current && typeof value === 'number' && !isNaN(value)) {
+    lastTick.current = tick;
     const a = hist.current;
-    if (a[a.length - 1] !== value) { a.push(value); if (a.length > 60) a.shift(); }
+    a.push(value); if (a.length > 60) a.shift();
   }
   const label = g.label || DASH_METRIC_LABELS[g.name] || g.name || 'tap to set up';
   const shown = value == null || isNaN(value) ? '—'
@@ -5580,6 +5592,32 @@ const PageBackground = ({ bg, editing }) => {
         + (bg.opacity ? ';opacity:' + bg.opacity / 100 : '')} />
   </div>`;
 };
+// An editor field that shows exactly what is typed while it has focus. The
+// gauge view re-renders on every poll and sample, and a plain controlled
+// `value` is written back over a half-typed entry ("0." loses its point, a
+// cleared field snaps back, a list being typed vanishes). `onInput` gets each
+// edit's text (live preview), `onCommit` the final text on change (blur,
+// Enter, a spinner step); once it loses focus the field shows the stored
+// value again, normalised.
+const DraftInput = ({ value, onInput, onCommit, ...rest }) => {
+  const [draft, setDraft] = useState(null);
+  const draftRef = useRef(null);
+  const commitRef = useRef(onCommit);
+  commitRef.current = onCommit;
+  const done = (text) => {
+    if (draftRef.current == null) return;
+    draftRef.current = null;
+    setDraft(null);
+    if (commitRef.current) commitRef.current(text);
+  };
+  // Closing the editor mid-edit unmounts the field without a blur
+  useEffect(() => () => done(draftRef.current), []);
+  return html`<input ...${rest} value=${draft != null ? draft : value}
+    oninput=${e => { draftRef.current = e.target.value; setDraft(e.target.value); if (onInput) onInput(e.target.value); }}
+    onchange=${e => done(e.target.value)} onblur=${e => done(e.target.value)}
+    onkeydown=${e => { if (e.key === 'Enter') done(e.target.value); }} />`;
+};
+
 // The page settings' Background section; Rows starts at the page's current
 // height so the picture covers what's already there
 const BackgroundSettings = ({ page, update }) => {
@@ -5612,17 +5650,17 @@ const BackgroundSettings = ({ page, update }) => {
         </div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <label style="width:4.5em">Size</label>
-          <input id="bg-cols" type="number" min="1" max=${GRID_COLS - (bg.x || 0)} value=${bg.cols || (GRID_COLS - (bg.x || 0))} title="Columns"
-            oninput=${e => { const n = parseInt(e.target.value); if (n > 0) update({ ...bg, cols: n }); }} style="width:4.5em;padding:4px 6px" />
+          <${DraftInput} id="bg-cols" type="number" min="1" max=${GRID_COLS - (bg.x || 0)} value=${bg.cols || (GRID_COLS - (bg.x || 0))} title="Columns"
+            onInput=${t => { const n = parseInt(t); if (n > 0) update({ ...bg, cols: n }); }} style="width:4.5em;padding:4px 6px" />
           <span style="color:var(--text3)">×</span>
-          <input id="bg-rows" type="number" min="1" max=${BG_MAX_ROWS} value=${bg.rows} title="Rows"
-            oninput=${e => { const n = parseInt(e.target.value); if (n > 0) update({ ...bg, rows: n }); }} style="width:4.5em;padding:4px 6px" />
+          <${DraftInput} id="bg-rows" type="number" min="1" max=${BG_MAX_ROWS} value=${bg.rows} title="Rows"
+            onInput=${t => { const n = parseInt(t); if (n > 0) update({ ...bg, rows: n }); }} style="width:4.5em;padding:4px 6px" />
           <label style="margin-left:6px">At</label>
-          <input id="bg-x" type="number" min="0" max=${GRID_COLS - 1} value=${bg.x || 0} title="Column"
-            oninput=${e => { const n = parseInt(e.target.value); if (n >= 0) update({ ...bg, x: n }); }} style="width:4.5em;padding:4px 6px" />
+          <${DraftInput} id="bg-x" type="number" min="0" max=${GRID_COLS - 1} value=${bg.x || 0} title="Column"
+            onInput=${t => { const n = parseInt(t); if (n >= 0) update({ ...bg, x: n }); }} style="width:4.5em;padding:4px 6px" />
           <span style="color:var(--text3)">,</span>
-          <input id="bg-y" type="number" min="0" max=${BG_MAX_ROWS - 1} value=${bg.y || 0} title="Row"
-            oninput=${e => { const n = parseInt(e.target.value); if (n >= 0) update({ ...bg, y: n }); }} style="width:4.5em;padding:4px 6px" />
+          <${DraftInput} id="bg-y" type="number" min="0" max=${BG_MAX_ROWS - 1} value=${bg.y || 0} title="Row"
+            onInput=${t => { const n = parseInt(t); if (n >= 0) update({ ...bg, y: n }); }} style="width:4.5em;padding:4px 6px" />
         </div>
         <div style="display:flex;gap:8px;align-items:center">
           <label style="width:4.5em">Opacity</label>
@@ -5635,10 +5673,10 @@ const BackgroundSettings = ({ page, update }) => {
 };
 
 // While editing, a widget is inert: a tap configures it instead of firing it
-const WidgetTile = ({ g, value, unit, enums, nameVals, editing }) => html`
+const WidgetTile = ({ g, value, unit, enums, nameVals, tick, editing }) => html`
   <div class="widget-body wt-${g.type}" inert=${editing || undefined}>
-    ${g.type === 'status' ? html`<${StatusTile} g=${g} nameVals=${nameVals} />`
-      : g.type === 'metric' ? html`<${MetricTile} g=${g} value=${value} unit=${unit} enums=${enums} />`
+    ${g.type === 'status' ? html`<${StatusTile} g=${g} nameVals=${nameVals} tick=${tick} />`
+      : g.type === 'metric' ? html`<${MetricTile} g=${g} value=${value} unit=${unit} enums=${enums} tick=${tick} />`
       : g.type === 'messages' ? html`<${MessagesTile} editing=${editing} />`
       : g.type === 'terminal' ? html`<${TerminalTile} />`
       : g.type === 'actions' ? html`<${ActionsTile} g=${g} />`
@@ -5646,7 +5684,7 @@ const WidgetTile = ({ g, value, unit, enums, nameVals, editing }) => html`
       : html`<${CanSendTile} />`}
   </div>`;
 
-const GaugeTileBody = ({ g, title, value, value2, unit, enums, editing, canMode, presets, peaks }) => {
+const GaugeTileBody = ({ g, title, value, value2, tick, unit, enums, editing, canMode, presets, peaks }) => {
   const ref = useRef(null);
   const [dim, setDim] = useState({ w: 0, h: 0 });
   // Alarm: fires once when the value crosses INTO the warn zone (the visual
@@ -5720,7 +5758,7 @@ const GaugeTileBody = ({ g, title, value, value2, unit, enums, editing, canMode,
       ${w > 12 && (g.type === 'text' ? gh > 7 : gh > 12) && ((g.type === 'line')
         ? html`<${GaugeLine} key=${g.id + '-' + (g.name2 || '')} name=${g.name} name2=${g.name2 || ''} min=${g.min} max=${g.max}
             min2=${g.min2} max2=${g.max2}
-            value=${value} value2=${value2} unit=${unit} color=${g.color || ''} color2=${g.color2 || ''} enums=${enums}
+            value=${value} value2=${value2} tick=${tick} unit=${unit} color=${g.color || ''} color2=${g.color2 || ''} enums=${enums}
             points=${g.points || 20} sampleMs=${g.sampleMs || 100} decimals=${g.decimals != null ? g.decimals : 1}
             w=${w - 4} h=${gh - 2} />`
         : (g.type === 'indicator')
@@ -5802,6 +5840,9 @@ const Gauges = ({ dash = false }) => {
     return () => mq.removeEventListener('change', on);
   }, []);
   const [lineVals, setLineVals] = useState({});
+  const seqRef = useRef(0); // stream samples applied so far (the traces' clock)
+  const ssePortRef = useRef(0); // read by the stream effect, which mustn't restart when it lands
+  ssePortRef.current = state.ssePort;
   const [editing, setEditing] = useState(false);
   const [editActionsOpen, setEditActionsOpen] = useState(false); // responsive-only expander for the editor's page/condition/starter sections
   const [configId, setConfigId] = useState(null); // gauge whose settings modal is open
@@ -5920,7 +5961,7 @@ const Gauges = ({ dash = false }) => {
     (async () => {
       let data = null;
       try {
-        const r = await fetch('/gauges.json');
+        const r = await bootFetch('/gauges.json');
         if (r.ok) data = await r.json();
       } catch (e) { /* no saved layout */ }
       const { pages: all, dashId: did } = withDashboardPage(migrateGauges(data), data);
@@ -6385,6 +6426,7 @@ const Gauges = ({ dash = false }) => {
         if (next[k] < p.min) p.min = next[k];
         if (next[k] > p.max) p.max = next[k];
       }
+      seqRef.current++; // sparklines and line tiles advance once per sample
       setLineVals(prev => ({ ...prev, ...next }));
       // Conditional page display: when a page's condition STARTS matching,
       // switch to it. A persisting match doesn't re-trigger, so the user can
@@ -6398,12 +6440,18 @@ const Gauges = ({ dash = false }) => {
         }
       }
     };
+    // Both transports start at once: the /cmd poll shows values after one
+    // round trip and stands down when the stream delivers its first sample.
+    // A stream that never answers (a router forwarding only port 80) or is
+    // slow to open (ticket, connect) then costs nothing but the push itself.
+    let polling = false, streamLive = false, streamTried = false;
     const fetchLoop = async () => {
-      if (!active) return;
+      if (!active || streamLive) { polling = false; return; }
+      startStream(); // sse_port can land after the layout: pick it up here
       const t0 = performance.now();
       try {
         const text = await api.getText('get ' + names.join(','));
-        if (!active) return;
+        if (!active || streamLive) { polling = false; return; }
         applyText(text);
       } catch (e) { /* ignore */ }
       if (active) {
@@ -6411,37 +6459,41 @@ const Gauges = ({ dash = false }) => {
         fetchRef.current = setTimeout(fetchLoop, Math.max(0, interval - elapsed));
       }
     };
+    const poll = () => {
+      if (polling || !active) return;
+      polling = true;
+      fetchRef.current = setTimeout(fetchLoop, 0);
+    };
     // Prefer server push when the firmware offers it (sse_port in /settings):
     // one long-lived connection instead of an HTTP round-trip per sample,
     // whichever backend (UART or CAN) is behind it. Any error — old
-    // firmware, blocked port — falls back to the polling loop, which is
+    // firmware, blocked port — hands back to the polling loop, which is
     // always available.
-    if (state.ssePort && window.EventSource) {
-      (async () => {
-        let ticket = '';
-        if (AUTH.enabled) {
-          try { ticket = (await (await fetch('/auth/stream-ticket')).json()).ticket || ''; } catch (e) {}
-          if (!active) return;
-          if (!ticket) { fetchRef.current = setTimeout(fetchLoop, 0); return; } // poll instead
-        }
-        const url = location.protocol + '//' + location.hostname + ':' + state.ssePort +
-          '/stream?names=' + names.join(',') + '&ms=' + interval + (ticket ? '&t=' + ticket : '');
-        es = new EventSource(url);
-        es.onmessage = (ev) => { if (active) applyText(ev.data); };
-        es.onerror = () => {
-          if (es) { es.close(); es = null; if (active) fetchRef.current = setTimeout(fetchLoop, 0); }
-        };
-      })();
-    } else {
-      fetchRef.current = setTimeout(fetchLoop, 0);
-    }
+    const startStream = async () => {
+      if (streamTried || !ssePortRef.current || !window.EventSource) return;
+      streamTried = true;
+      let ticket = '';
+      if (AUTH.enabled) {
+        try { ticket = (await (await fetch('/auth/stream-ticket')).json()).ticket || ''; } catch (e) {}
+        if (!active || !ticket) return; // no ticket: keep polling
+      }
+      const url = location.protocol + '//' + location.hostname + ':' + ssePortRef.current +
+        '/stream?names=' + names.join(',') + '&ms=' + interval + (ticket ? '&t=' + ticket : '');
+      es = new EventSource(url);
+      es.onmessage = (ev) => { if (!active) return; streamLive = true; applyText(ev.data); };
+      es.onerror = () => {
+        if (es) { es.close(); es = null; streamLive = false; poll(); }
+      };
+    };
+    startStream();
+    poll();
     return () => {
       active = false;
       if (es) { es.close(); es = null; }
       dispatch({ type: 'SET_LOGGING', payload: false });
       if (fetchRef.current) { clearTimeout(fetchRef.current); fetchRef.current = null; }
     };
-  }, [items, configId, autoPage, state.canMode, state.ssePort, pages.map(p => (p.cond && p.cond.name) || '').join()]);
+  }, [items, configId, autoPage, state.canMode, pages.map(p => (p.cond && p.cond.name) || '').join()]);
 
   const spotNames = state.spotValues ? Object.keys(state.spotValues) : [];
 
@@ -6480,11 +6532,11 @@ const Gauges = ({ dash = false }) => {
             </div>
             <div style="display:flex;gap:8px;align-items:center">
               <label style="width:3.5em">Min</label>
-              <input type="number" value=${page.cond.min != null ? page.cond.min : ''} step="any" placeholder="any" style="width:5em;padding:4px 6px"
-                oninput=${e => { const n = parseFloat(e.target.value); updatePageCond('min', isNaN(n) ? undefined : n); }} />
+              <${DraftInput} type="number" value=${page.cond.min != null ? page.cond.min : ''} step="any" placeholder="any" style="width:5em;padding:4px 6px"
+                onInput=${t => { const n = parseFloat(t); updatePageCond('min', isNaN(n) ? undefined : n); }} />
               <label>Max</label>
-              <input type="number" value=${page.cond.max != null ? page.cond.max : ''} step="any" placeholder="any" style="width:5em;padding:4px 6px"
-                oninput=${e => { const n = parseFloat(e.target.value); updatePageCond('max', isNaN(n) ? undefined : n); }} />
+              <${DraftInput} type="number" value=${page.cond.max != null ? page.cond.max : ''} step="any" placeholder="any" style="width:5em;padding:4px 6px"
+                onInput=${t => { const n = parseFloat(t); updatePageCond('max', isNaN(n) ? undefined : n); }} />
             </div>
             <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
               <span style="width:3.5em">Invert</span>
@@ -6575,7 +6627,7 @@ const Gauges = ({ dash = false }) => {
                     static-text tile is fully configured without a value or
                     label (its body IS the text), and an action tile shows its
                     label on the button itself (no name row) */ ''}
-                ${WIDGET_TYPES.has(g.type) ? html`<${WidgetTile} g=${g} value=${lineVals[g.id]} unit=${unit} enums=${enums} nameVals=${nameVals} editing=${editing} />` : (() => {
+                ${WIDGET_TYPES.has(g.type) ? html`<${WidgetTile} g=${g} value=${lineVals[g.id]} unit=${unit} enums=${enums} nameVals=${nameVals} tick=${seqRef.current} editing=${editing} />` : (() => {
                   const configured = g.type === 'text' ? !!(g.name || g.label || g.calc || (g.text && String(g.text).trim()))
                     : g.type === 'action' ? !!(g.label || g.param || g.canId || g.presetId != null)
                     : g.type === 'toggle' ? !!(g.label || g.param || g.canId)
@@ -6584,7 +6636,7 @@ const Gauges = ({ dash = false }) => {
                   const title = g.type === 'action' ? (editing && !configured ? 'tap to set up' : '—')
                     : (g.label || g.name || ((g.type === 'toggle' || g.type === 'slider') && g.param) || g.calc
                        || (editing && !configured ? 'tap to set up' : '—'));
-                  return html`<${GaugeTileBody} g=${g} title=${title} value=${lineVals[g.id]} value2=${lineVals[g.id + ':2']} unit=${unit} enums=${enums}
+                  return html`<${GaugeTileBody} g=${g} title=${title} value=${lineVals[g.id]} value2=${lineVals[g.id + ':2']} tick=${seqRef.current} unit=${unit} enums=${enums}
                     editing=${editing} canMode=${state.canMode} presets=${state.presets}
                     peaks=${g.peak ? peaksRef.current[g.id] : undefined} />`;
                 })()}
@@ -6665,14 +6717,14 @@ const Gauges = ({ dash = false }) => {
               <div style="display:flex;gap:8px;align-items:center">
                 <label style="width:4.5em">Size</label>
                 ${tileFreeform(cfg.type) ? html`
-                  <input type="number" min=${tileFloor(cfg.type)} max=${GRID_COLS} value=${cfg.w} title="Width (cells)"
-                    onchange=${e => setGaugeSize(cfg.id, parseInt(e.target.value), cfg.h)} style="width:5em;padding:5px 6px" />
+                  <${DraftInput} type="number" min=${tileFloor(cfg.type)} max=${GRID_COLS} value=${cfg.w} title="Width (cells)"
+                    onCommit=${t => setGaugeSize(cfg.id, parseInt(t), cfg.h)} style="width:5em;padding:5px 6px" />
                   <label>×</label>
-                  <input type="number" min=${tileFloor(cfg.type)} max=${GRID_COLS} value=${cfg.h} title="Height (cells)"
-                    onchange=${e => setGaugeSize(cfg.id, cfg.w, parseInt(e.target.value))} style="width:5em;padding:5px 6px" />
+                  <${DraftInput} type="number" min=${tileFloor(cfg.type)} max=${GRID_COLS} value=${cfg.h} title="Height (cells)"
+                    onCommit=${t => setGaugeSize(cfg.id, cfg.w, parseInt(t))} style="width:5em;padding:5px 6px" />
                 ` : html`
-                  <input type="number" min=${tileFloor(cfg.type)} max=${GRID_COLS} value=${cfg.w} title="Size (cells, square)"
-                    onchange=${e => setGaugeSize(cfg.id, parseInt(e.target.value), parseInt(e.target.value))} style="width:5em;padding:5px 6px" />
+                  <${DraftInput} type="number" min=${tileFloor(cfg.type)} max=${GRID_COLS} value=${cfg.w} title="Size (cells, square)"
+                    onCommit=${t => setGaugeSize(cfg.id, parseInt(t), parseInt(t))} style="width:5em;padding:5px 6px" />
                   <span style="font-size:.72rem;color:var(--text3)">cells (of ${GRID_COLS})</span>
                 `}
               </div>
@@ -6706,8 +6758,8 @@ const Gauges = ({ dash = false }) => {
                   </div>
                   <div style="display:flex;gap:8px;align-items:center">
                     <label style="width:4.5em">Set to</label>
-                    <input id="gauge-setto" type="number" step="any" value=${cfg.value != null ? cfg.value : ''}
-                      oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'value', isNaN(n) ? undefined : n); }}
+                    <${DraftInput} id="gauge-setto" type="number" step="any" value=${cfg.value != null ? cfg.value : ''}
+                      onInput=${t => { const n = parseFloat(t); updateGaugeConfig(cfg.id, 'value', isNaN(n) ? undefined : n); }}
                       style="width:8em;padding:5px 6px" />
                   </div>
                   <p style="font-size:.72rem;color:var(--text3);margin:0">Pressing the button runs <b>set ${cfg.param || '…'} ${cfg.value != null ? cfg.value : '…'}</b>. The change is live immediately but not saved to flash — use the Parameters tab to save permanently.</p>
@@ -6748,12 +6800,12 @@ const Gauges = ({ dash = false }) => {
                   </div>
                   <div style="display:flex;gap:8px;align-items:center">
                     <label style="width:4.5em">On</label>
-                    <input type="number" step="any" value=${cfg.onValue != null ? cfg.onValue : ''}
-                      oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'onValue', isNaN(n) ? undefined : n); }}
+                    <${DraftInput} type="number" step="any" value=${cfg.onValue != null ? cfg.onValue : ''}
+                      onInput=${t => { const n = parseFloat(t); updateGaugeConfig(cfg.id, 'onValue', isNaN(n) ? undefined : n); }}
                       style="width:6em;padding:5px 6px" />
                     <label>Off</label>
-                    <input type="number" step="any" value=${cfg.offValue != null ? cfg.offValue : ''}
-                      oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'offValue', isNaN(n) ? undefined : n); }}
+                    <${DraftInput} type="number" step="any" value=${cfg.offValue != null ? cfg.offValue : ''}
+                      onInput=${t => { const n = parseFloat(t); updateGaugeConfig(cfg.id, 'offValue', isNaN(n) ? undefined : n); }}
                       style="width:6em;padding:5px 6px" />
                   </div>
                   <p style="font-size:.72rem;color:var(--text3);margin:0">The switch position follows the parameter's live value, so it shows the inverter's real state. Change is live immediately, not saved to flash.</p>
@@ -6848,12 +6900,12 @@ const Gauges = ({ dash = false }) => {
                   ${cfg.name2 && html`
                     <div style="display:flex;gap:8px;align-items:center">
                       <label style="width:4.5em">2nd min</label>
-                      <input id="gauge-min2" type="number" step="any" value=${cfg.min2 != null ? cfg.min2 : ''} placeholder="(1st)"
-                        oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'min2', isNaN(n) ? undefined : n); }}
+                      <${DraftInput} id="gauge-min2" type="number" step="any" value=${cfg.min2 != null ? cfg.min2 : ''} placeholder="(1st)"
+                        onInput=${t => { const n = parseFloat(t); updateGaugeConfig(cfg.id, 'min2', isNaN(n) ? undefined : n); }}
                         style="width:6em;padding:5px 6px" />
                       <label>Max</label>
-                      <input id="gauge-max2" type="number" step="any" value=${cfg.max2 != null ? cfg.max2 : ''} placeholder="(1st)"
-                        oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'max2', isNaN(n) ? undefined : n); }}
+                      <${DraftInput} id="gauge-max2" type="number" step="any" value=${cfg.max2 != null ? cfg.max2 : ''} placeholder="(1st)"
+                        onInput=${t => { const n = parseFloat(t); updateGaugeConfig(cfg.id, 'max2', isNaN(n) ? undefined : n); }}
                         style="width:6em;padding:5px 6px" />
                     </div>
                     <p style="font-size:.72rem;color:var(--text3);margin:0">Scale for the second series, drawn on the right of the graph. Leave blank to share the main scale (left).</p>
@@ -6868,19 +6920,19 @@ const Gauges = ({ dash = false }) => {
                       minus be typed — a hard 0 fallback reset the field and ate
                       the '-' (couldn't enter negative ranges) */ ''}
                   <label style="width:4.5em">Min</label>
-                  <input id="gauge-min" type="number" value=${cfg.min != null ? cfg.min : ''}
-                    oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'min', isNaN(n) ? undefined : n); }} style="width:6em;padding:5px 6px" step="any" />
+                  <${DraftInput} id="gauge-min" type="number" value=${cfg.min != null ? cfg.min : ''}
+                    onInput=${t => { const n = parseFloat(t); updateGaugeConfig(cfg.id, 'min', isNaN(n) ? undefined : n); }} style="width:6em;padding:5px 6px" step="any" />
                   <label>Max</label>
-                  <input id="gauge-max" type="number" value=${cfg.max != null ? cfg.max : ''}
-                    oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'max', isNaN(n) ? undefined : n); }} style="width:6em;padding:5px 6px" step="any" />
+                  <${DraftInput} id="gauge-max" type="number" value=${cfg.max != null ? cfg.max : ''}
+                    onInput=${t => { const n = parseFloat(t); updateGaugeConfig(cfg.id, 'max', isNaN(n) ? undefined : n); }} style="width:6em;padding:5px 6px" step="any" />
                 </div>
                 ${cfg.type === 'slider' ? decimalsRow : ''}
               `}
               ${((cfg.type || 'radial') === 'radial' || cfg.type === 'bar') && html`
                 <div style="display:flex;gap:8px;align-items:center">
                   <label style="width:4.5em">Centre</label>
-                  <input type="number" step="any" value=${cfg.center != null ? cfg.center : ''} placeholder="(min)"
-                    oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'center', isNaN(n) ? undefined : n); }}
+                  <${DraftInput} type="number" step="any" value=${cfg.center != null ? cfg.center : ''} placeholder="(min)"
+                    onInput=${t => { const n = parseFloat(t); updateGaugeConfig(cfg.id, 'center', isNaN(n) ? undefined : n); }}
                     style="width:6em;padding:5px 6px" />
                   <span style="font-size:.72rem;color:var(--text3)">gauge sweeps from this value both ways — e.g. 0 on a power gauge</span>
                 </div>
@@ -6942,8 +6994,8 @@ const Gauges = ({ dash = false }) => {
               ${cfg.type === 'line' && html`
                 <div style="display:flex;gap:8px;align-items:center">
                   <label style="width:4.5em">Points</label>
-                  <input type="number" min="5" max="500" value=${cfg.points || 20}
-                    oninput=${e => updateGaugeConfig(cfg.id, 'points', Math.max(5, Math.min(500, parseInt(e.target.value) || 20)))}
+                  <${DraftInput} type="number" min="5" max="500" value=${cfg.points || 20}
+                    onCommit=${t => updateGaugeConfig(cfg.id, 'points', Math.max(5, Math.min(500, parseInt(t) || 20)))}
                     style="width:6em;padding:5px 6px" />
                   <label>Sample</label>
                   <select value=${String(cfg.sampleMs || 100)} onchange=${e => updateGaugeConfig(cfg.id, 'sampleMs', parseInt(e.target.value))}
@@ -6962,8 +7014,8 @@ const Gauges = ({ dash = false }) => {
                 <p class="modal-sect">Warning</p>
                 <div style="display:flex;gap:8px;align-items:center">
                   <label style="width:4.5em">Warn ≥</label>
-                  <input type="number" step="any" value=${cfg.warn != null ? cfg.warn : ''} placeholder="(off)"
-                    oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'warn', isNaN(n) ? undefined : n); }}
+                  <${DraftInput} type="number" step="any" value=${cfg.warn != null ? cfg.warn : ''} placeholder="(off)"
+                    onInput=${t => { const n = parseFloat(t); updateGaugeConfig(cfg.id, 'warn', isNaN(n) ? undefined : n); }}
                     style="width:6em;padding:5px 6px" />
                   <label>Colour</label>
                   <input type="color" value=${cfg.warnColor || '#f59e0b'} oninput=${e => updateGaugeConfig(cfg.id, 'warnColor', e.target.value)}
@@ -6994,8 +7046,8 @@ const Gauges = ({ dash = false }) => {
                 <p class="modal-sect">Status</p>
                 <div style="display:flex;gap:8px;align-items:center">
                   <label style="width:4.5em">Figures</label>
-                  <input id="status-figs" type="text" value=${(cfg.figs || []).join(', ')} placeholder=${getDashMetrics().join(', ')}
-                    onchange=${e => { const v = e.target.value.split(/[\s,]+/).filter(Boolean).slice(0, 6); updateGaugeConfig(cfg.id, 'figs', v.length ? v : undefined); }}
+                  <${DraftInput} id="status-figs" type="text" value=${(cfg.figs || []).join(', ')} placeholder=${getDashMetrics().join(', ')}
+                    onCommit=${t => { const v = t.split(/[\s,]+/).filter(Boolean).slice(0, 6); updateGaugeConfig(cfg.id, 'figs', v.length ? v : undefined); }}
                     style="flex:1;padding:5px 8px;font-family:var(--mono)" />
                 </div>
                 <p style="font-size:.72rem;color:var(--text3);margin:0">Spot values shown under the state, comma separated. Empty uses the Dashboard metrics from Settings.</p>`}
@@ -7098,7 +7150,7 @@ const App = () => {
   // Load CAN settings on mount
   useEffect(() => {
     fetch('/version').then(r => r.text()).then(v => dispatch({ type: 'SET_WEB_VERSION', payload: v.trim() })).catch(() => {});
-    fetch('/settings').then(r => r.json()).then(data => {
+    bootFetch('/settings').then(r => r.json()).then(data => {
       const mode = data.can_mode === true;
       const nodeId = data.can_node_id || 1;
       dispatch({ type: 'SET_CAN_CONFIG', payload: { canMode: mode, canNodeId: nodeId } });
@@ -7319,6 +7371,22 @@ const Root = () => {
   if (view.view === 'app') return html`<${App} />`;
   return html`<div class="auth-loading"><div class="css-spinner css-spinner-lg"></div></div>`;
 };
+
+// What the first screen needs before it can show a live value — the device
+// settings (stream port) and, for a gauge page or the Dashboard, the layout —
+// is asked for now, alongside /auth/state, instead of a round trip later
+// once the app has mounted: far from the device that's a visible wait.
+// Each reply is used once, and only if it came back OK.
+const bootFetches = {};
+const bootPrefetch = (path) => { bootFetches[path] = _rawFetch(path, { headers: { 'X-OI-Auth': '1' } }).catch(() => null); };
+const bootFetch = async (path) => {
+  const pending = bootFetches[path];
+  delete bootFetches[path];
+  const r = pending && await pending;
+  return (r && r.ok) ? r : fetch(path);
+};
+bootPrefetch('/settings');
+if (['dashboard', 'gauges'].includes(parseHash().tab || 'dashboard')) bootPrefetch('/gauges.json');
 
 // ==================== Mount ====================
 render(html`<${Root} />`, document.body);
