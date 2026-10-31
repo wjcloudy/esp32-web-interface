@@ -100,8 +100,32 @@
       case 'stop': return 'Demo: the simulated inverter keeps running';
       case 'reset': return 'Demo: nothing to reset';
       case 'fastuart': return 'OK fast uart on';
+      case 'can': return uartCan(args);
       default: return 'Unknown command: ' + verb;
     }
+  }
+
+  // The inverter terminal's can command (libopeninv MapCan): first letter
+  // picks print / clear / del / tx / rx
+  function uartCan(args) {
+    const a = args.trim().split(/\s+/);
+    const op = (a[0] || '')[0];
+    if (op === 'p') {
+      return canMap.map(m => 'can ' + (m.isrx ? 'rx ' : 'tx ') + m.name + ' ' + m.cobid + ' ' + m.position + ' ' +
+        m.length + ' ' + m.gain.toFixed(2) + ' ' + m.offset + '\r\n').join('');
+    }
+    if (op === 'c') { canMap = []; return 'All message definitions cleared\r\n'; }
+    if (a.length < 2) return 'Missing argument\r\n';
+    if (!allValues()[a[1]]) return 'Unknown parameter\r\n';
+    if (op === 'd') {
+      const n = canMap.length;
+      canMap = canMap.filter(m => m.name !== a[1]);
+      return (n - canMap.length) + ' entries removed\r\n';
+    }
+    if ((op !== 't' && op !== 'r') || a.length < 5) return 'Missing argument\r\n';
+    canMap.push({ isrx: op === 'r', cobid: Number(a[2]) || 0, name: a[1], position: parseInt(a[3]) || 0,
+      length: parseInt(a[4]) || 0, gain: a[5] !== undefined ? (parseFloat(a[5]) || 0) : 1, offset: parseInt(a[6]) || 0 });
+    return 'CAN map successful\r\n';
   }
 
   function setParam(args) {

@@ -63,7 +63,7 @@
   const SPOT = {
     version:      '4=2.30.A',
     opmode:       '0=Off, 1=Run, 2=Precharge, 3=PchFail, 4=Charge',
-    status:       '0=None, 1=UdcLow, 2=UdcHigh, 4=UdcBelowUdcSw, 8=UdcLim, 16=EmcyStop, 32=MProt, 64=PotPressed, 128=TmpHs, 256=WaitStart',
+    status:       '0=None, 1=UdcLow, 2=UdcHigh, 4=UdcBelowUdcSw, 8=UdcLim, 16=EmcyStop, 32=MProt, 64=PotPressed, 128=TmpHs, 256=WaitStart, 512=BrakeCheck, 1024=CanCrc, 2048=CanCounter, 4096=PrechargeTimeout, 8192=HwShutdown',
     lasterr:      '0=NONE, 1=OVERCURRENT, 2=THROTTLE1, 3=THROTTLE2, 4=CANTIMEOUT, 5=EMCYSTOP, 6=MPROT, 7=DESAT, 8=OVERVOLTAGE',
     chgtyp:       '0=Off, 1=AC, 2=DCFC',
     dir:          '-1=Reverse, 0=Neutral, 1=Forward',

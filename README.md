@@ -254,7 +254,7 @@ request needs a signed-in user, and you can add up to eight accounts with one of
 | **Admin** | Operator + user management, Wi-Fi and device settings, firmware updates (inverter and this module), ESP32 reboot, replacing the web interface's own files. |
 
 The module enforces this itself; the interface only greys out what your role can't use. A viewer
-can still type read-only terminal commands (`get`, `json`, `errors`, `stream`, `can list`), but every
+can still type read-only terminal commands (`get`, `json`, `errors`, `stream`, `can list`, `can print`), but every
 other command is refused. Scripts sign in with
 `curl -H 'X-OI-Auth: 1' -d user=NAME -d password=PASS -d token=1 -D - http://inverter.local/auth/login`
 and send the `X-OI-Token` reply header back as `Authorization: Bearer <token>`. (Requests that use
