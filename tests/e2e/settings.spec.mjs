@@ -151,22 +151,20 @@ test.describe('Settings tab', () => {
     await expect.poll(async () => (await mock.state()).settings.ap_fallback).toBe(true);
   });
 
-  test('dashboard hero metrics are configurable (up to 5)', async ({ page, mock }) => {
+  test('the Status tile sets its own figures; Settings no longer has a Dashboard picker', async ({ page, mock }) => {
+    // A choice saved with the old Settings picker is still the Status tile's
+    // default when its own Figures field is empty
+    await fetch(mock.url + '/__test/put-file?name=uiprefs.json', { method: 'POST', body: JSON.stringify({ dashMetrics: ['udc', 'speed', 'opmode'] }) });
     await openApp(page, mock);
-    // Defaults show battery voltage + inverter temp
-    await expect(page.locator('.metric-label', { hasText: 'Battery voltage' })).toBeVisible();
-    await gotoTab(page, 'Settings');
-    await gotoWebSubTab(page);
-    const selects = page.locator('select[title^="Dashboard value"]');
-    await expect(selects).toHaveCount(5);
-    await selects.nth(2).selectOption('speed');
-    await selects.nth(3).selectOption('opmode');
-    await gotoTab(page, 'Dashboard');
-    await expect(page.locator('.metric-label', { hasText: 'Motor speed' })).toBeVisible();
+    await expect(page.locator('.metric-label', { hasText: 'Motor speed' })).toBeVisible({ timeout: 10000 });
     await expect(page.locator('.metric-label', { hasText: /^opmode$/ })).toBeVisible();
     // Enum metric shows its resolved label, not the raw number
     const opmodeMetric = page.locator('.metric', { hasText: 'opmode' });
     await expect(opmodeMetric.locator('.metric-value')).toContainText('Off');
+    await gotoTab(page, 'Settings');
+    await gotoWebSubTab(page);
+    await expect(page.locator('select[title^="Dashboard value"]')).toHaveCount(0);
+    await expect(page.locator('#settings h3', { hasText: /^Dashboard$/ })).toHaveCount(0);
   });
 
   test('theme and accent persist to the device (uiprefs.json)', async ({ page, mock }) => {
@@ -176,11 +174,9 @@ test.describe('Settings tab', () => {
     // Pick a preset accent swatch and switch to dark theme
     await page.locator('.accent-swatches .swatch').nth(1).click();
     await page.locator('select.styled').first().selectOption('dark');
-    // Dashboard metric choices ride along in the same device file
-    await page.locator('select[title^="Dashboard value"]').nth(2).selectOption('speed');
     // Debounced write lands on the ESP
     await expect.poll(async () => (await mock.state()).files, { timeout: 5000 }).toContain('uiprefs.json');
-    await expect.poll(async () => (await fetch(mock.url + '/uiprefs.json').then(r => r.json())).dashMetrics).toContain('speed');
+    await expect.poll(async () => (await fetch(mock.url + '/uiprefs.json').then(r => r.json())).theme).toBe('dark');
     const prefs = await fetch(mock.url + '/uiprefs.json').then(r => r.json());
     expect(prefs.theme).toBe('dark');
     expect(prefs.accentColor).toMatch(/^#[0-9a-fA-F]{6}$/);

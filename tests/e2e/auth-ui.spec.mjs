@@ -119,11 +119,19 @@ test.describe('Sign-in on', () => {
     await openApp(page, mock);
     await page.locator('#whoami').click();
     await expect(page.locator('#user-list .user-row')).toHaveCount(3);
+    // Adding a user is a dialog: a mismatched password is reported inside it,
+    // and it closes once the user is added
+    await page.locator('#new-open').click();
+    const dialog = page.locator('#add-user-modal-overlay');
     await page.locator('#new-user').fill('Petra');
     await page.locator('#new-role').selectOption('operator');
     await page.locator('#new-pw').fill('petra-pass-1');
+    await page.locator('#new-pw2').fill('petra-pass-2');
+    await page.locator('#new-add').click();
+    await expect(dialog.locator('.auth-err')).toBeVisible();
     await page.locator('#new-pw2').fill('petra-pass-1');
     await page.locator('#new-add').click();
+    await expect(dialog).toHaveCount(0);
     await expect(page.locator('#user-list .user-row[data-user="petra"]')).toBeVisible();
     await page.locator('#role-petra').selectOption('viewer');
     await expect.poll(async () => (await mock.state()).users.find(u => u.name === 'petra')?.role).toBe('viewer');

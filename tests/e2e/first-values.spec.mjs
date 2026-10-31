@@ -8,7 +8,10 @@ import { test, expect } from './fixtures.mjs';
 // state + layout, then one sample), and a stream port that never answers
 // costs nothing.
 
-const RTT = 600; // mock latency, added before every reply
+// Mock latency, added before every reply. Large, so the few hundred ms a busy
+// machine adds (the full suite runs in parallel) stays small next to the
+// round-trip budgets: the old code took ~3.5 round trips, the budget is 3
+const RTT = 1500;
 const layout = { v: 4, dashboard: 9, pages: [
   { id: 9, name: 'Dashboard', items: [
     { id: 11, type: 'status', x: 0, y: 0, w: 6, h: 3 },

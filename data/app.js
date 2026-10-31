@@ -467,7 +467,9 @@ const DASH_METRIC_LABELS = {
   tmpm: 'Motor temp', speed: 'Motor speed', pot: 'Throttle',
 };
 
-// Spot values shown as dashboard hero metrics (max 5, configured in Settings)
+// Default figures for a Status tile whose own Figures field is empty. The
+// Settings picker that chose these is gone (each Status tile sets its own in
+// the layout editor), but a choice saved with it is still honoured
 function getDashMetrics() {
   try {
     const v = JSON.parse(localStorage.getItem('dashMetrics') || 'null');
@@ -3517,6 +3519,7 @@ const UserListCard = () => {
   const [resetFor, setResetFor] = useState(null);
   const [rpw, setRpw] = useState('');
   const [rpw2, setRpw2] = useState('');
+  const [adding, setAdding] = useState(false); // the Add user dialog is open
   const [nu, setNu] = useState({ name: '', role: 'viewer' });
   const [npw, setNpw] = useState('');
   const [npw2, setNpw2] = useState('');
@@ -3543,9 +3546,10 @@ const UserListCard = () => {
     const problem = !nu.name.trim() ? 'Choose a user name.' : passwordProblem(npw, npw2);
     if (problem) { setErr(problem); return; }
     if (await op({ op: 'add', user: nu.name.trim().toLowerCase(), password: npw, role: nu.role }, nu.name.trim().toLowerCase() + ' added')) {
-      setNu({ name: '', role: 'viewer' }); setNpw(''); setNpw2('');
+      setNu({ name: '', role: 'viewer' }); setNpw(''); setNpw2(''); setAdding(false);
     }
   };
+  const openAdd = () => { setErr(''); setNu({ name: '', role: 'viewer' }); setNpw(''); setNpw2(''); setAdding(true); };
   const resetPw = async () => {
     const problem = passwordProblem(rpw, rpw2);
     if (problem) { setErr(problem); return; }
@@ -3576,18 +3580,27 @@ const UserListCard = () => {
         </ul>
       `}
       ${users && users.length < max ? html`
-        <p class="settings-subhead">Add a user</p>
-        <div class="auth-form">
-          <label class="auth-field">User name
-            <input id="new-user" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="32"
-              value=${nu.name} oninput=${e => setNu({ ...nu, name: e.target.value })} />
-          </label>
-          <label class="auth-field">Role <${RoleSelect} id="new-role" value=${nu.role} onChange=${role => setNu({ ...nu, role })} /></label>
-          <${PasswordFields} prefix="new" pw=${npw} setPw=${setNpw} pw2=${npw2} setPw2=${setNpw2} />
-          <button id="new-add" class="primary" onclick=${add}><${Icon} n="plus" />Add user</button>
-        </div>
-        <${RoleGuide} />
+        <button id="new-open" onclick=${openAdd} style="width:auto"><${Icon} n="plus" />Add user</button>
       ` : users && html`<p class="auth-hint">${max} users is the most this module keeps.</p>`}
+      ${/* Adding a user is a dialog, like setting a password, rather than a
+          form that sat open under the list */ ''}
+      ${adding && html`
+        <${Modal} id="add-user" title="Add a user" onClose=${() => setAdding(false)}>
+          <div class="auth-form">
+            <label class="auth-field">User name
+              <input id="new-user" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="32"
+                value=${nu.name} oninput=${e => setNu({ ...nu, name: e.target.value })} />
+            </label>
+            <label class="auth-field">Role <${RoleSelect} id="new-role" value=${nu.role} onChange=${role => setNu({ ...nu, role })} /></label>
+            <${PasswordFields} prefix="new" pw=${npw} setPw=${setNpw} pw2=${npw2} setPw2=${setNpw2} />
+            ${err && html`<p class="auth-err" role="alert">${err}</p>`}
+            <${RoleGuide} />
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button onclick=${() => setAdding(false)}>Cancel</button>
+              <button id="new-add" class="primary" onclick=${add}><${Icon} n="plus" />Add user</button>
+            </div>
+          </div>
+        </${Modal}>`}
       ${resetFor && html`
         <${Modal} id="reset-pw" title=${'New password for ' + resetFor} onClose=${() => setResetFor(null)}>
           <div class="auth-form">
@@ -3670,22 +3683,6 @@ const Settings = () => {
   };
 
   // Dashboard hero metrics: five slots, empty = unused (at least slot 1 kept)
-  const [dashMetrics, setDashMetrics] = useState(() => {
-    const m = getDashMetrics();
-    while (m.length < 5) m.push('');
-    return m;
-  });
-  const updateDashMetric = (i, name) => {
-    const next = [...dashMetrics];
-    next[i] = name;
-    setDashMetrics(next);
-    const chosen = next.filter(Boolean).slice(0, 5);
-    try {
-      if (chosen.length) localStorage.setItem('dashMetrics', JSON.stringify(chosen));
-      else localStorage.removeItem('dashMetrics'); // back to the udc/tmphs default
-    } catch (e) {}
-    saveUiPrefsToDevice();
-  };
 
   // Import a previously exported web interface configuration bundle
   const importUiSettings = async (e) => {
@@ -4184,20 +4181,6 @@ const Settings = () => {
           <p style="font-size:.72rem;color:var(--text3);margin:.35rem 0 0">Stops the screen sleeping while this page is open.</p>
         </div>
 
-        <div class="dash-box compact">
-          <h3>Dashboard</h3>
-          <p style="font-size:.8rem;margin:0 0 .5rem">Choose up to 5 spot values to show on the dashboard hero card. Leave a slot empty to hide it.</p>
-          <div style="display:flex;flex-wrap:wrap;gap:8px">
-            ${dashMetrics.map((name, i) => html`
-              <select class="styled" value=${name} onchange=${e => updateDashMetric(i, e.target.value)}
-                style="width:auto;min-width:130px;font-size:.8rem" title=${'Dashboard value ' + (i + 1)}>
-                <option value="">— none —</option>
-                ${Object.keys(state.spotValues || {}).sort().map(n => html`<option value=${n}>${n}${DASH_METRIC_LABELS[n] ? ' (' + DASH_METRIC_LABELS[n] + ')' : ''}</option>`)}
-              </select>
-            `)}
-          </div>
-          ${!dashMetrics.filter(Boolean).length && html`<p style="font-size:.72rem;color:var(--text3);margin:.35rem 0 0">Nothing selected — the default (udc, tmphs) is shown.</p>`}
-        </div>
 
         `}
         ${subTab === 'config' && html`
@@ -7050,7 +7033,7 @@ const Gauges = ({ dash = false }) => {
                     onCommit=${t => { const v = t.split(/[\s,]+/).filter(Boolean).slice(0, 6); updateGaugeConfig(cfg.id, 'figs', v.length ? v : undefined); }}
                     style="flex:1;padding:5px 8px;font-family:var(--mono)" />
                 </div>
-                <p style="font-size:.72rem;color:var(--text3);margin:0">Spot values shown under the state, comma separated. Empty uses the Dashboard metrics from Settings.</p>`}
+                <p style="font-size:.72rem;color:var(--text3);margin:0">Spot values shown under the state, comma separated. Empty shows the default (${getDashMetrics().join(', ')}).</p>`}
               ${cfg.type === 'actions' && html`
                 <p class="modal-sect">Buttons</p>
                 ${DASH_ACTIONS.map(a => {
