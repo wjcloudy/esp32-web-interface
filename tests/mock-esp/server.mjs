@@ -89,11 +89,13 @@ function freshInverterState() {
       potmax:   { unit: 'dig', value: 4095, isparam: true, minimum: 0, maximum: 4095, default: 4095, category: 'Throttle', i: 7, id: 8 },
       // RTC clock setting — always differs from default; preset capture must skip it
       Set_Hour: { unit: 'Hours', value: 9, isparam: true, minimum: 0, maximum: 23, default: 0, category: 'Clock', i: 8, id: 9 },
+      // Bitmask parameter: flags combine (5 = CurrentSensor12 + PWMOutput13)
+      pinswap:  { unit: '0=None, 1=CurrentSensor12, 2=Encoder/Resolver, 4=PWMOutput13, 8=PWMOutput23', value: 0, isparam: true, minimum: 0, maximum: 15, default: 0, category: 'Motor', i: 9, id: 10 },
     },
     spot: {
       version: { unit: '4=5.27.R-sine', value: 4, isparam: false, id: 2000 },
       opmode:  { unit: '0=Off, 1=Run, 2=ManualRun, 3=Boost, 4=Buck, 5=Sine, 6=AcHeat, 7=Chademo', value: 0, isparam: false, id: 2001 },
-      status:  { unit: '0=None, 1=UdcLow, 2=UdcHigh, 4=UdcBelowUdcSw, 8=UdcLim, 16=EmcyStop, 32=MProt, 64=PotPressed, 128=TmpHs, 256=WaitStart', value: 0, isparam: false, id: 2002 },
+      status:  { unit: '0=None, 1=UdcLow, 2=UdcHigh, 4=UdcBelowUdcSw, 8=UdcLim, 16=EmcyStop, 32=MProt, 64=PotPressed, 128=TmpHs, 256=WaitStart, 512=BrakeCheck, 1024=CanCrc, 2048=CanCounter, 4096=PrechargeTimeout, 8192=HwShutdown', value: 0, isparam: false, id: 2002 },
       lasterr: { unit: '0=NONE, 1=OVERCURRENT, 2=THROTTLE1', value: 0, isparam: false, id: 2003 },
       udc:     { unit: 'V', value: 398.5, isparam: false, id: 2004 },
       tmphs:   { unit: '°C', value: 31.2, isparam: false, id: 2005 },
@@ -198,8 +200,39 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
       case 'stop': return 'Stopped';
       case 'reset': return 'Resetting';
       case 'fastuart': return 'OK fast uart on';
+      case 'can': return uartCan(args);
       default: return 'Unknown command: ' + verb;
     }
+  }
+
+  // libopeninv's TerminalCommands::MapCan: dispatches on the first letter
+  // (p = print, c = clear, d = del, t/r = tx/rx); print writes one
+  // "can tx|rx name canid pos len gain offset" line per item
+  function uartCan(args) {
+    const a = args.trim().split(/\s+/);
+    const op = (a[0] || '')[0];
+    const nameOf = (id) => Object.keys(allValues()).find(n => allValues()[n].id === id) || '?';
+    if (op === 'p') {
+      return canMap.map(m => 'can ' + (m.isrx ? 'rx ' : 'tx ') + nameOf(m.paramid) + ' ' + m.cobid + ' ' + m.position + ' ' +
+        m.length + ' ' + m.gain.toFixed(2) + ' ' + m.offset + '\r\n').join('');
+    }
+    if (op === 'c') { canMap = []; return 'All message definitions cleared\r\n'; }
+    if (a.length < 2) return 'Missing argument\r\n';
+    const entry = findParamByName(a[1]);
+    if (!entry) return 'Unknown parameter\r\n';
+    if (op === 'd') {
+      const n = canMap.length;
+      canMap = canMap.filter(m => m.paramid !== entry.id);
+      return (n - canMap.length) + ' entries removed\r\n';
+    }
+    if (op !== 't' && op !== 'r') return 'Unknown parameter\r\n'; // libopeninv reads the name first
+    if (a.length < 5) return 'Missing argument\r\n';
+    canMap.push({
+      isrx: op === 'r', cobid: toInt(a[2]), paramid: entry.id, position: toInt(a[3]), length: toInt(a[4]),
+      gain: a[5] !== undefined ? (parseFloat(a[5]) || 0) : 1, offset: a[6] !== undefined ? toInt(a[6]) : 0,
+    });
+    const msgs = new Set(canMap.map(m => m.isrx + ':' + m.cobid)).size;
+    return 'CAN map successful, ' + msgs + ' message' + (msgs > 1 ? 's' : '') + ' active\r\n';
   }
 
   // ---------------- CAN: the firmware's canExecuteCommand() ----------------

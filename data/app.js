@@ -309,13 +309,40 @@ const Store = createContext({});
 // Parse enum string like "0=None, 1=UdcLow, 2=UdcHigh" into {0:"None", 1:"UdcLow", 2:"UdcHigh"}
 function parseEnums(unit) {
   if (!unit || typeof unit !== 'string') return null;
-  const re = /(\-?\d+)=([a-zA-Z0-9_\-\.]+)[,\s]{0,2}|([a-zA-Z0-9_\-\.]+)[,\s]{1,2}/g;
+  const re = /(\-?\d+)=([a-zA-Z0-9_\-\.\/]+)[,\s]{0,2}|([a-zA-Z0-9_\-\.\/]+)[,\s]{1,2}/g;
   const enums = {};
   let m;
   while ((m = re.exec(unit)) !== null) {
     if (m[1] !== undefined) enums[m[1]] = m[2];
   }
   return Object.keys(enums).length > 0 ? enums : null;
+}
+
+// Bitmask enums (status, pinswap, canio...) list single bits whose sum is a
+// valid value. A plain enum counts 0, 1, 2, 3... so it needs a non-power-of-
+// two key by its fourth entry; 1, 2, 4 without 3 is a bitmask. Two flags
+// alone (0=Off, 1=AC, 2=DCFC) only when a parameter's range allows both at
+// once. max: the parameter's maximum, when it has one.
+function isBitmaskEnum(enums, max) {
+  if (!enums) return false;
+  const bits = Object.keys(enums).map(Number).filter(k => k !== 0);
+  if (bits.length < 2 || bits.some(k => !(k > 0) || (k & (k - 1)) !== 0)) return false;
+  bits.sort((a, b) => a - b);
+  const m = max == null || max === '' || isNaN(max) ? null : Number(max);
+  if (m != null && m < bits[0] + bits[1]) return false;
+  return bits.length >= 3 || m != null;
+}
+
+// The flags a bitmask value has set, as labels; bits the list doesn't name
+// show as their number so nothing is hidden
+function bitmaskLabels(enums, val) {
+  let rest = Math.round(val);
+  const a = [];
+  for (const k of Object.keys(enums).map(Number).filter(k => k > 0).sort((x, y) => x - y)) {
+    if (rest & k) { a.push(enums[k]); rest &= ~k; }
+  }
+  if (rest) a.push(String(rest));
+  return a;
 }
 
 // URL breadcrumbs: every tab is bookmarkable as #tab, and the gauges tab
@@ -459,14 +486,8 @@ function reducer(state, action) {
         const v = p[name];
         if (!v) return null;
         const enums = parseEnums(v.unit);
-        if (enums && enums[v.value] !== undefined) return enums[v.value];
-        // Bitmask enum (e.g. status, canio)
-        if (enums && v.value > 0) {
-          const active = [];
-          for (const k in enums) if (v.value & parseInt(k)) active.push(enums[k]);
-          if (active.length > 0) return active.join(' | ');
-        }
-        return v.value;
+        // Bitmask enums (status, canio) resolve to their set flags
+        return enums ? enumLabel(enums, v.value, v.isparam ? v.maximum : null) : v.value;
       };
       const status = getVal('status'); const opmode = getVal('opmode');
       const lasterr = getVal('lasterr'); const udc = getVal('udc'); const tmphs = getVal('tmphs');
@@ -487,18 +508,11 @@ function reducer(state, action) {
         if (!v || typeof v !== 'object') continue;
         const enums = parseEnums(v.unit);
         if (v.isparam) {
-          let display = v.value;
-          if (enums) {
-            if (enums[v.value]) display = enums[v.value];
-            else { const a = []; for (const k in enums) if (v.value & k) a.push(enums[k]); display = a.join('|'); }
-          }
-          params[name] = { ...v, display, enums };
+          const bitmask = isBitmaskEnum(enums, v.maximum);
+          const display = enums ? enumLabel(enums, v.value, v.maximum) : v.value;
+          params[name] = { ...v, display, enums, bitmask };
         } else {
-          let display = v.value;
-          if (enums) {
-            if (enums[v.value]) display = enums[v.value];
-            else { const a = []; for (const k in enums) if (v.value & k) a.push(enums[k]); display = a.join('|'); }
-          }
+          const display = enums ? enumLabel(enums, v.value) : v.value;
           spotValues[name] = { ...v, display, enums, name };
         }
       }
@@ -732,13 +746,15 @@ const OPMODE_FRIENDLY = {
   'PchFail': 'Precharge failed', 'Charge': 'Charging', 'Preheat': 'Preheating',
 };
 
-// Resolve an enum value to its display label (handles bitmask enums)
-const enumLabel = (enums, val) => {
+// Resolve an enum value to its display label: a bitmask shows its set flags
+// (UdcBelowUdcSw|MProt), any other unlisted value its number. max: a
+// parameter's maximum (see isBitmaskEnum)
+const enumLabel = (enums, val, max) => {
   if (!enums || val == null) return null;
   const k = Math.round(val);
   if (enums[k] !== undefined) return enums[k];
-  const a = [];
-  for (const key in enums) if (k & parseInt(key)) a.push(enums[key]);
+  if (!isBitmaskEnum(enums, max)) return String(k);
+  const a = bitmaskLabels(enums, k);
   return a.length ? a.join('|') : String(k);
 };
 
@@ -935,12 +951,16 @@ const BottomBar = () => {
 
 // ==================== Parameters ====================
 
+// openinverter.org's community parameter database (submit / subscribe)
+const PARAM_DB_URL = 'https://openinverter.org/parameters/';
+
 const Parameters = () => {
   const { state, dispatch } = useContext(Store);
   const [editing, setEditing] = useState(null);
   const [editValue, setEditValue] = useState('');
   const [subToken, setSubToken] = useState('');
   const [showSubscribe, setShowSubscribe] = useState(false);
+  const [showSubmit, setShowSubmit] = useState(false); // parameter database submit dialog
   const [search, setSearch] = useState('');
   const [actionsOpen, setActionsOpen] = useState(false); // responsive-only expander
   const [applying, setApplying] = useState(false); // loading a parameter set from file
@@ -954,6 +974,14 @@ const Parameters = () => {
   const [compare, setCompare] = useState(null);
   // Parameter change log entries, newest first (null = closed)
   const [logView, setLogView] = useState(null);
+  // Bitmask parameter whose flag checkboxes are open; busy while a flag's set
+  // is in flight, so a second click composes from the value it produced
+  const [bitOpen, setBitOpen] = useState(null);
+  const [bitBusy, setBitBusy] = useState(false);
+  // The unsaved-changes bar folds into a small pill for the rest of the
+  // browser session — tweaking without saving is normal
+  const [saveBarMin, setSaveBarMinState] = useState(() => { try { return window.sessionStorage.getItem('oi-savebar-min') === '1'; } catch (e) { return false; } });
+  const setSaveBarMin = (on) => { setSaveBarMinState(on); try { window.sessionStorage.setItem('oi-savebar-min', on ? '1' : '0'); } catch (e) {} };
 
   if (!state.params) return html`<div class="tabdiv main-content" style="display:flex"><p>Loading...</p></div>`;
 
@@ -978,28 +1006,48 @@ const Parameters = () => {
     dispatch({ type: 'SET_PARAM_VALUE', name, value: isNaN(num) ? value : num });
     setEditing(null);
   };
+  const toggleFlag = async (p, bit) => {
+    const val = Math.round(p.value);
+    setBitBusy(true);
+    try { await saveParam(p.name, String(val & bit ? val & ~bit : val | bit)); } finally { setBitBusy(false); }
+  };
 
-  // Submit params to the online Parameter Database
+  // Submit params to the online Parameter Database. The database takes what
+  // the classic interface sent: the device's json (parameters and values) as
+  // the multipart field "data", POSTed to api.php. It's a plain form post in
+  // a new tab — the page's own CORS rules don't apply, but the result (and any
+  // forum sign-in it wants) is only visible over there, so the dialog first
+  // says what to expect and offers the parameter file as the fallback.
   const submitToDatabase = () => {
+    const data = {};
+    for (const src of [state.params, state.spotValues || {}]) {
+      for (const n in src) {
+        const { display, enums, bitmask, name, ...raw } = src[n]; // the UI's own fields stay here
+        data[n] = raw;
+      }
+    }
     const form = document.createElement('form');
     form.method = 'POST';
-    form.action = 'https://openinverter.org/parameters/';
+    form.action = PARAM_DB_URL + 'api.php';
+    form.enctype = 'multipart/form-data';
     form.target = '_blank';
     const input = document.createElement('input');
     input.type = 'hidden';
-    input.name = 'parameters_json';
-    input.value = JSON.stringify(state.params);
+    input.name = 'data';
+    input.value = JSON.stringify(data);
     form.appendChild(input);
     document.body.appendChild(form);
     form.submit();
     document.body.removeChild(form);
+    setShowSubmit(false);
   };
+  const paramsHref = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(state.params, null, 2));
 
   // Subscribe to parameter set
   const doSubscribe = async () => {
     if (!subToken.trim()) return;
     try {
-      const r = await fetch('https://openinverter.org/parameters/api.php?token=' + encodeURIComponent(subToken.trim()));
+      const r = await fetch(PARAM_DB_URL + 'api.php?token=' + encodeURIComponent(subToken.trim()));
       if (!r.ok) { alert('Failed to fetch parameter set'); return; }
       const params = await r.json();
       // Save subscription token
@@ -1234,7 +1282,7 @@ const Parameters = () => {
         <button onclick=${() => api.getText('save').then(r => alert(r || 'Parameters saved'))}><${Icon} n="save" />Save parameters to flash</button>
         <button onclick=${() => api.getText('load')}><${Icon} n="undo" />Restore parameters from flash</button>
         </${Gate}>
-        <a download="params.json" href=${'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(state.params, null, 2))}><button><${Icon} n="download" />Download parameters file</button></a>
+        <a download="params.json" href=${paramsHref}><button><${Icon} n="download" />Download parameters file</button></a>
         ${/* No accept filter: Android pickers report .json as octet-stream/plain and grey it out; we validate JSON in loadParamsFromFile instead. */ ''}
         <${Gate} need="operator">
         <input id="paramfile" type="file" hidden onchange=${loadParamsFromFile} />
@@ -1266,7 +1314,7 @@ const Parameters = () => {
         ${state.presets.length === 0 && html`<p style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">A preset is a named set of parameter values you can apply in one tap — here, or from an Action button on a gauges page.</p>`}
         </${Gate}>
         <h3 class="underline">Parameter Database</h3>
-        <button onclick=${submitToDatabase}><${Icon} n="cloud" />Submit parameters</button>
+        <button onclick=${() => setShowSubmit(true)}><${Icon} n="cloud" />Submit parameters</button>
         <${Gate} need="operator">
         <button onclick=${() => setShowSubscribe(true)}><${Icon} n="rss" />Subscribe to parameter set</button>
         <button onclick=${stopSubscription}><${Icon} n="x" />Stop subscription</button>
@@ -1278,16 +1326,22 @@ const Parameters = () => {
       </div>
       <div class="main-left">
         <h2>Parameters</h2>
-        ${state.unsavedParams > 0 && can('operator') && html`
+        ${state.unsavedParams > 0 && can('operator') && (saveBarMin ? html`
+          <div id="savebar" class="savebar min" role="status">
+            <button type="button" class="savebar-pill" onclick=${() => setSaveBarMin(false)}
+              title="Live but not saved to flash — lost when the inverter restarts. Click for Save / Restore.">
+              <span class="savebar-dot" aria-hidden="true"></span>${state.unsavedParams} unsaved
+            </button>
+          </div>` : html`
           <div id="savebar" class="savebar" role="status">
             <span class="savebar-dot" aria-hidden="true"></span>
-            <b>${state.unsavedParams} change${state.unsavedParams === 1 ? ' is' : 's are'} live but not saved to flash</b>
-            <span class="savebar-sub">Lost when the inverter restarts.</span>
+            <span class="savebar-text"><b>${state.unsavedParams} unsaved change${state.unsavedParams === 1 ? '' : 's'}</b><span class="savebar-sub"> · live until the inverter restarts</span></span>
             <span class="savebar-actions">
-              <button onclick=${() => api.getText('load').then(() => api.getJSON('json')).then(json => dispatch({ type: 'SET_PARAMS', payload: json })).catch(() => {})}><${Icon} n="undo" />Restore from flash</button>
-              <button class="primary" onclick=${() => api.getText('save').then(r => showToast((r || '').trim() || 'Parameters saved', 'ok')).catch(e => showToast('Save failed: ' + e.message, 'error'))}><${Icon} n="save" />Save to flash</button>
+              <button title="Restore from flash" onclick=${() => api.getText('load').then(() => api.getJSON('json')).then(json => dispatch({ type: 'SET_PARAMS', payload: json })).catch(() => {})}><${Icon} n="undo" size=${12} />Restore</button>
+              <button class="primary" title="Save to flash" onclick=${() => api.getText('save').then(r => showToast((r || '').trim() || 'Parameters saved', 'ok')).catch(e => showToast('Save failed: ' + e.message, 'error'))}><${Icon} n="save" size=${12} />Save</button>
+              <button class="savebar-hide" aria-label="Minimise" title="Minimise for this session" onclick=${() => setSaveBarMin(true)}>×</button>
             </span>
-          </div>`}
+          </div>`)}
         <table id="params" class="fullheight" style="width:auto;table-layout:auto">
           <thead><tr><th></th><th>I</th><th>Name</th><th>Value</th><th>Unit</th><th>Min</th><th>Max</th><th>Default</th></tr></thead>
           <tbody id="paramBody">
@@ -1306,7 +1360,27 @@ const Parameters = () => {
                   <td>${p.i !== undefined ? p.i : '-'}</td>
                   <td><div class="tooltip">${p.name}<span class="tooltiptext ${docstrings.get(p.name) ? '' : 'tooltiptext-empty'}">${docstrings.get(p.name) || 'No description available.'}</span></div></td>
                   <td>
-                    ${p.enums ? html`
+                    ${p.bitmask ? html`
+                      ${/* Bitmask: the set flags, opening to one checkbox per bit */ ''}
+                      <div class="bitmask">
+                        <button type="button" class="bitmask-sum" aria-expanded=${bitOpen === p.name ? 'true' : 'false'}
+                          onclick=${() => setBitOpen(bitOpen === p.name ? null : p.name)}>
+                          <span class="bitmask-names">${enumLabel(p.enums, p.value, p.maximum)}</span>
+                          <span class="bitmask-num">${Math.round(p.value)}</span>
+                        </button>
+                        ${bitOpen === p.name && html`
+                          <div class="bitmask-list">
+                            ${Object.keys(p.enums).map(Number).filter(b => b > 0).sort((a, b) => a - b).map(bit => {
+                              const on = (Math.round(p.value) & bit) !== 0;
+                              const tooBig = !on && p.maximum != null && (Math.round(p.value) | bit) > p.maximum;
+                              return html`<label key=${bit} class="bitmask-flag">
+                                <input type="checkbox" checked=${on} disabled=${!can('operator') || bitBusy || tooBig}
+                                  onchange=${() => toggleFlag(p, bit)} />${p.enums[bit]}<span class="bitmask-bit">${bit}</span>
+                              </label>`;
+                            })}
+                          </div>`}
+                      </div>
+                    ` : p.enums ? html`
                       <select class="styled" value=${String(p.value)} disabled=${!can('operator')} onchange=${e => saveParam(p.name, e.target.value)}>
                         ${Object.keys(p.enums).map(k => html`<option value=${k}>${p.enums[k]}</option>`)}
                       </select>
@@ -1339,9 +1413,24 @@ const Parameters = () => {
         </table>
       </div>
     </div>
+    ${showSubmit && html`
+      <${Modal} id="submit-db" title="Submit to the Parameter Database" onClose=${() => setShowSubmit(false)}>
+        <p style="font-size:.85rem">This opens <b>openinverter.org</b> in a new tab and sends it your parameters and spot values. The result shows in that tab, not here.</p>
+        <ul style="font-size:.82rem;color:var(--text2);margin:0 0 .5rem;padding-left:1.2em">
+          <li>The browser (not the inverter) needs internet access.</li>
+          <li>Sign in to the openinverter.org forum in this browser first — the database files submissions under your forum account.</li>
+          <li>The database hasn't listed a new set since 2023 and may no longer accept submissions. If the new tab shows an error, a sign-in page or just the list of sets, download the parameter file and share it on the forum instead.</li>
+        </ul>
+        ${typeof navigator !== 'undefined' && navigator.onLine === false && html`<p class="submit-offline" style="font-size:.82rem;color:var(--red)">This browser is offline — the submission can't reach openinverter.org.</p>`}
+        <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;margin-top:.5rem">
+          <a download="params.json" href=${paramsHref}><button style="width:auto"><${Icon} n="download" />Download parameters file</button></a>
+          <button id="submit-db-go" class="primary" style="width:auto" onclick=${submitToDatabase}><${Icon} n="cloud" />Submit to openinverter.org</button>
+        </div>
+      </${Modal}>
+    `}
     ${showSubscribe && html`
       <${Modal} id="subscribe-modal" title="Subscribe to parameter set" onClose=${() => setShowSubscribe(false)}>
-        <p style="font-size:.85rem">The Parameter Database lets OpenInverter community members share parameter settings. Browse it <a href="https://openinverter.org/parameters/" target="_blank">here</a>.</p>
+        <p style="font-size:.85rem">The Parameter Database lets OpenInverter community members share parameter settings. Browse it <a href=${PARAM_DB_URL} target="_blank">here</a>.</p>
         <p style="font-size:.85rem">Enter a subscription token to automatically sync your inverter's settings with a parameter set from the database.</p>
         <p style="font-size:.8rem;color:var(--text2)">Note: your inverter needs internet access for this feature.</p>
         <div style="display:flex;gap:8px;align-items:center;margin-top:.5rem">
@@ -1587,12 +1676,7 @@ const SpotValues = () => {
     // id-less but served live by the firmware.
     if (showFavs && fastVals[v.name] !== undefined && (v.id !== undefined || v.virtual)) {
       const val = fastVals[v.name];
-      if (v.enums) {
-        if (v.enums[val] !== undefined) return v.enums[val];
-        const a = []; for (const k in v.enums) if (val & parseInt(k)) a.push(v.enums[k]);
-        if (a.length > 0) return a.join('|');
-      }
-      return val;
+      return v.enums ? enumLabel(v.enums, val) : val;
     }
     return v.display;
   };
@@ -2729,10 +2813,26 @@ const Logger = () => {
 
 // ==================== CAN Mapping ====================
 
+// The inverter terminal's 'can print' reply -> mapping rows like 'can list'
+// gives in CAN mode (by name, as the terminal has no ids). Throws when the
+// reply has text but no mapping lines (an unknown command, say).
+function parseCanPrint(text) {
+  const rows = [];
+  const lines = String(text || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  for (const l of lines) {
+    const m = /^can\s+(tx|rx)\s+(\S+)\s+(0x[0-9a-f]+|\d+)\s+(-?\d+)\s+(-?\d+)(?:\s+(-?[\d.]+))?(?:\s+(-?\d+))?/i.exec(l);
+    if (m) rows.push({ isrx: m[1].toLowerCase() === 'rx', name: m[2], id: Number(m[3]), position: Number(m[4]), length: Number(m[5]),
+      gain: m[6] !== undefined ? parseFloat(m[6]) : 1, offset: m[7] !== undefined ? Number(m[7]) : 0 });
+  }
+  if (lines.length && !rows.length) throw new Error(lines[0].slice(0, 80));
+  return rows;
+}
+
 const CanMapping = () => {
   const { state } = useContext(Store);
   const [mappings, setMappings] = useState([]);   // new rows being edited
   const [existing, setExisting] = useState([]);   // mappings read from the device
+  const [loadErr, setLoadErr] = useState('');     // why they couldn't be read
   const [loading, setLoading] = useState(false);
   const [virtuals, setVirtuals] = useState([]);   // ESP-side virtual spot values
   const [virtMsg, setVirtMsg] = useState('');
@@ -2746,13 +2846,21 @@ const CanMapping = () => {
     for (const n in src) if (src[n].id) idToName[src[n].id] = n;
   }
 
+  // CAN mode: the firmware walks the device's map over SDO ('can list' JSON).
+  // UART: the inverter terminal's 'can print' lists one
+  // "can tx|rx name canid pos len gain offset" line per item.
   const loadMappings = async () => {
-    if (!state.canMode) return;
     setLoading(true);
+    setLoadErr('');
     try {
-      const text = await api.getText('can list');
-      setExisting(JSON.parse(text));
-    } catch (e) { setExisting([]); }
+      const text = await api.getText(state.canMode ? 'can list' : 'can print');
+      setExisting(state.canMode ? JSON.parse(text) : parseCanPrint(text));
+    } catch (e) {
+      setExisting([]);
+      setLoadErr(state.canMode
+        ? 'Could not read the mappings from the device over CAN (' + e.message + ').'
+        : 'The inverter did not list its CAN mappings' + (e.message ? ' (' + e.message + ')' : '') + '. Its firmware may be too old for "can print".');
+    }
     setLoading(false);
   };
 
@@ -2808,7 +2916,8 @@ const CanMapping = () => {
       if (isNaN(cid) || cid < 0 || cid > 0x1FFFFFFF) { alert(m.name + ': invalid CAN ID "' + m.canid + '" — use decimal (592) or hex (0x250)'); return; }
       const cmd = 'can ' + m.txrx + ' ' + m.name + ' ' + cid + ' ' + Number(m.pos||0) + ' ' + Number(m.bits||8) + ' ' + Number(m.gain||1);
       const r = await api.getText(cmd);
-      if (r.indexOf('error') === 0) { alert(m.name + ': ' + r); return; }
+      // CAN mode answers "error: ...", the inverter terminal in words
+      if (/^\s*(error|unknown|invalid|missing|cannot|max )/i.test(r)) { alert(m.name + ': ' + r.trim()); return; }
     }
     const r = await api.getText('save');
     alert(r || 'Mappings saved');
@@ -2823,7 +2932,7 @@ const CanMapping = () => {
         <${Gate} need="operator">
         <button onclick=${() => setMappings([...mappings, { name: '', txrx: 'tx', canid: 0, pos: 0, bits: 8, gain: 1 }])}><${Icon} n="plus" />Add new mapping</button>
         <button onclick=${saveMappings}><${Icon} n="save" />Save mappings to flash</button>
-        ${state.canMode && html`<button onclick=${loadMappings}><${Icon} n="refresh" />Reload from device</button>`}
+        <button onclick=${loadMappings}><${Icon} n="refresh" />Reload from device</button>
         <button onclick=${async () => {
           if (!confirm('Remove ALL CAN mappings from the device?')) return;
           await api.getText('can clear');
@@ -2836,9 +2945,14 @@ const CanMapping = () => {
       <div class="main-left">
         <h2>CAN Mapping</h2>
         <p>Configure CAN mapping settings for your OpenInverter board.</p>
-        ${state.canMode && (() => {
+        ${(() => {
+          // UART can only delete by parameter ('can del name' drops all its items)
           const removeMap = async (m) => {
-            await api.getText('can rm ' + m.index + ' ' + m.subindex);
+            if (!state.canMode) {
+              const n = existing.filter(x => x.name === m.name).length;
+              if (n > 1 && !confirm('The inverter removes mappings by parameter: delete all ' + n + ' mappings of ' + m.name + '?')) return;
+            }
+            await api.getText(state.canMode ? 'can rm ' + m.index + ' ' + m.subindex : 'can del ' + m.name);
             await api.getText('save');
             loadMappings();
           };
@@ -2846,9 +2960,9 @@ const CanMapping = () => {
             <table style="width:auto;table-layout:auto;margin-bottom:1rem">
               <thead><tr><th style="min-width:110px">Parameter</th><th>CAN ID</th><th>Offset</th><th>Length</th><th>Gain</th><th>Bias</th><th></th></tr></thead>
               <tbody>
-                ${list.map(m => html`
-                  <tr key=${'e' + m.index + '-' + m.subindex}>
-                    <td style="font-weight:500">${idToName[m.paramid] || ('#' + m.paramid)}</td>
+                ${list.map((m, i) => html`
+                  <tr key=${state.canMode ? 'e' + m.index + '-' + m.subindex : 'e' + i}>
+                    <td style="font-weight:500">${m.name || idToName[m.paramid] || ('#' + m.paramid)}</td>
                     <td style="font-family:var(--num)">0x${Number(m.id).toString(16).toUpperCase()}</td>
                     <td>${m.position}</td>
                     <td>${m.length}</td>
@@ -2863,7 +2977,8 @@ const CanMapping = () => {
           const rxMaps = existing.filter(m => m.isrx);
           return html`
             <h3 class="underline">Mappings on device ${loading ? '(loading...)' : ''}</h3>
-            ${existing.length === 0 && !loading && html`<p style="color:var(--text3)">No mappings configured on the device.</p>`}
+            ${loadErr && !loading && html`<p id="canmap-error" style="color:var(--amber)">${loadErr}</p>`}
+            ${existing.length === 0 && !loading && !loadErr && html`<p style="color:var(--text3)">No mappings configured on the device.</p>`}
             ${txMaps.length > 0 && html`
               <h3 style="margin-top:.75rem">Transmit (TX)</h3>
               ${mapTable(txMaps)}
@@ -4530,9 +4645,7 @@ function withDashboardPage(pages, data) {
 function enumText(v, enums) {
   if (!enums) return fmtNum(v);
   if (enums[v] != null) return String(enums[v]);
-  const parts = [];
-  for (const k in enums) if (Number(k) > 0 && (v & k)) parts.push(enums[k]);
-  return parts.length ? parts.join('|') : fmtNum(v, 0);
+  return isNaN(v) ? fmtNum(v, 0) : enumLabel(enums, v);
 }
 
 // A page condition ({ name, min, max, invert }) matches while the value sits
