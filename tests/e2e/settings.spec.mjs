@@ -23,6 +23,29 @@ test.describe('Settings tab', () => {
     expect((await mock.state()).settings.uart_rx_pin).toBe(1);
   });
 
+  test('SD card probing is off by default; turning it on is saved for the next boot', async ({ page, mock }) => {
+    expect((await mock.state()).settings).toMatchObject({ sd_available: true, sd_enabled: false, sd_card: false });
+    await openApp(page, mock);
+    await gotoTab(page, 'Settings');
+    const box = page.locator('#sd-card-box');
+    const toggle = box.getByRole('checkbox', { name: 'Probe for an SD card at boot' });
+    await expect(toggle).not.toBeChecked();
+    await expect(page.locator('#sd-card-help')).toContainText('Off by default');
+    await expect(page.locator('#sd-card-help')).toContainText('Not probed at this boot.');
+    await box.locator('label.toggle-row').click();
+    await expect(toggle).toBeChecked();
+    await expect.poll(async () => (await mock.state()).settings.sd_enabled).toBe(true);
+    // After a reboot with a card fitted, the saved setting wins and the card is found
+    await fetch(mock.url + '/__test/sd-boot?card=1');
+    await page.reload();
+    await gotoTab(page, 'Settings');
+    await expect(toggle).toBeChecked();
+    await expect(page.locator('#sd-card-help')).toContainText('Card detected.');
+    // And back off
+    await box.locator('label.toggle-row').click();
+    await expect.poll(async () => (await mock.state()).settings.sd_enabled).toBe(false);
+  });
+
   test('sub-tabs split device and web-interface cards', async ({ page, mock }) => {
     await openApp(page, mock);
     await gotoTab(page, 'Settings');

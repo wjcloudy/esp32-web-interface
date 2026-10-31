@@ -359,6 +359,15 @@ struct UserStore {
     return USER_OK;
   }
 
+  // Every account gone (hashes wiped too): sign-in off, as on a fresh
+  // device. For the recovery paths and an admin's "turn off sign-in"; the
+  // caller checks who may do it.
+  void clear()
+  {
+    memset(users, 0, sizeof(users));
+    count = 0;
+  }
+
   UserResult setRole(const char* name, Role role, const char* actor)
   {
     int i = find(name);
