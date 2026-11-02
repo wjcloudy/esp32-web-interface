@@ -1760,7 +1760,11 @@ const SpotValues = () => {
                     style="background:none;border:none;cursor:pointer;font-size:1rem;padding:0;color:${isFav(v.name)?'var(--amber)':'var(--text3)'}">
                     ${isFav(v.name) ? '★' : '☆'}
                   </button>
-                </td><td class="sv-name"><div class="tooltip">${v.name}<span class="tooltiptext ${svTipEmpty(v) ? 'tooltiptext-empty' : ''}">${svTip(v)}</span></div></td><td class="sv-val">${getDisplay(v)}</td>${sparks && html`<td class="sv-spark">${!v.enums && html`<${Sparkline} data=${histRef.current[v.name]} width=${64} height=${16} />`}</td>`}<td class="sv-unit">${v.unit && v.unit.indexOf('=') === -1 ? v.unit : ''}</td></tr>
+                </td><td class="sv-name"><div class="tooltip">${v.name}<span class="tooltiptext ${svTipEmpty(v) ? 'tooltiptext-empty' : ''}">${svTip(v)}</span></div></td>${v.enums
+                  // enum and bitmask text (a status like "Run, UdcLow") takes the
+                  // sparkline and unit cells too, which it never uses
+                  ? html`<td class="sv-val sv-wide" colspan=${sparks ? 3 : 2}>${getDisplay(v)}</td>`
+                  : html`<td class="sv-val">${getDisplay(v)}</td>${sparks && html`<td class="sv-spark"><${Sparkline} data=${histRef.current[v.name]} width=${64} height=${16} /></td>`}<td class="sv-unit">${v.unit && v.unit.indexOf('=') === -1 ? v.unit : ''}</td>`}</tr>
             `)}
           </tbody>
         </table>
@@ -4297,7 +4301,10 @@ const GaugeLine = ({ name, name2, min, max, min2, max2, value, value2, tick, uni
           maintainAspectRatio: false, // tiles can be any shape — never snap back to 2:1
           plugins: { legend: { display: false } },
           scales: {
-            x: { type: 'linear', display: false },
+            // Pinned to the history length: left free, Chart.js fits x to the
+            // points inside the y range, so a trace squashed and stretched
+            // while it filled or whenever the value left the scale
+            x: { type: 'linear', display: false, min: 0, max: Math.max(1, points - 1) },
             y: { type: 'linear', display: true, position: 'left', min: yMin, max: yMax,
                  ticks: { color: col, font: { size: 9 }, stepSize: ((yMax - yMin) / 2) || 1, maxTicksLimit: 3 } },
             ...(dual ? { y2: { type: 'linear', display: true, position: 'right', min: y2Min, max: y2Max,
@@ -4351,10 +4358,12 @@ const GaugeLine = ({ name, name2, min, max, min2, max2, value, value2, tick, uni
   // Shrinking the history trims the tail immediately
   useEffect(() => {
     const chart = chartRef.current;
-    const ds = chart && chart.data.datasets[0];
-    if (!ds || ds.data.length <= points) return;
-    ds.data.splice(0, ds.data.length - points);
-    ds.data.forEach((pt, i) => { pt.x = i; });
+    if (!chart) return;
+    chart.options.scales.x.max = Math.max(1, points - 1);
+    for (const ds of chart.data.datasets) {
+      if (ds.data.length > points) ds.data.splice(0, ds.data.length - points);
+      ds.data.forEach((pt, i) => { pt.x = points - ds.data.length + i; });
+    }
     chart.update('none');
   }, [points]);
 
@@ -4368,8 +4377,8 @@ const GaugeLine = ({ name, name2, min, max, min2, max2, value, value2, tick, uni
       if (!ds || val == null || isNaN(val)) return;
       ds.data.push({ x: ds.data.length, y: val });
       while (ds.data.length > points) ds.data.shift();
-      // Renumber x values so they remain contiguous from 0
-      ds.data.forEach((pt, i) => { pt.x = i; });
+      // Newest sample at the right edge; a filling history grows from there
+      ds.data.forEach((pt, i) => { pt.x = points - ds.data.length + i; });
     };
     push(chart.data.datasets[0], value);
     if (dual) push(chart.data.datasets[1], value2);
@@ -4425,6 +4434,14 @@ const hueShift = (hex, deg) => {
 // one way and regen the other, pivoting on a tick at the centre mark.
 // invertScale mirrors the whole scale (max at the arc's start, min at its
 // end), fill and labels included.
+// Peak-hold readout under a radial or bar gauge's value: the session's
+// lowest and highest values, as numbers beside the markers on the scale
+const PeakReadout = ({ peaks, decimals, fs }) => html`
+  <div class="g-peaks" style=${'font-size:' + fs}>
+    <span title="Lowest this session">▼ ${peaks.min.toFixed(decimals)}</span>
+    <span title="Highest this session">▲ ${peaks.max.toFixed(decimals)}</span>
+  </div>`;
+
 // ---- Shared by the Segmented and Zones styles of radial and bar gauges ----
 const isHex = (c) => !!c && /^#[0-9a-fA-F]{6}$/.test(c);
 const mixHex = (a, b, t) => '#' + [1, 3, 5].map(i =>
@@ -4591,7 +4608,8 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decim
             <div class="g-val" style=${'font-size:' + vfs.toFixed(2) + 'rem' + (warned ? ';color:' + wc : '')}>${v == null ? '—' : (enums ? String(Math.round(v)) : v.toFixed(decimals))}</div>
             ${enums
               ? (v != null && html`<div class="g-unit g-enum" style=${'font-size:' + ufs}>${enumLabel(enums, v)}</div>`)
-              : (unit && html`<div class="g-unit" style=${'font-size:' + ufs}>${unit}</div>`)}`;
+              : (unit && html`<div class="g-unit" style=${'font-size:' + ufs}>${unit}</div>`)}
+            ${peaks && !enums && size >= 90 && html`<${PeakReadout} peaks=${peaks} decimals=${decimals} fs=${ufs} />`}`;
         })()}
       </div>
       ${/* Labels hug the corners (7% in, 3% up): the arc ends sit ~22% in
@@ -4899,6 +4917,7 @@ const BarGauge = ({ value, min = 0, max = 100, unit, color, enums, decimals = 1,
       })()}
       <div class="bar-val g-val" style=${'font-size:' + vfs + 'px'}>
         ${disp}${!enums && unit ? html`<span class="g-unit" style="display:inline;margin-left:4px;font-size:.5em">${unit}</span>` : ''}
+        ${peaks && !enums && h >= 44 && w >= 90 && html`<${PeakReadout} peaks=${peaks} decimals=${decimals} fs=".42em" />`}
       </div>
       ${showEnds && html`
         <span class="bar-end bar-lo">${loLabel}</span>

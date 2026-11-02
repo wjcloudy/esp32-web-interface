@@ -53,7 +53,10 @@
 
     var SYNCOFS_MAX = 65535, SYNCOFS_STEP = 10, SYNCOFS_JUMP = 10000;
     var MANUALID_MAX = 100, MANUALID_JUMP = 10;
-    var SPEED_CLIP = 100; // rpm: the graph shows slow spots, anything faster is "not here"
+    // rpm: anything faster is "not here". The y axis follows the fastest
+    // sample so far (from 100 rpm up to this), so slow spots keep their
+    // resolution and a noisy resolver at 0-50 rpm doesn't fill the graph
+    var SPEED_CLIP = 1000, SPEED_FLOOR = 100;
     var BINS = Math.floor(SYNCOFS_MAX / SYNCOFS_STEP) + 1;
 
     // Values the inverter has confirmed: jump checks compare against these
@@ -247,6 +250,7 @@
             var t = Math.round(at / SYNCOFS_STEP), data = chart ? chart.data.datasets[0].data : null;
             if (!data) return;
             for (var i = t - 50; i <= t + 50; i++) data[(i + BINS) % BINS].y = v;
+            fitSpeedAxis();
             chart.update('none');
         });
     }
@@ -270,14 +274,18 @@
         id: 'syncofsMarker',
         afterDatasetsDraw: function(c) {
             var x = c.scales.x.getPixelForValue(committed.syncofs), area = c.chartArea, ctx = c.ctx;
+            var col = cssVar('--amber') || '#f59e0b';
             ctx.save();
-            ctx.strokeStyle = cssVar('--accent');
+            // Dashed and amber, so the cursor never reads as part of the trace
+            ctx.strokeStyle = col;
             ctx.lineWidth = 2;
+            ctx.setLineDash([6, 4]);
             ctx.beginPath();
             ctx.moveTo(x, area.top);
             ctx.lineTo(x, area.bottom);
             ctx.stroke();
-            ctx.fillStyle = cssVar('--accent');
+            ctx.setLineDash([]);
+            ctx.fillStyle = col;
             ctx.font = '12px ' + cssVar('--mono');
             var label = 'syncofs=' + committed.syncofs;
             var w = ctx.measureText(label).width;
@@ -288,10 +296,18 @@
     function chartColors() {
         return { text: cssVar('--text3'), grid: cssVar('--border'), line: cssVar('--green') };
     }
+    // Fastest sample seen, rounded up to a tidy step, between the floor and the clip
+    function fitSpeedAxis() {
+        var top = 0;
+        chart.data.datasets[0].data.forEach(function(p) { if (p.y != null && p.y > top) top = p.y; });
+        var step = top > 500 ? 200 : top > 200 ? 100 : 50;
+        chart.options.scales.y.max = Math.min(SPEED_CLIP, Math.max(SPEED_FLOOR, Math.ceil(top / step) * step));
+    }
     function buildChart() {
         if (typeof Chart === 'undefined') return;
+        // Offsets not tried yet have no point, so the line shows only what was measured
         var data = [];
-        for (var i = 0; i < BINS; i++) data.push({ x: i * SYNCOFS_STEP, y: SPEED_CLIP });
+        for (var i = 0; i < BINS; i++) data.push({ x: i * SYNCOFS_STEP, y: null });
         var col = chartColors();
         chart = new Chart(document.getElementById('syncofsChart'), {
             type: 'line',
@@ -304,7 +320,7 @@
                 plugins: { legend: { display: false }, tooltip: { enabled: false } },
                 scales: {
                     x: { type: 'linear', min: 0, max: SYNCOFS_MAX, title: { display: true, text: 'syncofs (dig)', color: col.text }, ticks: { color: col.text }, grid: { color: col.grid } },
-                    y: { min: 0, max: SPEED_CLIP, title: { display: true, text: '|speed| (rpm, clipped at ' + SPEED_CLIP + ')', color: col.text }, ticks: { color: col.text }, grid: { color: col.grid } }
+                    y: { min: 0, max: SPEED_FLOOR, title: { display: true, text: '|speed| (rpm, clipped at ' + SPEED_CLIP + ')', color: col.text }, ticks: { color: col.text }, grid: { color: col.grid } }
                 }
             },
             plugins: [markerPlugin]
@@ -353,7 +369,8 @@
         });
         document.getElementById('clear').addEventListener('click', function() {
             if (!chart) return;
-            chart.data.datasets[0].data.forEach(function(p) { p.y = SPEED_CLIP; });
+            chart.data.datasets[0].data.forEach(function(p) { p.y = null; });
+            fitSpeedAxis();
             chart.update('none');
         });
 

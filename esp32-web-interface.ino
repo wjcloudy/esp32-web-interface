@@ -1250,14 +1250,18 @@ void handleFileList() {
 //   Inverter.readStringUntil('\n'); //consume echo  
 // }
 
-void uart_readUntill(char val)
+// Reads up to and including val; returns what came before it ("" on timeout)
+String uart_readUntill(char val)
 {
+  String line;
   int retVal;
   do
   {
     retVal = uart_read_bytes(INVERTER_PORT, uartMessBuff, 1, UART_TIMEOUT);
+    if (retVal > 0 && uartMessBuff[0] != val && line.length() < 160) line += uartMessBuff[0];
   }
   while((retVal>0) && (uartMessBuff[0] != val));
+  return line;
 }
 
 // Read one chunk of a reply: wait up to firstByteTimeout for it to start,
@@ -1340,7 +1344,9 @@ static void initUART(bool reinit = false)
   delay(100);
 }
 
-static void sendCommand(String cmd)
+// Returns whether the inverter echoed cmd back, i.e. it is listening at this
+// baud, even when the command itself then prints nothing
+static bool sendCommand(String cmd)
 {
   DBG_OUTPUT_PORT.println("Sending '" + cmd + "' to inverter");
   //Inverter.print("\n");
@@ -1354,7 +1360,7 @@ static void sendCommand(String cmd)
   //Inverter.print("\n");
   uart_write_bytes(INVERTER_PORT, "\n", 1);
   //Inverter.readStringUntil('\n'); //consume echo  
-  uart_readUntill('\n');
+  return cmd.length() > 0 && uart_readUntill('\n').indexOf(cmd) >= 0;
 }
 
 // CAN command handler — routes OpenInverter commands over CAN bus
@@ -1461,16 +1467,18 @@ static void handleCommand() {
   }
 
   InverterUartPort port;
-  sendCommand(cmd);
+  bool echoed = sendCommand(cmd);
   // Full timeout only while waiting for a reply (or repetition) to start;
   // once it's flowing, a short silence means it's done
   output = weblogic::readReply(port, repeat, UART_TIMEOUT, UART_IDLE_TIMEOUT);
 
-  if (fastUart && output.length() == 0)
+  if (fastUart && output.length() == 0 && !echoed)
   {
-    // Empty reply at fast baud: the inverter likely rebooted back to
-    // 115200 underneath us (the stale-desync case that used to require an
+    // No echo and no reply at fast baud: the inverter likely rebooted back
+    // to 115200 underneath us (the stale-desync case that used to require an
     // ESP reboot). Drop to base baud, resync and retry the command once.
+    // An echoed command that prints nothing (can print with no mappings)
+    // is a real empty reply: dropping baud then desynced a live link.
     uart_set_baudrate(INVERTER_PORT, 115200);
     fastUart = false;
     fastUartAvailable = false; // re-armed below only once slow comms answer

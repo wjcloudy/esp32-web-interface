@@ -77,6 +77,21 @@ test.describe('Syncofs tuner', () => {
     await expect(page.locator('#lastcmd')).toHaveText('set manualid 6 → Set OK');
   });
 
+  test('the speed axis follows the fastest sample, clipped at 1000 rpm', async ({ page, mock }) => {
+    await openTuner(page, mock, { syncofs: 2000 });
+    await expect(knob(page, 'manualid')).toHaveAttribute('aria-disabled', 'false');
+    const yMax = () => page.evaluate(() => window.Chart.getChart(document.getElementById('syncofsChart')).options.scales.y.max);
+    expect(await yMax()).toBe(100);
+    await mock.setSpot('speed', 640);
+    await input(page, 'manualid').fill('5');
+    await input(page, 'manualid').press('Enter');
+    await expect.poll(yMax).toBe(800);
+    await mock.setSpot('speed', 3000);
+    await input(page, 'syncofs').fill('2500');
+    await input(page, 'syncofs').press('Enter');
+    await expect.poll(yMax).toBe(1000);
+  });
+
   test('refuses hard jumps; a manualid jump zeroes the current', async ({ page, mock }) => {
     await openTuner(page, mock, { syncofs: 2000 });
     await expect(knob(page, 'syncofs')).toHaveAttribute('aria-valuenow', '2000');

@@ -26,6 +26,26 @@ test.describe('Traces advance on time', () => {
     expect(new Set(ys)).toEqual(new Set([398.5]));
   });
 
+  test('a line tile keeps its time axis when the value leaves the scale', async ({ page, mock }) => {
+    await mock.putFile('gauges.json', { v: 3, pages: [{ id: 1, name: 'Main', items: [
+      { id: 1, name: 'tmphs', type: 'line', min: 0, max: 100, points: 20, sampleMs: 100, x: 0, y: 0, w: 4, h: 3 },
+    ] }] });
+    await mock.setSpot('tmphs', 0);
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    const x = () => page.evaluate(() => {
+      const c = window.Chart.getChart(document.querySelector('#gauges canvas'));
+      return c ? [c.scales.x.min, c.scales.x.max] : null;
+    });
+    // Filling: the trace grows from the right, the axis doesn't stretch it
+    await expect.poll(x).toEqual([0, 19]);
+    // Below the scale (a value that swings negative): Chart.js used to fit x
+    // to the points still on screen, squeezing the trace sideways
+    await mock.setSpot('tmphs', -40);
+    await page.waitForTimeout(800);
+    expect(await x()).toEqual([0, 19]);
+  });
+
   test('Dashboard metric and status sparklines advance with steady values', async ({ page, mock }) => {
     await mock.putFile('gauges.json', { v: 4, dashboard: 9, pages: [{ id: 9, name: 'Dashboard', items: [
       { id: 1, type: 'status', figs: ['udc', 'tmphs'], x: 0, y: 0, w: 6, h: 3 },

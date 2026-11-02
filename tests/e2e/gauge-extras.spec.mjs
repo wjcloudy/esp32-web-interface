@@ -70,6 +70,11 @@ test.describe('Gauge extras', () => {
     const barTick = page.locator('.bar-peak-tick');
     await expect(barTick).toBeVisible();
     expect(await barTick.getAttribute('style')).toMatch(/left:\s*60(\.\d+)?%/);
+    // ...and both read out the session's low and high as numbers
+    for (const g of ['.svg-gauge', '.bar-gauge']) {
+      await expect(page.locator(g + ' .g-peaks')).toContainText('▼ 100.0');
+      await expect(page.locator(g + ' .g-peaks')).toContainText('▲ 300.0');
+    }
   });
 
   test('value alarm flashes the tile while in the warn zone and clears below it', async ({ page, mock }) => {

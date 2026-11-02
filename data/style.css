@@ -768,6 +768,9 @@ td { font-variant-numeric: tabular-nums; }
 }
 .g-val { font-family: var(--num); font-variant-numeric: tabular-nums; font-size: 2.1rem; font-weight: 650; line-height: 1.1; }
 .g-unit { font-size: .8rem; color: var(--text2); margin-top: 2px; }
+/* peak-hold lows and highs under the value */
+.g-peaks { display: flex; gap: .7em; justify-content: center; margin-top: 2px; font-family: var(--num); color: var(--text3); white-space: nowrap; line-height: 1.1; }
+.bar-gauge .bar-val .g-peaks { position: absolute; left: 0; right: 0; bottom: 3px; margin: 0; }
 .g-enum { color: var(--accent); font-weight: 600; max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .g-min, .g-max {
   position: absolute; bottom: 22px;
@@ -856,6 +859,7 @@ td { font-variant-numeric: tabular-nums; }
   #spotValuesWrap.multi-col #spotValues td.sv-val { width: 70px; }
   #spotValuesWrap.multi-col #spotValues td.sv-spark { width: 58px; }
   #spotValuesWrap.multi-col #spotValues td.sv-unit { width: 34px; }
+  #spotValuesWrap.multi-col #spotValues td.sv-val.sv-wide { width: 162px; }
   #spotValues td.sv-spark { padding: 2px 2px; }
   #spotValues td.sv-spark .spark { width: 100%; height: auto; }
 }
@@ -882,6 +886,8 @@ td { font-variant-numeric: tabular-nums; }
 #spotValuesWrap.multi-col #spotValues td.sv-val { width: 100px; }
 #spotValuesWrap.multi-col #spotValues td.sv-spark { width: 76px; }
 #spotValuesWrap.multi-col #spotValues td.sv-unit { width: 44px; }
+/* enum/bitmask text spans the value, sparkline and unit columns */
+#spotValuesWrap.multi-col #spotValues td.sv-val.sv-wide { width: 220px; }
 
 /* ==================== Gauges grid (GridStack) ==================== */
 .gauges-view .grid-stack { min-height: 220px; }

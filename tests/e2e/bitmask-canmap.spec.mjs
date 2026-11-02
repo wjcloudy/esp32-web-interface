@@ -14,6 +14,9 @@ test.describe('Bitmask enums', () => {
     await gotoTab(page, 'Spot Values');
     const row = page.locator('#spotValues tr', { hasText: 'status' });
     await expect(row.locator('.sv-val')).toHaveText('UdcBelowUdcSw|MProt|TmpHs');
+    // The flags take the empty sparkline and unit cells too, instead of
+    // squeezing into the fixed value column
+    expect(Number(await row.locator('.sv-val').getAttribute('colspan'))).toBeGreaterThanOrEqual(2);
     // the top of the tester's list, not a shorter hard-coded one
     await mock.setSpot('status', 8192 | 1024);
     await expect(row.locator('.sv-val')).toHaveText('CanCrc|HwShutdown');
