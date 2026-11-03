@@ -2920,7 +2920,10 @@ const CanMapping = () => {
       // CAN id accepts decimal (592) or hex (0x250)
       const cid = Number(String(m.canid == null ? '' : m.canid).trim() || 0);
       if (isNaN(cid) || cid < 0 || cid > 0x1FFFFFFF) { alert(m.name + ': invalid CAN ID "' + m.canid + '" — use decimal (592) or hex (0x250)'); return; }
-      const cmd = 'can ' + m.txrx + ' ' + m.name + ' ' + cid + ' ' + Number(m.pos||0) + ' ' + Number(m.bits||8) + ' ' + Number(m.gain||1);
+      // Always send the offset (bias): older inverter firmware (5.39) rejects a line without it
+      const ofs = Math.round(Number(m.offset) || 0);
+      if (ofs < -128 || ofs > 127) { alert(m.name + ': bias must be between -128 and 127'); return; }
+      const cmd = 'can ' + m.txrx + ' ' + m.name + ' ' + cid + ' ' + Number(m.pos||0) + ' ' + Number(m.bits||8) + ' ' + Number(m.gain||1) + ' ' + ofs;
       const r = await api.getText(cmd);
       // CAN mode answers "error: ...", the inverter terminal in words
       if (/^\s*(error|unknown|invalid|missing|cannot|max )/i.test(r)) { alert(m.name + ': ' + r.trim()); return; }
@@ -2936,7 +2939,7 @@ const CanMapping = () => {
       <div class="main-right">
         <h3 class="underline">Actions</h3>
         <${Gate} need="operator">
-        <button onclick=${() => setMappings([...mappings, { name: '', txrx: 'tx', canid: 0, pos: 0, bits: 8, gain: 1 }])}><${Icon} n="plus" />Add new mapping</button>
+        <button onclick=${() => setMappings([...mappings, { name: '', txrx: 'tx', canid: 0, pos: 0, bits: 8, gain: 1, offset: 0 }])}><${Icon} n="plus" />Add new mapping</button>
         <button onclick=${saveMappings}><${Icon} n="save" />Save mappings to flash</button>
         <button onclick=${loadMappings}><${Icon} n="refresh" />Reload from device</button>
         <button onclick=${async () => {
@@ -2998,7 +3001,7 @@ const CanMapping = () => {
         <${Gate} need="operator">
         <h3 class="underline">New mappings</h3>
         <table style="width:auto;table-layout:auto">
-          <thead><tr><th style="min-width:110px">Spot Value</th><th>TX/RX</th><th style="min-width:60px">CAN ID</th><th style="min-width:50px">Offset</th><th style="min-width:50px">Length</th><th style="min-width:50px">Gain</th><th></th></tr></thead>
+          <thead><tr><th style="min-width:110px">Spot Value</th><th>TX/RX</th><th style="min-width:60px">CAN ID</th><th style="min-width:50px">Offset</th><th style="min-width:50px">Length</th><th style="min-width:50px">Gain</th><th style="min-width:50px">Bias</th><th></th></tr></thead>
           <tbody>
             ${mappings.map((m, i) => html`
               <tr key=${i}>
@@ -3013,6 +3016,7 @@ const CanMapping = () => {
                 <td><input type="number" value=${m.pos} oninput=${e => { const nm = [...mappings]; nm[i].pos = e.target.value; setMappings(nm); }} style="width:4em" /></td>
                 <td><input type="number" value=${m.bits} oninput=${e => { const nm = [...mappings]; nm[i].bits = e.target.value; setMappings(nm); }} style="width:4em" /></td>
                 <td><input type="number" value=${m.gain} oninput=${e => { const nm = [...mappings]; nm[i].gain = e.target.value; setMappings(nm); }} style="width:4em" /></td>
+                <td><input type="number" step="1" value=${m.offset} oninput=${e => { const nm = [...mappings]; nm[i].offset = e.target.value; setMappings(nm); }} style="width:4em" /></td>
                 <td><button onclick=${() => setMappings(mappings.filter((_, j) => j !== i))} style="padding:2px 6px;font-size:.7rem">✕</button></td>
               </tr>
             `)}

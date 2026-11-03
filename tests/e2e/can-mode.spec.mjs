@@ -94,7 +94,7 @@ test.describe('CAN mode', () => {
     expect((await mock.state()).canMap.map(m => m.paramid)).toEqual([2007]);
   });
 
-  test('a new mapping is sent as can tx and saved', async ({ page, mock }) => {
+  test('a new mapping is sent as can tx with its bias and saved', async ({ page, mock }) => {
     await openApp(page, mock);
     await gotoTab(page, 'CAN Mapping');
     await expect(page.locator('#canmapping')).toContainText('No mappings configured on the device.');
@@ -103,10 +103,25 @@ test.describe('CAN mode', () => {
     await row.locator('select').first().selectOption('tmphs');
     await row.locator('input[type="text"]').fill('0x250');
     await row.locator('input[type="number"]').nth(1).fill('16');
+    // Bias is the last field; 5.39 inverters reject a can tx line without it
+    await row.locator('input[type="number"]').nth(3).fill('-40');
     page.on('dialog', d => d.accept());
     await page.locator('#canmapping button', { hasText: 'Save mappings to flash' }).click();
-    await expect.poll(async () => await mock.commands()).toContain('can tx tmphs 592 0 16 1');
+    await expect.poll(async () => await mock.commands()).toContain('can tx tmphs 592 0 16 1 -40');
     await expect.poll(async () => await mock.commands()).toContain('save');
     await expect(page.locator('#canmapping tr', { hasText: 'tmphs' }).first()).toContainText('0x250');
+    await expect(page.locator('#canmapping tr', { hasText: 'tmphs' }).first()).toContainText('-40');
+  });
+
+  test('a new mapping left at the default bias still sends it', async ({ page, mock }) => {
+    await openApp(page, mock);
+    await gotoTab(page, 'CAN Mapping');
+    await page.locator('#canmapping button', { hasText: 'Add new mapping' }).click();
+    const row = page.locator('#canmapping tbody tr').last();
+    await row.locator('select').first().selectOption('tmphs');
+    await row.locator('input[type="text"]').fill('0x250');
+    page.on('dialog', d => d.accept());
+    await page.locator('#canmapping button', { hasText: 'Save mappings to flash' }).click();
+    await expect.poll(async () => await mock.commands()).toContain('can tx tmphs 592 0 8 1 0');
   });
 });
