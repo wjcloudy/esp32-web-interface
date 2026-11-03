@@ -1359,8 +1359,20 @@ static bool sendCommand(String cmd)
   uart_write_bytes(INVERTER_PORT, cmd.c_str(), cmd.length());
   //Inverter.print("\n");
   uart_write_bytes(INVERTER_PORT, "\n", 1);
-  //Inverter.readStringUntil('\n'); //consume echo  
-  return cmd.length() > 0 && uart_readUntill('\n').indexOf(cmd) >= 0;
+  //Inverter.readStringUntil('\n'); //consume echo
+  // The inverter's echo of the leading newline can land after the flush
+  // above, as can the tail of a slow earlier reply: skip up to two such
+  // lines to reach the command's echo.
+  // libopeninv's terminal doesn't rewind its echo index after a bare "\n",
+  // so the echo usually lacks the command's first character ("an print")
+  String tail = cmd.length() > 1 ? cmd.substring(1) : cmd;
+  for (int i = 0; i < 3; i++) {
+    uartMessBuff[0] = 0;
+    String line = uart_readUntill('\n');
+    if (tail.length() > 0 && line.indexOf(tail) >= 0) return true;
+    if (line.length() == 0 && uartMessBuff[0] != '\n') return false; // timed out: nothing listening at this baud
+  }
+  return false;
 }
 
 // CAN command handler — routes OpenInverter commands over CAN bus
@@ -1470,21 +1482,32 @@ static void handleCommand() {
   bool echoed = sendCommand(cmd);
   // Full timeout only while waiting for a reply (or repetition) to start;
   // once it's flowing, a short silence means it's done
-  output = weblogic::readReply(port, repeat, UART_TIMEOUT, UART_IDLE_TIMEOUT);
+  // save prints "CANMAP stored", then writes flash before "Parameters
+  // stored": a short idle would leave that line for the next command
+  output = weblogic::readReply(port, repeat, UART_TIMEOUT, cmd == "save" ? UART_TIMEOUT : UART_IDLE_TIMEOUT);
 
-  if (fastUart && output.length() == 0 && !echoed)
+  if (output.length() == 0 && !echoed)
   {
-    // No echo and no reply at fast baud: the inverter likely rebooted back
-    // to 115200 underneath us (the stale-desync case that used to require an
-    // ESP reboot). Drop to base baud, resync and retry the command once.
+    // No echo and no reply: we're at the wrong baud. At fast baud the
+    // inverter likely rebooted back to 115200 underneath us (the
+    // stale-desync case that used to require an ESP reboot); at base baud
+    // it may still be fast after we dropped (which used to need an INVERTER
+    // reboot). Try the other rate once; if that hears nothing either, settle
+    // on 115200, where a rebooted inverter starts.
     // An echoed command that prints nothing (can print with no mappings)
-    // is a real empty reply: dropping baud then desynced a live link.
-    uart_set_baudrate(INVERTER_PORT, 115200);
-    fastUart = false;
+    // is a real empty reply and keeps the baud.
+    bool wasFast = fastUart;
+    uart_set_baudrate(INVERTER_PORT, wasFast ? 115200 : 921600);
+    fastUart = !wasFast;
     fastUartAvailable = false; // re-armed below only once slow comms answer
     uartResync();
-    sendCommand(cmd);
+    echoed = sendCommand(cmd);
     output = weblogic::readReply(port, repeat, UART_TIMEOUT, UART_IDLE_TIMEOUT);
+    if (fastUart && output.length() == 0 && !echoed)
+    {
+      uart_set_baudrate(INVERTER_PORT, 115200);
+      fastUart = false;
+    }
   }
 
   // Proof of life at slow baud re-arms fast negotiation (bounded by the
