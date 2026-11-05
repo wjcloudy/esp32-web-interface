@@ -131,6 +131,40 @@ test.describe('Gauge extras', () => {
     await expect(val(3)).toContainText('-179.0');
   });
 
+  test('formulas accept 1e5 and .5, and refuse property access', async ({ page, mock }) => {
+    await seedLayout(mock, [
+      { id: 1, type: 'text', calc: '1e3/udc*.5', label: 'ok', decimals: 3, x: 0, y: 0, w: 3, h: 2 },
+      { id: 2, type: 'text', calc: 'udc.constructor', label: 'prop', x: 3, y: 0, w: 3, h: 2 },
+    ]);
+    await setSpot(mock, 'udc', 250);
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await expect(page.locator('.gauge-tile', { hasText: 'ok' })).toContainText('2.000');
+    await expect(page.locator('.gauge-tile', { hasText: 'prop' })).toContainText('—');
+  });
+
+  test('the formula box says what is wrong, or what the formula gives', async ({ page, mock }) => {
+    await seedLayout(mock, [{ id: 1, type: 'text', calc: 'udc*2', label: 'calc', decimals: 0, x: 0, y: 0, w: 3, h: 2 }]);
+    await setSpot(mock, 'udc', 100);
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    await page.locator('#gauges button', { hasText: 'Edit Layout' }).click();
+    await page.locator('.gauge-tile', { hasText: 'calc' }).first().click();
+    const box = page.locator('#gauge-calc'), status = page.locator('#gauge-calc-status');
+    await expect(status).toHaveText('= 200');
+    for (const [f, msg] of [
+      ['udc*(2', 'Syntax error'],
+      ['ude*2', 'Unknown value: ude'],
+      ['foo(udc)', 'Unknown function: foo'],
+      ['abs+udc', 'abs needs (…)'],
+      ['udc.constructor', 'Not allowed here: ".constructor"'],
+      ['wrap180(udc+100)', '= -160'],
+    ]) {
+      await box.fill(f);
+      await expect(status).toHaveText(msg);
+    }
+  });
+
   test('line tiles plot a second value with its own right-hand scale', async ({ page, mock }) => {
     await seedLayout(mock, [
       { id: 1, name: 'udc', name2: 'tmphs', type: 'line', min: 0, max: 500, min2: 0, max2: 120, x: 0, y: 0, w: 5, h: 3 },

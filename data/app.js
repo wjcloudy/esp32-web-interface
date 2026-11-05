@@ -4717,9 +4717,9 @@ const condMatch = (cond, val) => {
 // ==================== Computed (formula) tiles ====================
 // A tile can derive its value from an arithmetic formula over spot values,
 // e.g. "udc*idc/1000" for power in kW. The expression is the user's own
-// config, but it's still validated against a character whitelist and
-// compiled once; identifiers resolve to streamed values (plus a few Math
-// helpers), and anything unresolvable just reads NaN → "—".
+// config, but it's still tokenised (calcParse) and compiled once; names
+// resolve to streamed values (plus the helpers below), and anything
+// unresolvable just reads NaN → "—" (the editor says why).
 // % is JavaScript's remainder (takes the sign of the left side); mod() is
 // always 0..b, wrap180() folds an angle to -180..180, sin/cos take degrees.
 const DEG = Math.PI / 180;
@@ -4730,24 +4730,46 @@ const CALC_FUNCS = {
   wrap180: x => ((((x + 180) % 360) + 360) % 360) - 180,
   sin: d => Math.sin(d * DEG), cos: d => Math.cos(d * DEG),
 };
-const calcNames = (expr) => [...new Set((String(expr || '').match(/[A-Za-z_]\w*/g) || []).filter(w => !Object.prototype.hasOwnProperty.call(CALC_FUNCS, w)))];
+const isCalcFunc = w => Object.prototype.hasOwnProperty.call(CALC_FUNCS, w);
+// Tokenises and compiles a formula: { ids, f } or { error } saying what's
+// wrong, for the editor to show. Only numbers (1.5, .5, 1e5), names,
+// + - * / % ( ) and commas get through: a '.' outside a number is refused,
+// so a formula can't reach properties (udc.constructor) of anything
+function calcParse(expr) {
+  const src = String(expr || '');
+  const tok = /\s+|(\d+\.?\d*(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?)|([A-Za-z_]\w*)|([-+*/%(),])/y;
+  const ids = [];
+  let body = '', m, prevName = null;
+  while (tok.lastIndex < src.length) {
+    const at = tok.lastIndex;
+    if (!(m = tok.exec(src))) return { error: 'Not allowed here: "' + src.slice(at, at + 12) + '"' };
+    if (m[2]) {
+      prevName = m[2];
+      if (isCalcFunc(m[2])) body += '$F.' + m[2];
+      else { body += m[2]; if (!ids.includes(m[2])) ids.push(m[2]); }
+      continue;
+    }
+    if (m[3] === '(' && prevName && !isCalcFunc(prevName)) return { error: 'Unknown function: ' + prevName };
+    if (m[1] || m[3]) {
+      if (prevName && isCalcFunc(prevName) && m[3] !== '(') return { error: prevName + ' needs (…)' };
+      prevName = null;
+    }
+    body += m[0];
+  }
+  if (prevName && isCalcFunc(prevName)) return { error: prevName + ' needs (…)' };
+  if (!body.trim()) return { error: 'Empty formula' };
+  try {
+    // helpers come in as $F: a formula can't contain $, so no spot value can shadow it
+    const f = new Function('$F', ...ids, '"use strict";return (' + body + ')');
+    return { ids, f: (...a) => f(CALC_FUNCS, ...a) };
+  } catch (e) { return { error: 'Syntax error' }; }
+}
+const calcNames = (expr) => calcParse(expr).ids || [];
 const _calcCache = {};
 function calcEval(expr, vals) {
   let c = _calcCache[expr];
-  if (c === undefined) {
-    c = null;
-    if (/^[\w\s+\-*/%().,]+$/.test(expr)) {
-      try {
-        const ids = calcNames(expr);
-        // helpers come in as $F: the whitelist has no $, so no spot value can shadow it
-        const body = String(expr).replace(/[A-Za-z_]\w*/g, w => Object.prototype.hasOwnProperty.call(CALC_FUNCS, w) ? '$F.' + w : w);
-        const f = new Function('$F', ...ids, '"use strict";return (' + body + ')');
-        c = { ids, f: (...a) => f(CALC_FUNCS, ...a) };
-      } catch (e) { c = null; }
-    }
-    _calcCache[expr] = c;
-  }
-  if (!c) return NaN;
+  if (c === undefined) c = _calcCache[expr] = calcParse(expr);
+  if (!c.f) return NaN;
   try {
     const args = c.ids.map(n => vals[n]);
     if (args.some(a => a == null || isNaN(a))) return NaN;
@@ -5849,6 +5871,7 @@ const Gauges = ({ dash = false }) => {
   const [dashId, setDashId] = useState(DASH_PAGE_ID);
   const [activePage, setActivePage] = useState(dash ? DASH_PAGE_ID : 1);
   const [nameVals, setNameVals] = useState({}); // latest streamed value per name (status tiles)
+  const lastVals = useRef({}); // latest streamed value per name, for the formula editor's preview
   const [narrow, setNarrow] = useState(() => window.matchMedia('(max-width: 599px)').matches);
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 599px)');
@@ -6418,6 +6441,7 @@ const Gauges = ({ dash = false }) => {
       if (vals.length !== names.length) return;
       const byName = {};
       names.forEach((n, i) => { byName[n] = parseFloat(vals[i]); });
+      Object.assign(lastVals.current, byName);
       if (wantNames) setNameVals(prev => ({ ...prev, ...byName }));
       // Session recorder rides the stream, whatever the transport
       if (recRef.current) {
@@ -6885,6 +6909,24 @@ const Gauges = ({ dash = false }) => {
                     oninput=${e => updateGaugeConfig(cfg.id, 'calc', e.target.value || undefined)} style="flex:1;padding:5px 8px;font-family:var(--mono)" />
                 </div>
                 ${cfg.calc ? html`
+                  ${(() => {
+                    // What's wrong with the formula, or what it gives now
+                    const c = calcParse(cfg.calc);
+                    const unknown = c.ids && spotNames.length ? c.ids.filter(n => !spotNames.includes(n)) : [];
+                    // The stream pauses while this dialog is open: use the last streamed
+                    // values, else the main poll's
+                    const vals = {};
+                    for (const n of c.ids || []) {
+                      const sv = state.spotValues && state.spotValues[n];
+                      vals[n] = n in lastVals.current ? lastVals.current[n] : sv ? parseFloat(sv.value) : NaN;
+                    }
+                    const v = c.f ? calcEval(cfg.calc, vals) : NaN;
+                    const [msg, col] = c.error ? [c.error, 'var(--red)']
+                      : unknown.length ? ['Unknown value' + (unknown.length > 1 ? 's' : '') + ': ' + unknown.join(', '), 'var(--amber)']
+                      : isFinite(v) ? ['= ' + Number(v.toPrecision(6)), 'var(--green)']
+                      : ['No result yet (waiting for values, or not a number)', 'var(--text3)'];
+                    return html`<p id="gauge-calc-status" style=${'margin:0 0 0 calc(4.5em + 8px);font-size:.75rem;font-family:var(--mono);color:' + col}>${msg}</p>`;
+                  })()}
                   <div style="display:flex;gap:8px;align-items:center">
                     <label style="width:4.5em">Unit</label>
                     <input type="text" value=${cfg.unit || ''} placeholder="kW" maxlength="8"
