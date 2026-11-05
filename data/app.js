@@ -4720,18 +4720,29 @@ const condMatch = (cond, val) => {
 // config, but it's still validated against a character whitelist and
 // compiled once; identifiers resolve to streamed values (plus a few Math
 // helpers), and anything unresolvable just reads NaN → "—".
-const CALC_FUNCS = { abs: 1, min: 1, max: 1, sqrt: 1, round: 1, floor: 1, ceil: 1, pow: 1 };
-const calcNames = (expr) => [...new Set((String(expr || '').match(/[A-Za-z_]\w*/g) || []).filter(w => !CALC_FUNCS[w]))];
+// % is JavaScript's remainder (takes the sign of the left side); mod() is
+// always 0..b, wrap180() folds an angle to -180..180, sin/cos take degrees.
+const DEG = Math.PI / 180;
+const CALC_FUNCS = {
+  abs: Math.abs, min: Math.min, max: Math.max, sqrt: Math.sqrt, round: Math.round,
+  floor: Math.floor, ceil: Math.ceil, pow: Math.pow,
+  mod: (a, b) => ((a % b) + b) % b,
+  wrap180: x => ((((x + 180) % 360) + 360) % 360) - 180,
+  sin: d => Math.sin(d * DEG), cos: d => Math.cos(d * DEG),
+};
+const calcNames = (expr) => [...new Set((String(expr || '').match(/[A-Za-z_]\w*/g) || []).filter(w => !Object.prototype.hasOwnProperty.call(CALC_FUNCS, w)))];
 const _calcCache = {};
 function calcEval(expr, vals) {
   let c = _calcCache[expr];
   if (c === undefined) {
     c = null;
-    if (/^[\w\s+\-*/().,]+$/.test(expr)) {
+    if (/^[\w\s+\-*/%().,]+$/.test(expr)) {
       try {
         const ids = calcNames(expr);
-        const body = String(expr).replace(/[A-Za-z_]\w*/g, w => CALC_FUNCS[w] ? 'Math.' + w : w);
-        c = { ids, f: new Function(...ids, '"use strict";return (' + body + ')') };
+        // helpers come in as $F: the whitelist has no $, so no spot value can shadow it
+        const body = String(expr).replace(/[A-Za-z_]\w*/g, w => Object.prototype.hasOwnProperty.call(CALC_FUNCS, w) ? '$F.' + w : w);
+        const f = new Function('$F', ...ids, '"use strict";return (' + body + ')');
+        c = { ids, f: (...a) => f(CALC_FUNCS, ...a) };
       } catch (e) { c = null; }
     }
     _calcCache[expr] = c;
@@ -6869,7 +6880,8 @@ const Gauges = ({ dash = false }) => {
                 </div>
                 <div style="display:flex;gap:8px;align-items:center">
                   <label style="width:4.5em">Formula</label>
-                  <input id="gauge-calc" type="text" value=${cfg.calc || ''} placeholder="(optional — e.g. udc*idc/1000)" maxlength="60"
+                  <input id="gauge-calc" type="text" value=${cfg.calc || ''} placeholder="(optional — e.g. udc*idc/1000)" maxlength="120"
+                    title="+ - * / % ( ) and abs min max sqrt round floor ceil pow, mod(a,b) (always 0..b), wrap180(angle) (to -180..180), sin cos (degrees)"
                     oninput=${e => updateGaugeConfig(cfg.id, 'calc', e.target.value || undefined)} style="flex:1;padding:5px 8px;font-family:var(--mono)" />
                 </div>
                 ${cfg.calc ? html`
@@ -6879,6 +6891,9 @@ const Gauges = ({ dash = false }) => {
                       oninput=${e => updateGaugeConfig(cfg.id, 'unit', e.target.value || undefined)} style="width:6em;padding:5px 8px" />
                     <span style="font-size:.72rem;color:var(--text3)">computed from spot values — overrides Value</span>
                   </div>
+                  <p id="gauge-calc-help" style="margin:0;font-size:.72rem;color:var(--text3)">
+                    <code>+ - * / %</code>, <code>abs min max sqrt round floor ceil pow</code>, <code>mod(a,b)</code> (always 0…b), <code>wrap180(angle)</code> (to −180…180), <code>sin cos</code> (degrees)
+                  </p>
                 ` : ''}
                 ${cfg.type === 'text' ? html`
                   <div style="display:flex;gap:8px;align-items:center">

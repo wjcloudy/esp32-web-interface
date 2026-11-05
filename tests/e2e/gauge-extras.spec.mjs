@@ -104,6 +104,33 @@ test.describe('Gauge extras', () => {
     await expect(tile.locator('.gauge-tile-name')).toContainText('udc*2');
   });
 
+  // An angle shown as -180..180 so it doesn't jump 0↔360 at the sync point
+  test('formulas have %, mod, wrap180 and degree sin/cos', async ({ page, mock }) => {
+    const f = (id, calc) => ({ id, type: 'text', calc, label: 'f' + id, decimals: 1, x: (id - 1) % 4 * 2, y: Math.floor((id - 1) / 4) * 2, w: 2, h: 2 });
+    await seedLayout(mock, [
+      f(1, '((udc+180)%360)-180'),
+      f(2, 'mod(udc-400, 360)'),
+      f(3, 'wrap180(udc)'),
+      f(4, 'wrap180(-udc-10)'),
+      f(5, 'sin(udc-260)*100'),
+      f(6, 'round(cos(180)*10)'),
+    ]);
+    await setSpot(mock, 'udc', 350);
+    await openApp(page, mock);
+    await gotoTab(page, 'Gauges');
+    const val = id => page.locator('.gauge-tile', { hasText: 'f' + id }).first();
+    await expect(val(1)).toContainText('-10.0');
+    await expect(val(2)).toContainText('310.0');   // -50 → 310, not -50
+    await expect(val(3)).toContainText('-10.0');
+    await expect(val(4)).toContainText('0.0');     // -360 → 0
+    await expect(val(5)).toContainText('100.0');   // sin(90°)
+    await expect(val(6)).toContainText('-10.0');
+    await setSpot(mock, 'udc', 179);
+    await expect(val(3)).toContainText('179.0');
+    await setSpot(mock, 'udc', 181);
+    await expect(val(3)).toContainText('-179.0');
+  });
+
   test('line tiles plot a second value with its own right-hand scale', async ({ page, mock }) => {
     await seedLayout(mock, [
       { id: 1, name: 'udc', name2: 'tmphs', type: 'line', min: 0, max: 500, min2: 0, max2: 120, x: 0, y: 0, w: 5, h: 3 },
