@@ -196,6 +196,29 @@ void test_users_last_admin_and_self_protection()
   TEST_ASSERT_EQUAL_STRING("bob", s.users[0].name);
 }
 
+void test_users_clear_turns_sign_in_off()
+{
+  UserStore s = freshStore();
+  s.add("alice", "password1", ROLE_ADMIN);
+  s.add("bob", "password1", ROLE_OPERATOR);
+  s.clear();
+  TEST_ASSERT_EQUAL_UINT(0, s.count);
+  TEST_ASSERT_EQUAL_UINT(0, s.adminCount());
+  TEST_ASSERT_EQUAL_INT(-1, s.find("alice"));
+  TEST_ASSERT_EQUAL_INT(-1, s.verify("alice", "password1"));
+  // Nothing of the old hashes is left behind in the table
+  static const uint8_t zero[sizeof(User)] = { 0 };
+  TEST_ASSERT_EQUAL_MEMORY(zero, &s.users[0], sizeof(User));
+  TEST_ASSERT_EQUAL_MEMORY(zero, &s.users[1], sizeof(User));
+  char buf[64];
+  s.serialize(buf, sizeof(buf));
+  TEST_ASSERT_EQUAL_STRING("v1\n", buf);
+  // Back to the fresh-device rules: the next account must be an admin
+  TEST_ASSERT_EQUAL_INT(USER_FIRST_MUST_BE_ADMIN, s.add("bob", "password1", ROLE_VIEWER));
+  TEST_ASSERT_EQUAL_INT(USER_OK, s.add("carol", "password2", ROLE_ADMIN));
+  TEST_ASSERT_EQUAL_UINT(1, s.count);
+}
+
 void test_users_changes_bump_generation()
 {
   UserStore s = freshStore();
@@ -679,6 +702,7 @@ int main(int, char**)
   RUN_TEST(test_users_first_must_be_admin);
   RUN_TEST(test_users_verify_and_salt);
   RUN_TEST(test_users_last_admin_and_self_protection);
+  RUN_TEST(test_users_clear_turns_sign_in_off);
   RUN_TEST(test_users_changes_bump_generation);
   RUN_TEST(test_users_full);
   RUN_TEST(test_users_serialize_roundtrip);

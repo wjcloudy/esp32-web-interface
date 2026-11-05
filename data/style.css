@@ -395,7 +395,7 @@ input:checked + .slider::before { transform: translateX(14px); }
 .hero-card { min-height: 0; gap: .9rem; }
 .hero-top { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .hero-state { font-size: 2.1rem; font-weight: 800; letter-spacing: -.02em; line-height: 1.15; }
-.hero-sub { color: var(--text2); font-size: .85rem; margin: 0; }
+.hero-sub { color: var(--text2); font-size: .85rem; margin: 0; overflow-wrap: anywhere; }
 .hero-metrics { display: flex; gap: 2.2rem; flex-wrap: wrap; margin-top: .35rem; }
 .metric { display: flex; flex-direction: column; gap: 2px; min-width: 90px; }
 .metric-label { font: 600 .64rem/1.4 var(--mono); text-transform: uppercase; letter-spacing: .11em; color: var(--text3); }
@@ -623,7 +623,7 @@ td { font-variant-numeric: tabular-nums; }
 
 /* Spot values columns */
 #spotValues td.sv-name { font-weight: 500; overflow-wrap: anywhere; }
-#spotValues td.sv-val { font-family: var(--num); font-weight: 600; color: var(--accent); }
+#spotValues td.sv-val { font-family: var(--num); font-weight: 600; color: var(--accent); overflow-wrap: anywhere; }
 #spotValues td.sv-unit { color: var(--text3); font-size: .78rem; }
 #spotValues td.sv-spark { color: var(--accent); opacity: .75; padding: 2px 8px; }
 #spotValues td.sv-spark .spark { display: block; }
@@ -768,6 +768,9 @@ td { font-variant-numeric: tabular-nums; }
 }
 .g-val { font-family: var(--num); font-variant-numeric: tabular-nums; font-size: 2.1rem; font-weight: 650; line-height: 1.1; }
 .g-unit { font-size: .8rem; color: var(--text2); margin-top: 2px; }
+/* peak-hold lows and highs under the value */
+.g-peaks { display: flex; gap: .7em; justify-content: center; margin-top: 2px; font-family: var(--num); color: var(--text3); white-space: nowrap; line-height: 1.1; }
+.bar-gauge .bar-val .g-peaks { position: absolute; left: 0; right: 0; bottom: 3px; margin: 0; }
 .g-enum { color: var(--accent); font-weight: 600; max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .g-min, .g-max {
   position: absolute; bottom: 22px;
@@ -835,8 +838,23 @@ td { font-variant-numeric: tabular-nums; }
   .hero-metrics { gap: 1.2rem; }
   .metric-value { font-size: 1.35rem; }
 }
+/* new CAN mappings and virtual values: each row is a labelled grid that
+   wraps to the width it has, so no window size scrolls it sideways */
+table.canmap-new, table.canmap-new tbody { display: block; width: 100% !important; }
+table.canmap-new thead { display: none; }
+table.canmap-new tr { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 124px)); gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+table.canmap-new td { display: block; padding: 0; border: 0; }
+table.canmap-new td:first-child { grid-column: span 2; }
+table.canmap-new td[data-label]::before { content: attr(data-label); display: block; margin-bottom: 3px; font-size: .65rem; text-transform: uppercase; letter-spacing: .04em; color: var(--text3); }
+table.canmap-new input:not([type=checkbox]), table.canmap-new select { width: 100% !important; box-sizing: border-box; }
+table.canmap-new td { text-align: left !important; }
+table.canmap-new td.canmap-del { align-self: end; justify-self: end; }
+
 @media (max-width: 600px) {
   .small-modal-container, .large-modal-container, .can-mapping-modal-container { width: 95vw; }
+  /* the device's mappings: six columns plus remove fit at phone width */
+  table.canmap-list th, table.canmap-list td { padding-left: 4px; padding-right: 4px; }
+  table.canmap-list th:first-child { min-width: 0 !important; }
   /* the gauge editor's actions bar wraps to a full-width row on phones and
      eats most of the screen — drop the explanatory help text there */
   .edit-help { display: none; }
@@ -856,6 +874,7 @@ td { font-variant-numeric: tabular-nums; }
   #spotValuesWrap.multi-col #spotValues td.sv-val { width: 70px; }
   #spotValuesWrap.multi-col #spotValues td.sv-spark { width: 58px; }
   #spotValuesWrap.multi-col #spotValues td.sv-unit { width: 34px; }
+  #spotValuesWrap.multi-col #spotValues td.sv-val.sv-wide { width: 162px; }
   #spotValues td.sv-spark { padding: 2px 2px; }
   #spotValues td.sv-spark .spark { width: 100%; height: auto; }
 }
@@ -882,6 +901,8 @@ td { font-variant-numeric: tabular-nums; }
 #spotValuesWrap.multi-col #spotValues td.sv-val { width: 100px; }
 #spotValuesWrap.multi-col #spotValues td.sv-spark { width: 76px; }
 #spotValuesWrap.multi-col #spotValues td.sv-unit { width: 44px; }
+/* enum/bitmask text spans the value, sparkline and unit columns */
+#spotValuesWrap.multi-col #spotValues td.sv-val.sv-wide { width: 220px; }
 
 /* ==================== Gauges grid (GridStack) ==================== */
 .gauges-view .grid-stack { min-height: 220px; }
@@ -1204,12 +1225,28 @@ button.tablink:hover { border-color: transparent; }
 #gauges-head { justify-content: flex-end !important; }
 body.kiosk #topbar, body.kiosk #bottombar { display: none !important; }
 /* parameters set live but not saved to flash */
-.savebar { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; padding: 10px 14px; margin-bottom: 12px;
-  border-radius: var(--radius-sm); border: 1px solid color-mix(in srgb, var(--amber) 34%, transparent); background: color-mix(in srgb, var(--amber) 9%, var(--surface)); }
-.savebar-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--amber); flex: 0 0 auto; }
-.savebar-sub { color: var(--text2); font-size: .8rem; }
-.savebar-actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
-.savebar-actions button { width: auto; }
+/* a slim strip that can fold into a pill: tweaking without saving is normal */
+.savebar { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 6px 10px; padding: 4px 6px 4px 10px; margin-bottom: 8px;
+  max-width: 640px; font-size: .8rem; border-radius: 99px; border: 1px solid color-mix(in srgb, var(--amber) 34%, transparent); background: color-mix(in srgb, var(--amber) 9%, var(--surface)); }
+.savebar.min { padding: 0; border: 0; background: none; margin-bottom: 4px; }
+.savebar-pill { width: auto; display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px; font-size: .72rem; font-weight: 600; border-radius: 99px;
+  border: 1px solid color-mix(in srgb, var(--amber) 34%, transparent); background: color-mix(in srgb, var(--amber) 12%, var(--surface)); color: var(--text); }
+.savebar-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--amber); flex: 0 0 auto; }
+.savebar-text { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.savebar-sub { color: var(--text2); }
+.savebar-actions { margin-left: auto; display: flex; gap: 4px; flex: 0 0 auto; }
+.savebar-actions button { width: auto; padding: 2px 10px; font-size: .74rem; min-height: 0; border-radius: 99px; }
+.savebar-actions .savebar-hide { padding: 2px 8px; font-size: .9rem; line-height: 1; background: none; border-color: transparent; color: var(--text2); }
+/* bitmask parameters: set flags, opening to a checkbox per bit */
+.bitmask { display: inline-flex; flex-direction: column; gap: 4px; max-width: 18em; }
+.bitmask-sum { width: auto; display: inline-flex; align-items: center; gap: 8px; padding: 3px 8px; font: inherit; font-size: .8rem; text-align: left;
+  border: 1.5px solid var(--accent); border-radius: var(--radius-xs); background: var(--surface); color: var(--text); }
+.bitmask-names { overflow-wrap: anywhere; }
+.bitmask-num { color: var(--text3); font-size: .72rem; margin-left: auto; }
+.bitmask-list { display: flex; flex-direction: column; gap: 2px; padding: 4px 2px; }
+.bitmask-flag { display: flex; align-items: center; gap: 6px; font-size: .8rem; cursor: pointer; }
+.bitmask-flag input { margin: 0; }
+.bitmask-bit { color: var(--text3); font-size: .7rem; margin-left: auto; padding-left: 8px; }
 /* phone: a bottom tab bar; the sidebar becomes a drawer behind More */
 #bottombar, #nav-scrim { display: none; }
 .bb-item { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-height: 48px; padding: 4px 0;
@@ -1237,7 +1274,9 @@ body.kiosk #topbar, body.kiosk #bottombar { display: none !important; }
   #content-wrapper { bottom: calc(62px + env(safe-area-inset-bottom)); }
   #topbar { padding: 8px 14px; min-height: 52px; margin-bottom: 10px; }
   .page-title { font-size: 1.1rem; }
-  .savebar { top: 0; }
+  .savebar { top: 0; padding: 2px 4px 2px 8px; font-size: .74rem; }
+  .savebar-sub { display: none; }
+  .savebar-actions button { padding: 2px 8px; font-size: .7rem; }
   /* gauge/dashboard header actions: icons only, so they stay on one row
      (the labels remain as aria-label and tooltip) */
   #gauges-head .hd-label { display: none; }

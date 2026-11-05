@@ -43,7 +43,10 @@ test.describe('Gauge value transport', () => {
     await expect.poll(async () => await mock.commands()).toContain('stream udc');
     await mock.setSpot('udc', 300);
     await expect(gaugeVal(page)).toContainText('300.0');
-    expect(await getPolls(mock)).toBe(0);
+    // The poll that bridges the stream's start has stood down
+    const bridged = await getPolls(mock);
+    await page.waitForTimeout(500);
+    expect(await getPolls(mock)).toBe(bridged);
     // Kill the stream (and keep the port shut so a reconnect can't win)
     await mock.setSse('off');
     await expect.poll(() => getPolls(mock)).toBeGreaterThan(0);

@@ -294,6 +294,7 @@ export function createAuth(now = () => Date.now()) {
 
   return {
     enabled, users: () => users, find, add, remove, setRole, setPassword, verify,
+    removeAll: () => { users = []; }, // UserStore::clear (limiter and sessions are separate)
     createSession, findSession, revoke, revokeUser, revokeAll: () => { for (let i = 0; i < SESSION_MAX; i++) revoke(i); },
     session: (slot) => sessions[slot], alive, issueTicket, redeemTicket,
     allowed, failure, success,

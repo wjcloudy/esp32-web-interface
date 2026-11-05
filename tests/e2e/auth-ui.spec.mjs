@@ -119,11 +119,19 @@ test.describe('Sign-in on', () => {
     await openApp(page, mock);
     await page.locator('#whoami').click();
     await expect(page.locator('#user-list .user-row')).toHaveCount(3);
+    // Adding a user is a dialog: a mismatched password is reported inside it,
+    // and it closes once the user is added
+    await page.locator('#new-open').click();
+    const dialog = page.locator('#add-user-modal-overlay');
     await page.locator('#new-user').fill('Petra');
     await page.locator('#new-role').selectOption('operator');
     await page.locator('#new-pw').fill('petra-pass-1');
+    await page.locator('#new-pw2').fill('petra-pass-2');
+    await page.locator('#new-add').click();
+    await expect(dialog.locator('.auth-err')).toBeVisible();
     await page.locator('#new-pw2').fill('petra-pass-1');
     await page.locator('#new-add').click();
+    await expect(dialog).toHaveCount(0);
     await expect(page.locator('#user-list .user-row[data-user="petra"]')).toBeVisible();
     await page.locator('#role-petra').selectOption('viewer');
     await expect.poll(async () => (await mock.state()).users.find(u => u.name === 'petra')?.role).toBe('viewer');
@@ -141,6 +149,48 @@ test.describe('Sign-in on', () => {
     // Your own row: no remove, no role change
     await expect(page.locator('.user-row[data-user="admin"] button', { hasText: 'Remove' })).toHaveCount(0);
     await expect(page.locator('#role-admin')).toBeDisabled();
+  });
+
+  test('admin turns sign-in off: confirm with password, every account goes', async ({ page, mock }) => {
+    await signInBrowser(page, mock, ...ADMIN);
+    await openApp(page, mock);
+    await page.locator('#whoami').click();
+    await expect(page.locator('#signin-off')).toContainText('Deletes every user account');
+    // Cancel changes nothing
+    await page.locator('#signin-off-open').click();
+    await page.locator('#signin-off-dlg-modal-overlay button', { hasText: 'Cancel' }).click();
+    await expect(page.locator('#signin-off-pw')).toHaveCount(0);
+    // Wrong password: refused by the device, still on
+    await page.locator('#signin-off-open').click();
+    await page.locator('#signin-off-pw').fill('wrong-password');
+    await page.locator('#signin-off-confirm').click();
+    await expect(page.locator('#signin-off-dlg-modal-overlay .auth-err')).toContainText('password is incorrect');
+    expect((await mock.state()).users).toHaveLength(3);
+    // Right password: no users, reloaded into the open interface
+    await page.locator('#signin-off-pw').fill(ADMIN[1]);
+    await page.locator('#signin-off-confirm').click();
+    await expect(page.locator('#whoami')).toHaveCount(0);
+    await expect(page.locator('#login')).toHaveCount(0);
+    expect((await mock.state()).users).toEqual([]);
+    expect((await mock.state()).sessions).toBe(0);
+    await gotoTab(page, 'Settings');
+    await page.locator('#settings-users-tab').click();
+    await expect(page.locator('#users-setup')).toContainText('Sign-in is off');
+    // A fresh browser gets straight in, as before sign-in was set up
+    const other = await page.context().browser().newPage();
+    await other.goto(mock.url);
+    await expect(other.locator('.tablink', { hasText: 'Dashboard' })).toBeVisible();
+    await expect(other.locator('#login')).toHaveCount(0);
+    await other.close();
+  });
+
+  test('only admins see Turn off sign-in', async ({ page, mock }) => {
+    await signInBrowser(page, mock, ...OPER);
+    await openApp(page, mock);
+    await gotoTab(page, 'Settings');
+    await page.locator('#settings-users-tab').click();
+    await expect(page.locator('#my-account')).toBeVisible();
+    await expect(page.locator('#signin-off')).toHaveCount(0);
   });
 
   test('a session that ends while the app is open drops back to sign-in', async ({ page, mock }) => {

@@ -309,13 +309,40 @@ const Store = createContext({});
 // Parse enum string like "0=None, 1=UdcLow, 2=UdcHigh" into {0:"None", 1:"UdcLow", 2:"UdcHigh"}
 function parseEnums(unit) {
   if (!unit || typeof unit !== 'string') return null;
-  const re = /(\-?\d+)=([a-zA-Z0-9_\-\.]+)[,\s]{0,2}|([a-zA-Z0-9_\-\.]+)[,\s]{1,2}/g;
+  const re = /(\-?\d+)=([a-zA-Z0-9_\-\.\/]+)[,\s]{0,2}|([a-zA-Z0-9_\-\.\/]+)[,\s]{1,2}/g;
   const enums = {};
   let m;
   while ((m = re.exec(unit)) !== null) {
     if (m[1] !== undefined) enums[m[1]] = m[2];
   }
   return Object.keys(enums).length > 0 ? enums : null;
+}
+
+// Bitmask enums (status, pinswap, canio...) list single bits whose sum is a
+// valid value. A plain enum counts 0, 1, 2, 3... so it needs a non-power-of-
+// two key by its fourth entry; 1, 2, 4 without 3 is a bitmask. Two flags
+// alone (0=Off, 1=AC, 2=DCFC) only when a parameter's range allows both at
+// once. max: the parameter's maximum, when it has one.
+function isBitmaskEnum(enums, max) {
+  if (!enums) return false;
+  const bits = Object.keys(enums).map(Number).filter(k => k !== 0);
+  if (bits.length < 2 || bits.some(k => !(k > 0) || (k & (k - 1)) !== 0)) return false;
+  bits.sort((a, b) => a - b);
+  const m = max == null || max === '' || isNaN(max) ? null : Number(max);
+  if (m != null && m < bits[0] + bits[1]) return false;
+  return bits.length >= 3 || m != null;
+}
+
+// The flags a bitmask value has set, as labels; bits the list doesn't name
+// show as their number so nothing is hidden
+function bitmaskLabels(enums, val) {
+  let rest = Math.round(val);
+  const a = [];
+  for (const k of Object.keys(enums).map(Number).filter(k => k > 0).sort((x, y) => x - y)) {
+    if (rest & k) { a.push(enums[k]); rest &= ~k; }
+  }
+  if (rest) a.push(String(rest));
+  return a;
 }
 
 // URL breadcrumbs: every tab is bookmarkable as #tab, and the gauges tab
@@ -440,7 +467,9 @@ const DASH_METRIC_LABELS = {
   tmpm: 'Motor temp', speed: 'Motor speed', pot: 'Throttle',
 };
 
-// Spot values shown as dashboard hero metrics (max 5, configured in Settings)
+// Default figures for a Status tile whose own Figures field is empty. The
+// Settings picker that chose these is gone (each Status tile sets its own in
+// the layout editor), but a choice saved with it is still honoured
 function getDashMetrics() {
   try {
     const v = JSON.parse(localStorage.getItem('dashMetrics') || 'null');
@@ -459,14 +488,8 @@ function reducer(state, action) {
         const v = p[name];
         if (!v) return null;
         const enums = parseEnums(v.unit);
-        if (enums && enums[v.value] !== undefined) return enums[v.value];
-        // Bitmask enum (e.g. status, canio)
-        if (enums && v.value > 0) {
-          const active = [];
-          for (const k in enums) if (v.value & parseInt(k)) active.push(enums[k]);
-          if (active.length > 0) return active.join(' | ');
-        }
-        return v.value;
+        // Bitmask enums (status, canio) resolve to their set flags
+        return enums ? enumLabel(enums, v.value, v.isparam ? v.maximum : null) : v.value;
       };
       const status = getVal('status'); const opmode = getVal('opmode');
       const lasterr = getVal('lasterr'); const udc = getVal('udc'); const tmphs = getVal('tmphs');
@@ -487,18 +510,11 @@ function reducer(state, action) {
         if (!v || typeof v !== 'object') continue;
         const enums = parseEnums(v.unit);
         if (v.isparam) {
-          let display = v.value;
-          if (enums) {
-            if (enums[v.value]) display = enums[v.value];
-            else { const a = []; for (const k in enums) if (v.value & k) a.push(enums[k]); display = a.join('|'); }
-          }
-          params[name] = { ...v, display, enums };
+          const bitmask = isBitmaskEnum(enums, v.maximum);
+          const display = enums ? enumLabel(enums, v.value, v.maximum) : v.value;
+          params[name] = { ...v, display, enums, bitmask };
         } else {
-          let display = v.value;
-          if (enums) {
-            if (enums[v.value]) display = enums[v.value];
-            else { const a = []; for (const k in enums) if (v.value & k) a.push(enums[k]); display = a.join('|'); }
-          }
+          const display = enums ? enumLabel(enums, v.value) : v.value;
           spotValues[name] = { ...v, display, enums, name };
         }
       }
@@ -732,13 +748,15 @@ const OPMODE_FRIENDLY = {
   'PchFail': 'Precharge failed', 'Charge': 'Charging', 'Preheat': 'Preheating',
 };
 
-// Resolve an enum value to its display label (handles bitmask enums)
-const enumLabel = (enums, val) => {
+// Resolve an enum value to its display label: a bitmask shows its set flags
+// (UdcBelowUdcSw|MProt), any other unlisted value its number. max: a
+// parameter's maximum (see isBitmaskEnum)
+const enumLabel = (enums, val, max) => {
   if (!enums || val == null) return null;
   const k = Math.round(val);
   if (enums[k] !== undefined) return enums[k];
-  const a = [];
-  for (const key in enums) if (k & parseInt(key)) a.push(enums[key]);
+  if (!isBitmaskEnum(enums, max)) return String(k);
+  const a = bitmaskLabels(enums, k);
   return a.length ? a.join('|') : String(k);
 };
 
@@ -935,12 +953,16 @@ const BottomBar = () => {
 
 // ==================== Parameters ====================
 
+// openinverter.org's community parameter database (submit / subscribe)
+const PARAM_DB_URL = 'https://openinverter.org/parameters/';
+
 const Parameters = () => {
   const { state, dispatch } = useContext(Store);
   const [editing, setEditing] = useState(null);
   const [editValue, setEditValue] = useState('');
   const [subToken, setSubToken] = useState('');
   const [showSubscribe, setShowSubscribe] = useState(false);
+  const [showSubmit, setShowSubmit] = useState(false); // parameter database submit dialog
   const [search, setSearch] = useState('');
   const [actionsOpen, setActionsOpen] = useState(false); // responsive-only expander
   const [applying, setApplying] = useState(false); // loading a parameter set from file
@@ -954,6 +976,14 @@ const Parameters = () => {
   const [compare, setCompare] = useState(null);
   // Parameter change log entries, newest first (null = closed)
   const [logView, setLogView] = useState(null);
+  // Bitmask parameter whose flag checkboxes are open; busy while a flag's set
+  // is in flight, so a second click composes from the value it produced
+  const [bitOpen, setBitOpen] = useState(null);
+  const [bitBusy, setBitBusy] = useState(false);
+  // The unsaved-changes bar folds into a small pill for the rest of the
+  // browser session — tweaking without saving is normal
+  const [saveBarMin, setSaveBarMinState] = useState(() => { try { return window.sessionStorage.getItem('oi-savebar-min') === '1'; } catch (e) { return false; } });
+  const setSaveBarMin = (on) => { setSaveBarMinState(on); try { window.sessionStorage.setItem('oi-savebar-min', on ? '1' : '0'); } catch (e) {} };
 
   if (!state.params) return html`<div class="tabdiv main-content" style="display:flex"><p>Loading...</p></div>`;
 
@@ -978,28 +1008,48 @@ const Parameters = () => {
     dispatch({ type: 'SET_PARAM_VALUE', name, value: isNaN(num) ? value : num });
     setEditing(null);
   };
+  const toggleFlag = async (p, bit) => {
+    const val = Math.round(p.value);
+    setBitBusy(true);
+    try { await saveParam(p.name, String(val & bit ? val & ~bit : val | bit)); } finally { setBitBusy(false); }
+  };
 
-  // Submit params to the online Parameter Database
+  // Submit params to the online Parameter Database. The database takes what
+  // the classic interface sent: the device's json (parameters and values) as
+  // the multipart field "data", POSTed to api.php. It's a plain form post in
+  // a new tab — the page's own CORS rules don't apply, but the result (and any
+  // forum sign-in it wants) is only visible over there, so the dialog first
+  // says what to expect and offers the parameter file as the fallback.
   const submitToDatabase = () => {
+    const data = {};
+    for (const src of [state.params, state.spotValues || {}]) {
+      for (const n in src) {
+        const { display, enums, bitmask, name, ...raw } = src[n]; // the UI's own fields stay here
+        data[n] = raw;
+      }
+    }
     const form = document.createElement('form');
     form.method = 'POST';
-    form.action = 'https://openinverter.org/parameters/';
+    form.action = PARAM_DB_URL + 'api.php';
+    form.enctype = 'multipart/form-data';
     form.target = '_blank';
     const input = document.createElement('input');
     input.type = 'hidden';
-    input.name = 'parameters_json';
-    input.value = JSON.stringify(state.params);
+    input.name = 'data';
+    input.value = JSON.stringify(data);
     form.appendChild(input);
     document.body.appendChild(form);
     form.submit();
     document.body.removeChild(form);
+    setShowSubmit(false);
   };
+  const paramsHref = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(state.params, null, 2));
 
   // Subscribe to parameter set
   const doSubscribe = async () => {
     if (!subToken.trim()) return;
     try {
-      const r = await fetch('https://openinverter.org/parameters/api.php?token=' + encodeURIComponent(subToken.trim()));
+      const r = await fetch(PARAM_DB_URL + 'api.php?token=' + encodeURIComponent(subToken.trim()));
       if (!r.ok) { alert('Failed to fetch parameter set'); return; }
       const params = await r.json();
       // Save subscription token
@@ -1234,7 +1284,7 @@ const Parameters = () => {
         <button onclick=${() => api.getText('save').then(r => alert(r || 'Parameters saved'))}><${Icon} n="save" />Save parameters to flash</button>
         <button onclick=${() => api.getText('load')}><${Icon} n="undo" />Restore parameters from flash</button>
         </${Gate}>
-        <a download="params.json" href=${'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(state.params, null, 2))}><button><${Icon} n="download" />Download parameters file</button></a>
+        <a download="params.json" href=${paramsHref}><button><${Icon} n="download" />Download parameters file</button></a>
         ${/* No accept filter: Android pickers report .json as octet-stream/plain and grey it out; we validate JSON in loadParamsFromFile instead. */ ''}
         <${Gate} need="operator">
         <input id="paramfile" type="file" hidden onchange=${loadParamsFromFile} />
@@ -1266,7 +1316,7 @@ const Parameters = () => {
         ${state.presets.length === 0 && html`<p style="font-size:.72rem;color:var(--text3);margin:.25rem 0 0">A preset is a named set of parameter values you can apply in one tap — here, or from an Action button on a gauges page.</p>`}
         </${Gate}>
         <h3 class="underline">Parameter Database</h3>
-        <button onclick=${submitToDatabase}><${Icon} n="cloud" />Submit parameters</button>
+        <button onclick=${() => setShowSubmit(true)}><${Icon} n="cloud" />Submit parameters</button>
         <${Gate} need="operator">
         <button onclick=${() => setShowSubscribe(true)}><${Icon} n="rss" />Subscribe to parameter set</button>
         <button onclick=${stopSubscription}><${Icon} n="x" />Stop subscription</button>
@@ -1278,16 +1328,22 @@ const Parameters = () => {
       </div>
       <div class="main-left">
         <h2>Parameters</h2>
-        ${state.unsavedParams > 0 && can('operator') && html`
+        ${state.unsavedParams > 0 && can('operator') && (saveBarMin ? html`
+          <div id="savebar" class="savebar min" role="status">
+            <button type="button" class="savebar-pill" onclick=${() => setSaveBarMin(false)}
+              title="Live but not saved to flash — lost when the inverter restarts. Click for Save / Restore.">
+              <span class="savebar-dot" aria-hidden="true"></span>${state.unsavedParams} unsaved
+            </button>
+          </div>` : html`
           <div id="savebar" class="savebar" role="status">
             <span class="savebar-dot" aria-hidden="true"></span>
-            <b>${state.unsavedParams} change${state.unsavedParams === 1 ? ' is' : 's are'} live but not saved to flash</b>
-            <span class="savebar-sub">Lost when the inverter restarts.</span>
+            <span class="savebar-text"><b>${state.unsavedParams} unsaved change${state.unsavedParams === 1 ? '' : 's'}</b><span class="savebar-sub"> · live until the inverter restarts</span></span>
             <span class="savebar-actions">
-              <button onclick=${() => api.getText('load').then(() => api.getJSON('json')).then(json => dispatch({ type: 'SET_PARAMS', payload: json })).catch(() => {})}><${Icon} n="undo" />Restore from flash</button>
-              <button class="primary" onclick=${() => api.getText('save').then(r => showToast((r || '').trim() || 'Parameters saved', 'ok')).catch(e => showToast('Save failed: ' + e.message, 'error'))}><${Icon} n="save" />Save to flash</button>
+              <button title="Restore from flash" onclick=${() => api.getText('load').then(() => api.getJSON('json')).then(json => dispatch({ type: 'SET_PARAMS', payload: json })).catch(() => {})}><${Icon} n="undo" size=${12} />Restore</button>
+              <button class="primary" title="Save to flash" onclick=${() => api.getText('save').then(r => showToast((r || '').trim() || 'Parameters saved', 'ok')).catch(e => showToast('Save failed: ' + e.message, 'error'))}><${Icon} n="save" size=${12} />Save</button>
+              <button class="savebar-hide" aria-label="Minimise" title="Minimise for this session" onclick=${() => setSaveBarMin(true)}>×</button>
             </span>
-          </div>`}
+          </div>`)}
         <table id="params" class="fullheight" style="width:auto;table-layout:auto">
           <thead><tr><th></th><th>I</th><th>Name</th><th>Value</th><th>Unit</th><th>Min</th><th>Max</th><th>Default</th></tr></thead>
           <tbody id="paramBody">
@@ -1306,7 +1362,27 @@ const Parameters = () => {
                   <td>${p.i !== undefined ? p.i : '-'}</td>
                   <td><div class="tooltip">${p.name}<span class="tooltiptext ${docstrings.get(p.name) ? '' : 'tooltiptext-empty'}">${docstrings.get(p.name) || 'No description available.'}</span></div></td>
                   <td>
-                    ${p.enums ? html`
+                    ${p.bitmask ? html`
+                      ${/* Bitmask: the set flags, opening to one checkbox per bit */ ''}
+                      <div class="bitmask">
+                        <button type="button" class="bitmask-sum" aria-expanded=${bitOpen === p.name ? 'true' : 'false'}
+                          onclick=${() => setBitOpen(bitOpen === p.name ? null : p.name)}>
+                          <span class="bitmask-names">${enumLabel(p.enums, p.value, p.maximum)}</span>
+                          <span class="bitmask-num">${Math.round(p.value)}</span>
+                        </button>
+                        ${bitOpen === p.name && html`
+                          <div class="bitmask-list">
+                            ${Object.keys(p.enums).map(Number).filter(b => b > 0).sort((a, b) => a - b).map(bit => {
+                              const on = (Math.round(p.value) & bit) !== 0;
+                              const tooBig = !on && p.maximum != null && (Math.round(p.value) | bit) > p.maximum;
+                              return html`<label key=${bit} class="bitmask-flag">
+                                <input type="checkbox" checked=${on} disabled=${!can('operator') || bitBusy || tooBig}
+                                  onchange=${() => toggleFlag(p, bit)} />${p.enums[bit]}<span class="bitmask-bit">${bit}</span>
+                              </label>`;
+                            })}
+                          </div>`}
+                      </div>
+                    ` : p.enums ? html`
                       <select class="styled" value=${String(p.value)} disabled=${!can('operator')} onchange=${e => saveParam(p.name, e.target.value)}>
                         ${Object.keys(p.enums).map(k => html`<option value=${k}>${p.enums[k]}</option>`)}
                       </select>
@@ -1339,9 +1415,24 @@ const Parameters = () => {
         </table>
       </div>
     </div>
+    ${showSubmit && html`
+      <${Modal} id="submit-db" title="Submit to the Parameter Database" onClose=${() => setShowSubmit(false)}>
+        <p style="font-size:.85rem">This opens <b>openinverter.org</b> in a new tab and sends it your parameters and spot values. The result shows in that tab, not here.</p>
+        <ul style="font-size:.82rem;color:var(--text2);margin:0 0 .5rem;padding-left:1.2em">
+          <li>The browser (not the inverter) needs internet access.</li>
+          <li>Sign in to the openinverter.org forum in this browser first — the database files submissions under your forum account.</li>
+          <li>The database hasn't listed a new set since 2023 and may no longer accept submissions. If the new tab shows an error, a sign-in page or just the list of sets, download the parameter file and share it on the forum instead.</li>
+        </ul>
+        ${typeof navigator !== 'undefined' && navigator.onLine === false && html`<p class="submit-offline" style="font-size:.82rem;color:var(--red)">This browser is offline — the submission can't reach openinverter.org.</p>`}
+        <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;margin-top:.5rem">
+          <a download="params.json" href=${paramsHref}><button style="width:auto"><${Icon} n="download" />Download parameters file</button></a>
+          <button id="submit-db-go" class="primary" style="width:auto" onclick=${submitToDatabase}><${Icon} n="cloud" />Submit to openinverter.org</button>
+        </div>
+      </${Modal}>
+    `}
     ${showSubscribe && html`
       <${Modal} id="subscribe-modal" title="Subscribe to parameter set" onClose=${() => setShowSubscribe(false)}>
-        <p style="font-size:.85rem">The Parameter Database lets OpenInverter community members share parameter settings. Browse it <a href="https://openinverter.org/parameters/" target="_blank">here</a>.</p>
+        <p style="font-size:.85rem">The Parameter Database lets OpenInverter community members share parameter settings. Browse it <a href=${PARAM_DB_URL} target="_blank">here</a>.</p>
         <p style="font-size:.85rem">Enter a subscription token to automatically sync your inverter's settings with a parameter set from the database.</p>
         <p style="font-size:.8rem;color:var(--text2)">Note: your inverter needs internet access for this feature.</p>
         <div style="display:flex;gap:8px;align-items:center;margin-top:.5rem">
@@ -1587,12 +1678,7 @@ const SpotValues = () => {
     // id-less but served live by the firmware.
     if (showFavs && fastVals[v.name] !== undefined && (v.id !== undefined || v.virtual)) {
       const val = fastVals[v.name];
-      if (v.enums) {
-        if (v.enums[val] !== undefined) return v.enums[val];
-        const a = []; for (const k in v.enums) if (val & parseInt(k)) a.push(v.enums[k]);
-        if (a.length > 0) return a.join('|');
-      }
-      return val;
+      return v.enums ? enumLabel(v.enums, val) : val;
     }
     return v.display;
   };
@@ -1674,7 +1760,11 @@ const SpotValues = () => {
                     style="background:none;border:none;cursor:pointer;font-size:1rem;padding:0;color:${isFav(v.name)?'var(--amber)':'var(--text3)'}">
                     ${isFav(v.name) ? '★' : '☆'}
                   </button>
-                </td><td class="sv-name"><div class="tooltip">${v.name}<span class="tooltiptext ${svTipEmpty(v) ? 'tooltiptext-empty' : ''}">${svTip(v)}</span></div></td><td class="sv-val">${getDisplay(v)}</td>${sparks && html`<td class="sv-spark">${!v.enums && html`<${Sparkline} data=${histRef.current[v.name]} width=${64} height=${16} />`}</td>`}<td class="sv-unit">${v.unit && v.unit.indexOf('=') === -1 ? v.unit : ''}</td></tr>
+                </td><td class="sv-name"><div class="tooltip">${v.name}<span class="tooltiptext ${svTipEmpty(v) ? 'tooltiptext-empty' : ''}">${svTip(v)}</span></div></td>${v.enums
+                  // enum and bitmask text (a status like "Run, UdcLow") takes the
+                  // sparkline and unit cells too, which it never uses
+                  ? html`<td class="sv-val sv-wide" colspan=${sparks ? 3 : 2}>${getDisplay(v)}</td>`
+                  : html`<td class="sv-val">${getDisplay(v)}</td>${sparks && html`<td class="sv-spark"><${Sparkline} data=${histRef.current[v.name]} width=${64} height=${16} /></td>`}<td class="sv-unit">${v.unit && v.unit.indexOf('=') === -1 ? v.unit : ''}</td>`}</tr>
             `)}
           </tbody>
         </table>
@@ -2729,10 +2819,26 @@ const Logger = () => {
 
 // ==================== CAN Mapping ====================
 
+// The inverter terminal's 'can print' reply -> mapping rows like 'can list'
+// gives in CAN mode (by name, as the terminal has no ids). Throws when the
+// reply has text but no mapping lines (an unknown command, say).
+function parseCanPrint(text) {
+  const rows = [];
+  const lines = String(text || '').split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  for (const l of lines) {
+    const m = /^can\s+(tx|rx)\s+(\S+)\s+(0x[0-9a-f]+|\d+)\s+(-?\d+)\s+(-?\d+)(?:\s+(-?[\d.]+))?(?:\s+(-?\d+))?/i.exec(l);
+    if (m) rows.push({ isrx: m[1].toLowerCase() === 'rx', name: m[2], id: Number(m[3]), position: Number(m[4]), length: Number(m[5]),
+      gain: m[6] !== undefined ? parseFloat(m[6]) : 1, offset: m[7] !== undefined ? Number(m[7]) : 0 });
+  }
+  if (lines.length && !rows.length) throw new Error(lines[0].slice(0, 80));
+  return rows;
+}
+
 const CanMapping = () => {
   const { state } = useContext(Store);
   const [mappings, setMappings] = useState([]);   // new rows being edited
   const [existing, setExisting] = useState([]);   // mappings read from the device
+  const [loadErr, setLoadErr] = useState('');     // why they couldn't be read
   const [loading, setLoading] = useState(false);
   const [virtuals, setVirtuals] = useState([]);   // ESP-side virtual spot values
   const [virtMsg, setVirtMsg] = useState('');
@@ -2746,13 +2852,21 @@ const CanMapping = () => {
     for (const n in src) if (src[n].id) idToName[src[n].id] = n;
   }
 
+  // CAN mode: the firmware walks the device's map over SDO ('can list' JSON).
+  // UART: the inverter terminal's 'can print' lists one
+  // "can tx|rx name canid pos len gain offset" line per item.
   const loadMappings = async () => {
-    if (!state.canMode) return;
     setLoading(true);
+    setLoadErr('');
     try {
-      const text = await api.getText('can list');
-      setExisting(JSON.parse(text));
-    } catch (e) { setExisting([]); }
+      const text = await api.getText(state.canMode ? 'can list' : 'can print');
+      setExisting(state.canMode ? JSON.parse(text) : parseCanPrint(text));
+    } catch (e) {
+      setExisting([]);
+      setLoadErr(state.canMode
+        ? 'Could not read the mappings from the device over CAN (' + e.message + ').'
+        : 'The inverter did not list its CAN mappings' + (e.message ? ' (' + e.message + ')' : '') + '. Its firmware may be too old for "can print".');
+    }
     setLoading(false);
   };
 
@@ -2806,9 +2920,13 @@ const CanMapping = () => {
       // CAN id accepts decimal (592) or hex (0x250)
       const cid = Number(String(m.canid == null ? '' : m.canid).trim() || 0);
       if (isNaN(cid) || cid < 0 || cid > 0x1FFFFFFF) { alert(m.name + ': invalid CAN ID "' + m.canid + '" — use decimal (592) or hex (0x250)'); return; }
-      const cmd = 'can ' + m.txrx + ' ' + m.name + ' ' + cid + ' ' + Number(m.pos||0) + ' ' + Number(m.bits||8) + ' ' + Number(m.gain||1);
+      // Always send the offset (bias): older inverter firmware (5.39) rejects a line without it
+      const ofs = Math.round(Number(m.offset) || 0);
+      if (ofs < -128 || ofs > 127) { alert(m.name + ': bias must be between -128 and 127'); return; }
+      const cmd = 'can ' + m.txrx + ' ' + m.name + ' ' + cid + ' ' + Number(m.pos||0) + ' ' + Number(m.bits||8) + ' ' + Number(m.gain||1) + ' ' + ofs;
       const r = await api.getText(cmd);
-      if (r.indexOf('error') === 0) { alert(m.name + ': ' + r); return; }
+      // CAN mode answers "error: ...", the inverter terminal in words
+      if (/^\s*(error|unknown|invalid|missing|cannot|max )/i.test(r)) { alert(m.name + ': ' + r.trim()); return; }
     }
     const r = await api.getText('save');
     alert(r || 'Mappings saved');
@@ -2821,9 +2939,9 @@ const CanMapping = () => {
       <div class="main-right">
         <h3 class="underline">Actions</h3>
         <${Gate} need="operator">
-        <button onclick=${() => setMappings([...mappings, { name: '', txrx: 'tx', canid: 0, pos: 0, bits: 8, gain: 1 }])}><${Icon} n="plus" />Add new mapping</button>
+        <button onclick=${() => setMappings([...mappings, { name: '', txrx: 'tx', canid: 0, pos: 0, bits: 8, gain: 1, offset: 0 }])}><${Icon} n="plus" />Add new mapping</button>
         <button onclick=${saveMappings}><${Icon} n="save" />Save mappings to flash</button>
-        ${state.canMode && html`<button onclick=${loadMappings}><${Icon} n="refresh" />Reload from device</button>`}
+        <button onclick=${loadMappings}><${Icon} n="refresh" />Reload from device</button>
         <button onclick=${async () => {
           if (!confirm('Remove ALL CAN mappings from the device?')) return;
           await api.getText('can clear');
@@ -2836,19 +2954,24 @@ const CanMapping = () => {
       <div class="main-left">
         <h2>CAN Mapping</h2>
         <p>Configure CAN mapping settings for your OpenInverter board.</p>
-        ${state.canMode && (() => {
+        ${(() => {
+          // UART can only delete by parameter ('can del name' drops all its items)
           const removeMap = async (m) => {
-            await api.getText('can rm ' + m.index + ' ' + m.subindex);
+            if (!state.canMode) {
+              const n = existing.filter(x => x.name === m.name).length;
+              if (n > 1 && !confirm('The inverter removes mappings by parameter: delete all ' + n + ' mappings of ' + m.name + '?')) return;
+            }
+            await api.getText(state.canMode ? 'can rm ' + m.index + ' ' + m.subindex : 'can del ' + m.name);
             await api.getText('save');
             loadMappings();
           };
           const mapTable = (list) => html`
-            <table style="width:auto;table-layout:auto;margin-bottom:1rem">
+            <table class="canmap-list" style="width:auto;table-layout:auto;margin-bottom:1rem">
               <thead><tr><th style="min-width:110px">Parameter</th><th>CAN ID</th><th>Offset</th><th>Length</th><th>Gain</th><th>Bias</th><th></th></tr></thead>
               <tbody>
-                ${list.map(m => html`
-                  <tr key=${'e' + m.index + '-' + m.subindex}>
-                    <td style="font-weight:500">${idToName[m.paramid] || ('#' + m.paramid)}</td>
+                ${list.map((m, i) => html`
+                  <tr key=${state.canMode ? 'e' + m.index + '-' + m.subindex : 'e' + i}>
+                    <td style="font-weight:500">${m.name || idToName[m.paramid] || ('#' + m.paramid)}</td>
                     <td style="font-family:var(--num)">0x${Number(m.id).toString(16).toUpperCase()}</td>
                     <td>${m.position}</td>
                     <td>${m.length}</td>
@@ -2863,7 +2986,8 @@ const CanMapping = () => {
           const rxMaps = existing.filter(m => m.isrx);
           return html`
             <h3 class="underline">Mappings on device ${loading ? '(loading...)' : ''}</h3>
-            ${existing.length === 0 && !loading && html`<p style="color:var(--text3)">No mappings configured on the device.</p>`}
+            ${loadErr && !loading && html`<p id="canmap-error" style="color:var(--amber)">${loadErr}</p>`}
+            ${existing.length === 0 && !loading && !loadErr && html`<p style="color:var(--text3)">No mappings configured on the device.</p>`}
             ${txMaps.length > 0 && html`
               <h3 style="margin-top:.75rem">Transmit (TX)</h3>
               ${mapTable(txMaps)}
@@ -2876,23 +3000,24 @@ const CanMapping = () => {
         })()}
         <${Gate} need="operator">
         <h3 class="underline">New mappings</h3>
-        <table style="width:auto;table-layout:auto">
-          <thead><tr><th style="min-width:110px">Spot Value</th><th>TX/RX</th><th style="min-width:60px">CAN ID</th><th style="min-width:50px">Offset</th><th style="min-width:50px">Length</th><th style="min-width:50px">Gain</th><th></th></tr></thead>
+        <table class="canmap-new" style="width:auto;table-layout:auto">
+          <thead><tr><th style="min-width:110px">Spot Value</th><th>TX/RX</th><th style="min-width:60px">CAN ID</th><th style="min-width:50px">Offset</th><th style="min-width:50px">Length</th><th style="min-width:50px">Gain</th><th style="min-width:50px">Bias</th><th></th></tr></thead>
           <tbody>
             ${mappings.map((m, i) => html`
               <tr key=${i}>
-                <td><select value=${m.name} onchange=${e => { const nm = [...mappings]; nm[i].name = e.target.value; setMappings(nm); }} style="width:100%">
+                <td data-label="Spot value"><select value=${m.name} onchange=${e => { const nm = [...mappings]; nm[i].name = e.target.value; setMappings(nm); }} style="width:100%">
                   <option value="">Select...</option>
                   ${spotNames.map(n => html`<option value=${n}>${n}</option>`)}
                 </select></td>
-                <td><select value=${m.txrx} onchange=${e => { const nm = [...mappings]; nm[i].txrx = e.target.value; setMappings(nm); }}>
+                <td data-label="TX/RX"><select value=${m.txrx} onchange=${e => { const nm = [...mappings]; nm[i].txrx = e.target.value; setMappings(nm); }}>
                   <option value="tx">TX</option><option value="rx">RX</option>
                 </select></td>
-                <td><input type="text" value=${m.canid} placeholder="0x250" oninput=${e => { const nm = [...mappings]; nm[i].canid = e.target.value; setMappings(nm); }} style="width:6em;font-family:var(--num)" /></td>
-                <td><input type="number" value=${m.pos} oninput=${e => { const nm = [...mappings]; nm[i].pos = e.target.value; setMappings(nm); }} style="width:4em" /></td>
-                <td><input type="number" value=${m.bits} oninput=${e => { const nm = [...mappings]; nm[i].bits = e.target.value; setMappings(nm); }} style="width:4em" /></td>
-                <td><input type="number" value=${m.gain} oninput=${e => { const nm = [...mappings]; nm[i].gain = e.target.value; setMappings(nm); }} style="width:4em" /></td>
-                <td><button onclick=${() => setMappings(mappings.filter((_, j) => j !== i))} style="padding:2px 6px;font-size:.7rem">✕</button></td>
+                <td data-label="CAN ID"><input type="text" value=${m.canid} placeholder="0x250" oninput=${e => { const nm = [...mappings]; nm[i].canid = e.target.value; setMappings(nm); }} style="width:6em;font-family:var(--num)" /></td>
+                <td data-label="Offset"><input type="number" value=${m.pos} oninput=${e => { const nm = [...mappings]; nm[i].pos = e.target.value; setMappings(nm); }} style="width:5.5em" /></td>
+                <td data-label="Length"><input type="number" value=${m.bits} oninput=${e => { const nm = [...mappings]; nm[i].bits = e.target.value; setMappings(nm); }} style="width:5.5em" /></td>
+                <td data-label="Gain"><input type="number" value=${m.gain} oninput=${e => { const nm = [...mappings]; nm[i].gain = e.target.value; setMappings(nm); }} style="width:7em" /></td>
+                <td data-label="Bias"><input type="number" step="1" value=${m.offset} oninput=${e => { const nm = [...mappings]; nm[i].offset = e.target.value; setMappings(nm); }} style="width:5.5em" /></td>
+                <td class="canmap-del"><button onclick=${() => setMappings(mappings.filter((_, j) => j !== i))} style="padding:2px 6px;font-size:.7rem">✕</button></td>
               </tr>
             `)}
           </tbody>
@@ -2905,23 +3030,23 @@ const CanMapping = () => {
             and are included in the Settings export. Max 16.
           </p>
           ${virtuals.length > 0 && html`
-            <table style="width:auto;table-layout:auto;margin-bottom:.5rem">
+            <table class="canmap-new" style="width:auto;table-layout:auto;margin-bottom:.5rem">
               <thead><tr><th>Name</th><th>CAN ID</th><th>Start bit</th><th>Bits</th><th>Gain</th><th>Offset</th><th>Unit</th><th>Signed</th><th></th></tr></thead>
               <tbody>
                 ${virtuals.map((v, i) => html`
                   <tr key=${'v' + i}>
-                    <td><div style="display:flex;align-items:center">
+                    <td data-label="Name"><div style="display:flex;align-items:center">
                       <span style="color:var(--text3);font-family:var(--num)">v_</span>
                       <input type="text" value=${v.name} oninput=${e => { const nv = [...virtuals]; nv[i].name = e.target.value; setVirtuals(nv); }} style="width:7em;font-family:var(--num)" />
                     </div></td>
-                    <td><input type="text" value=${v.id} placeholder="0x250" oninput=${e => { const nv = [...virtuals]; nv[i].id = e.target.value; setVirtuals(nv); }} style="width:6em;font-family:var(--num)" /></td>
-                    <td><input type="number" min="0" max="63" value=${v.pos} oninput=${e => { const nv = [...virtuals]; nv[i].pos = e.target.value; setVirtuals(nv); }} style="width:4em" /></td>
-                    <td><input type="number" min="1" max="32" value=${v.len} oninput=${e => { const nv = [...virtuals]; nv[i].len = e.target.value; setVirtuals(nv); }} style="width:4em" /></td>
-                    <td><input type="number" step="any" value=${v.gain} oninput=${e => { const nv = [...virtuals]; nv[i].gain = e.target.value; setVirtuals(nv); }} style="width:4.5em" /></td>
-                    <td><input type="number" step="any" value=${v.offset} oninput=${e => { const nv = [...virtuals]; nv[i].offset = e.target.value; setVirtuals(nv); }} style="width:4.5em" /></td>
-                    <td><input type="text" value=${v.unit || ''} oninput=${e => { const nv = [...virtuals]; nv[i].unit = e.target.value; setVirtuals(nv); }} style="width:3.5em" /></td>
-                    <td style="text-align:center"><input type="checkbox" checked=${!!v.signed} onchange=${e => { const nv = [...virtuals]; nv[i].signed = e.target.checked; setVirtuals(nv); }} /></td>
-                    <td><button onclick=${() => setVirtuals(virtuals.filter((_, j) => j !== i))} style="padding:2px 6px;font-size:.7rem;color:var(--red)">✕</button></td>
+                    <td data-label="CAN ID"><input type="text" value=${v.id} placeholder="0x250" oninput=${e => { const nv = [...virtuals]; nv[i].id = e.target.value; setVirtuals(nv); }} style="width:6em;font-family:var(--num)" /></td>
+                    <td data-label="Start bit"><input type="number" min="0" max="63" value=${v.pos} oninput=${e => { const nv = [...virtuals]; nv[i].pos = e.target.value; setVirtuals(nv); }} style="width:5.5em" /></td>
+                    <td data-label="Bits"><input type="number" min="1" max="32" value=${v.len} oninput=${e => { const nv = [...virtuals]; nv[i].len = e.target.value; setVirtuals(nv); }} style="width:5.5em" /></td>
+                    <td data-label="Gain"><input type="number" step="any" value=${v.gain} oninput=${e => { const nv = [...virtuals]; nv[i].gain = e.target.value; setVirtuals(nv); }} style="width:4.5em" /></td>
+                    <td data-label="Offset"><input type="number" step="any" value=${v.offset} oninput=${e => { const nv = [...virtuals]; nv[i].offset = e.target.value; setVirtuals(nv); }} style="width:4.5em" /></td>
+                    <td data-label="Unit"><input type="text" value=${v.unit || ''} oninput=${e => { const nv = [...virtuals]; nv[i].unit = e.target.value; setVirtuals(nv); }} style="width:3.5em" /></td>
+                    <td data-label="Signed" style="text-align:center"><input type="checkbox" checked=${!!v.signed} onchange=${e => { const nv = [...virtuals]; nv[i].signed = e.target.checked; setVirtuals(nv); }} /></td>
+                    <td class="canmap-del"><button onclick=${() => setVirtuals(virtuals.filter((_, j) => j !== i))} style="padding:2px 6px;font-size:.7rem;color:var(--red)">✕</button></td>
                   </tr>
                 `)}
               </tbody>
@@ -3348,7 +3473,8 @@ const FirstAdminCard = () => {
         <button id="setup-create" class="primary" onclick=${create} disabled=${busy}><${Icon} n="check" />${busy ? 'Creating…' : 'Create admin and turn on sign-in'}</button>
       </div>
       <p class="auth-hint">Forgot the password later? Hold the board's BOOT button for 10 seconds (or type <code>auth reset</code>
-        on its serial port) to delete all users and turn sign-in off again. Passwords are stored hashed (PBKDF2), never in plain text.
+        on its serial port) to delete all users and turn sign-in off again; a signed-in admin can also turn it off
+        here. Passwords are stored hashed (PBKDF2), never in plain text.
         The connection is plain HTTP, so use this on a network you trust.</p>
     </div>`;
 };
@@ -3401,6 +3527,7 @@ const UserListCard = () => {
   const [resetFor, setResetFor] = useState(null);
   const [rpw, setRpw] = useState('');
   const [rpw2, setRpw2] = useState('');
+  const [adding, setAdding] = useState(false); // the Add user dialog is open
   const [nu, setNu] = useState({ name: '', role: 'viewer' });
   const [npw, setNpw] = useState('');
   const [npw2, setNpw2] = useState('');
@@ -3427,9 +3554,10 @@ const UserListCard = () => {
     const problem = !nu.name.trim() ? 'Choose a user name.' : passwordProblem(npw, npw2);
     if (problem) { setErr(problem); return; }
     if (await op({ op: 'add', user: nu.name.trim().toLowerCase(), password: npw, role: nu.role }, nu.name.trim().toLowerCase() + ' added')) {
-      setNu({ name: '', role: 'viewer' }); setNpw(''); setNpw2('');
+      setNu({ name: '', role: 'viewer' }); setNpw(''); setNpw2(''); setAdding(false);
     }
   };
+  const openAdd = () => { setErr(''); setNu({ name: '', role: 'viewer' }); setNpw(''); setNpw2(''); setAdding(true); };
   const resetPw = async () => {
     const problem = passwordProblem(rpw, rpw2);
     if (problem) { setErr(problem); return; }
@@ -3460,18 +3588,27 @@ const UserListCard = () => {
         </ul>
       `}
       ${users && users.length < max ? html`
-        <p class="settings-subhead">Add a user</p>
-        <div class="auth-form">
-          <label class="auth-field">User name
-            <input id="new-user" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="32"
-              value=${nu.name} oninput=${e => setNu({ ...nu, name: e.target.value })} />
-          </label>
-          <label class="auth-field">Role <${RoleSelect} id="new-role" value=${nu.role} onChange=${role => setNu({ ...nu, role })} /></label>
-          <${PasswordFields} prefix="new" pw=${npw} setPw=${setNpw} pw2=${npw2} setPw2=${setNpw2} />
-          <button id="new-add" class="primary" onclick=${add}><${Icon} n="plus" />Add user</button>
-        </div>
-        <${RoleGuide} />
+        <button id="new-open" onclick=${openAdd} style="width:auto"><${Icon} n="plus" />Add user</button>
       ` : users && html`<p class="auth-hint">${max} users is the most this module keeps.</p>`}
+      ${/* Adding a user is a dialog, like setting a password, rather than a
+          form that sat open under the list */ ''}
+      ${adding && html`
+        <${Modal} id="add-user" title="Add a user" onClose=${() => setAdding(false)}>
+          <div class="auth-form">
+            <label class="auth-field">User name
+              <input id="new-user" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" maxlength="32"
+                value=${nu.name} oninput=${e => setNu({ ...nu, name: e.target.value })} />
+            </label>
+            <label class="auth-field">Role <${RoleSelect} id="new-role" value=${nu.role} onChange=${role => setNu({ ...nu, role })} /></label>
+            <${PasswordFields} prefix="new" pw=${npw} setPw=${setNpw} pw2=${npw2} setPw2=${setNpw2} />
+            ${err && html`<p class="auth-err" role="alert">${err}</p>`}
+            <${RoleGuide} />
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button onclick=${() => setAdding(false)}>Cancel</button>
+              <button id="new-add" class="primary" onclick=${add}><${Icon} n="plus" />Add user</button>
+            </div>
+          </div>
+        </${Modal}>`}
       ${resetFor && html`
         <${Modal} id="reset-pw" title=${'New password for ' + resetFor} onClose=${() => setResetFor(null)}>
           <div class="auth-form">
@@ -3486,11 +3623,54 @@ const UserListCard = () => {
     </div>`;
 };
 
+// Admin only: back to no accounts (sign-in off). Deletes every user, so it
+// asks first and needs your own password again; the device checks both
+// the role and the password.
+const TurnOffSignInCard = () => {
+  const [open, setOpen] = useState(false);
+  const [pw, setPw] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const turnOff = async () => {
+    if (!pw) { setErr('Enter your password.'); return; }
+    setBusy(true); setErr('');
+    try {
+      await authPost('/auth/users', { op: 'disable', password: pw });
+      location.reload(); // no users now: the open, no-sign-in interface
+    } catch (e) {
+      setErr(e.status === 429 ? 'Too many attempts — try again in a few minutes.' : e.message);
+      setBusy(false);
+    }
+  };
+  return html`
+    <div class="dash-box compact" id="signin-off">
+      <h3>Turn off sign-in</h3>
+      <p class="auth-lead">Deletes <b>every</b> user account and turns sign-in off: anyone who can reach this module can
+        then view and change everything again, as before sign-in was set up. Settings, layouts and Wi-Fi are kept.</p>
+      <button id="signin-off-open" class="danger" onclick=${() => { setOpen(true); setPw(''); setErr(''); }}><${Icon} n="trash" />Turn off sign-in…</button>
+      ${open && html`
+        <${Modal} id="signin-off-dlg" title="Turn off sign-in?" onClose=${() => setOpen(false)}>
+          <div class="auth-form">
+            <p class="auth-lead">All users are deleted and everyone is signed out. To use sign-in again you would create
+              a new admin account.</p>
+            <label class="auth-field">Your password (${AUTH.user})
+              <input id="signin-off-pw" type="password" autocomplete="current-password" value=${pw} oninput=${e => setPw(e.target.value)} />
+            </label>
+            ${err && html`<p class="auth-err" role="alert">${err}</p>`}
+            <div style="display:flex;gap:8px;flex-wrap:wrap">
+              <button onclick=${() => setOpen(false)}>Cancel</button>
+              <button id="signin-off-confirm" class="danger" onclick=${turnOff} disabled=${busy}><${Icon} n="trash" />${busy ? 'Turning off…' : 'Delete all users and turn off sign-in'}</button>
+            </div>
+          </div>
+        </${Modal}>`}
+    </div>`;
+};
+
 const UsersPanel = () => {
   if (!AUTH.enabled) return html`<${FirstAdminCard} />`;
   return html`
     <${MyAccountCard} />
-    ${can('admin') ? html`<${UserListCard} />` : html`
+    ${can('admin') ? html`<${UserListCard} /><${TurnOffSignInCard} />` : html`
       <div class="dash-box compact"><h3>Users</h3><p class="auth-lead">Only an admin can add or change users.</p></div>`}`;
 };
 
@@ -3511,22 +3691,6 @@ const Settings = () => {
   };
 
   // Dashboard hero metrics: five slots, empty = unused (at least slot 1 kept)
-  const [dashMetrics, setDashMetrics] = useState(() => {
-    const m = getDashMetrics();
-    while (m.length < 5) m.push('');
-    return m;
-  });
-  const updateDashMetric = (i, name) => {
-    const next = [...dashMetrics];
-    next[i] = name;
-    setDashMetrics(next);
-    const chosen = next.filter(Boolean).slice(0, 5);
-    try {
-      if (chosen.length) localStorage.setItem('dashMetrics', JSON.stringify(chosen));
-      else localStorage.removeItem('dashMetrics'); // back to the udc/tmphs default
-    } catch (e) {}
-    saveUiPrefsToDevice();
-  };
 
   // Import a previously exported web interface configuration bundle
   const importUiSettings = async (e) => {
@@ -3670,7 +3834,8 @@ const Settings = () => {
           setApFb(data.ap_fallback === true);
           // Older firmware doesn't report SD state — keep the box hidden
           if (data.sd_available !== undefined)
-            setSdInfo({ available: data.sd_available === true, enabled: data.sd_enabled !== false, card: data.sd_card === true });
+            // probed = what this boot did (the toggle only applies after a reboot)
+            setSdInfo({ available: data.sd_available === true, enabled: data.sd_enabled === true, probed: data.sd_enabled === true, card: data.sd_card === true });
           if (typeof data.dev_name === 'string') setDevName(data.dev_name);
           setCanMode(data.can_mode === true);
           if (data.can_node_id) setCanNodeId(data.can_node_id);
@@ -3979,16 +4144,17 @@ const Settings = () => {
         </div>
 
         ${sdInfo && sdInfo.available && html`
-        <div class="dash-box compact">
+        <div class="dash-box compact" id="sd-card-box">
           <h3>SD Card</h3>
           <div style="max-width:350px">
             <${ToggleRow} label="Probe for an SD card at boot" checked=${sdInfo.enabled}
               onChange=${v => { setSdInfo({ ...sdInfo, enabled: v }); fetch('/settings?sd_enabled=' + (v ? '1' : '0'), { method: 'POST' }).catch(() => {}); }} />
           </div>
-          <p style="font-size:.72rem;color:var(--text3);margin:.35rem 0 0;max-width:350px">
-            Turn off on boards with no SD slot wired to the SDIO pins (e.g. Wemos D1 Mini ESP32)
-            if they fail to boot. Applies after the next reboot.
-            <b>${sdInfo.card ? 'Card detected.' : 'No card detected.'}</b>
+          <p id="sd-card-help" style="font-size:.72rem;color:var(--text3);margin:.35rem 0 0;max-width:350px">
+            Off by default. Turn on if your board has an SD card wired to the SDIO pins (for data logging),
+            then reboot; leave it off on boards without one (e.g. Wemos D1 Mini ESP32), which can hang probing for it.
+            Applies after the next reboot.
+            <b>${!sdInfo.probed ? 'Not probed at this boot.' : sdInfo.card ? 'Card detected.' : 'No card detected.'}</b>
           </p>
         </div>`}
 
@@ -4023,20 +4189,6 @@ const Settings = () => {
           <p style="font-size:.72rem;color:var(--text3);margin:.35rem 0 0">Stops the screen sleeping while this page is open.</p>
         </div>
 
-        <div class="dash-box compact">
-          <h3>Dashboard</h3>
-          <p style="font-size:.8rem;margin:0 0 .5rem">Choose up to 5 spot values to show on the dashboard hero card. Leave a slot empty to hide it.</p>
-          <div style="display:flex;flex-wrap:wrap;gap:8px">
-            ${dashMetrics.map((name, i) => html`
-              <select class="styled" value=${name} onchange=${e => updateDashMetric(i, e.target.value)}
-                style="width:auto;min-width:130px;font-size:.8rem" title=${'Dashboard value ' + (i + 1)}>
-                <option value="">— none —</option>
-                ${Object.keys(state.spotValues || {}).sort().map(n => html`<option value=${n}>${n}${DASH_METRIC_LABELS[n] ? ' (' + DASH_METRIC_LABELS[n] + ')' : ''}</option>`)}
-              </select>
-            `)}
-          </div>
-          ${!dashMetrics.filter(Boolean).length && html`<p style="font-size:.72rem;color:var(--text3);margin:.35rem 0 0">Nothing selected — the default (udc, tmphs) is shown.</p>`}
-        </div>
 
         `}
         ${subTab === 'config' && html`
@@ -4123,7 +4275,9 @@ const Support = () => html`
 // remounts it (which would drop the accumulated history). `points` sets the
 // visible history length and `sampleMs` how often a sample is taken from the
 // ~100ms stream — together they control the scroll rate/time window.
-const GaugeLine = ({ name, name2, min, max, min2, max2, value, value2, unit, color, color2, enums, w = 230, h = 175, points = 20, sampleMs = 100, decimals = 1 }) => {
+// `tick` counts stream samples: the trace advances on every sample, so a
+// constant value keeps scrolling in step with its neighbours.
+const GaugeLine = ({ name, name2, min, max, min2, max2, value, value2, tick, unit, color, color2, enums, w = 230, h = 175, points = 20, sampleMs = 100, decimals = 1 }) => {
   const canvasRef = useRef(null);
   const chartRef = useRef(null);
   const lastSampleRef = useRef(0);
@@ -4151,7 +4305,10 @@ const GaugeLine = ({ name, name2, min, max, min2, max2, value, value2, unit, col
           maintainAspectRatio: false, // tiles can be any shape — never snap back to 2:1
           plugins: { legend: { display: false } },
           scales: {
-            x: { type: 'linear', display: false },
+            // Pinned to the history length: left free, Chart.js fits x to the
+            // points inside the y range, so a trace squashed and stretched
+            // while it filled or whenever the value left the scale
+            x: { type: 'linear', display: false, min: 0, max: Math.max(1, points - 1) },
             y: { type: 'linear', display: true, position: 'left', min: yMin, max: yMax,
                  ticks: { color: col, font: { size: 9 }, stepSize: ((yMax - yMin) / 2) || 1, maxTicksLimit: 3 } },
             ...(dual ? { y2: { type: 'linear', display: true, position: 'right', min: y2Min, max: y2Max,
@@ -4205,10 +4362,12 @@ const GaugeLine = ({ name, name2, min, max, min2, max2, value, value2, unit, col
   // Shrinking the history trims the tail immediately
   useEffect(() => {
     const chart = chartRef.current;
-    const ds = chart && chart.data.datasets[0];
-    if (!ds || ds.data.length <= points) return;
-    ds.data.splice(0, ds.data.length - points);
-    ds.data.forEach((pt, i) => { pt.x = i; });
+    if (!chart) return;
+    chart.options.scales.x.max = Math.max(1, points - 1);
+    for (const ds of chart.data.datasets) {
+      if (ds.data.length > points) ds.data.splice(0, ds.data.length - points);
+      ds.data.forEach((pt, i) => { pt.x = points - ds.data.length + i; });
+    }
     chart.update('none');
   }, [points]);
 
@@ -4222,13 +4381,13 @@ const GaugeLine = ({ name, name2, min, max, min2, max2, value, value2, unit, col
       if (!ds || val == null || isNaN(val)) return;
       ds.data.push({ x: ds.data.length, y: val });
       while (ds.data.length > points) ds.data.shift();
-      // Renumber x values so they remain contiguous from 0
-      ds.data.forEach((pt, i) => { pt.x = i; });
+      // Newest sample at the right edge; a filling history grows from there
+      ds.data.forEach((pt, i) => { pt.x = points - ds.data.length + i; });
     };
     push(chart.data.datasets[0], value);
     if (dual) push(chart.data.datasets[1], value2);
     chart.update('none');
-  }, [value, value2]);
+  }, [tick]);
 
   return html`
     <div style=${'width:' + w + 'px;height:' + h + 'px;display:flex;flex-direction:column;align-items:center;overflow:hidden'}>
@@ -4279,6 +4438,14 @@ const hueShift = (hex, deg) => {
 // one way and regen the other, pivoting on a tick at the centre mark.
 // invertScale mirrors the whole scale (max at the arc's start, min at its
 // end), fill and labels included.
+// Peak-hold readout under a radial or bar gauge's value: the session's
+// lowest and highest values, as numbers beside the markers on the scale
+const PeakReadout = ({ peaks, decimals, fs }) => html`
+  <div class="g-peaks" style=${'font-size:' + fs}>
+    <span title="Lowest this session">▼ ${peaks.min.toFixed(decimals)}</span>
+    <span title="Highest this session">▲ ${peaks.max.toFixed(decimals)}</span>
+  </div>`;
+
 // ---- Shared by the Segmented and Zones styles of radial and bar gauges ----
 const isHex = (c) => !!c && /^#[0-9a-fA-F]{6}$/.test(c);
 const mixHex = (a, b, t) => '#' + [1, 3, 5].map(i =>
@@ -4445,7 +4612,8 @@ const SvgGauge = ({ id, value, min = 0, max = 100, unit, color, enums, px, decim
             <div class="g-val" style=${'font-size:' + vfs.toFixed(2) + 'rem' + (warned ? ';color:' + wc : '')}>${v == null ? '—' : (enums ? String(Math.round(v)) : v.toFixed(decimals))}</div>
             ${enums
               ? (v != null && html`<div class="g-unit g-enum" style=${'font-size:' + ufs}>${enumLabel(enums, v)}</div>`)
-              : (unit && html`<div class="g-unit" style=${'font-size:' + ufs}>${unit}</div>`)}`;
+              : (unit && html`<div class="g-unit" style=${'font-size:' + ufs}>${unit}</div>`)}
+            ${peaks && !enums && size >= 90 && html`<${PeakReadout} peaks=${peaks} decimals=${decimals} fs=${ufs} />`}`;
         })()}
       </div>
       ${/* Labels hug the corners (7% in, 3% up): the arc ends sit ~22% in
@@ -4530,9 +4698,7 @@ function withDashboardPage(pages, data) {
 function enumText(v, enums) {
   if (!enums) return fmtNum(v);
   if (enums[v] != null) return String(enums[v]);
-  const parts = [];
-  for (const k in enums) if (Number(k) > 0 && (v & k)) parts.push(enums[k]);
-  return parts.length ? parts.join('|') : fmtNum(v, 0);
+  return isNaN(v) ? fmtNum(v, 0) : enumLabel(enums, v);
 }
 
 // A page condition ({ name, min, max, invert }) matches while the value sits
@@ -4551,26 +4717,59 @@ const condMatch = (cond, val) => {
 // ==================== Computed (formula) tiles ====================
 // A tile can derive its value from an arithmetic formula over spot values,
 // e.g. "udc*idc/1000" for power in kW. The expression is the user's own
-// config, but it's still validated against a character whitelist and
-// compiled once; identifiers resolve to streamed values (plus a few Math
-// helpers), and anything unresolvable just reads NaN → "—".
-const CALC_FUNCS = { abs: 1, min: 1, max: 1, sqrt: 1, round: 1, floor: 1, ceil: 1, pow: 1 };
-const calcNames = (expr) => [...new Set((String(expr || '').match(/[A-Za-z_]\w*/g) || []).filter(w => !CALC_FUNCS[w]))];
+// config, but it's still tokenised (calcParse) and compiled once; names
+// resolve to streamed values (plus the helpers below), and anything
+// unresolvable just reads NaN → "—" (the editor says why).
+// % is JavaScript's remainder (takes the sign of the left side); mod() is
+// always 0..b, wrap180() folds an angle to -180..180, sin/cos take degrees.
+const DEG = Math.PI / 180;
+const CALC_FUNCS = {
+  abs: Math.abs, min: Math.min, max: Math.max, sqrt: Math.sqrt, round: Math.round,
+  floor: Math.floor, ceil: Math.ceil, pow: Math.pow,
+  mod: (a, b) => ((a % b) + b) % b,
+  wrap180: x => ((((x + 180) % 360) + 360) % 360) - 180,
+  sin: d => Math.sin(d * DEG), cos: d => Math.cos(d * DEG),
+};
+const isCalcFunc = w => Object.prototype.hasOwnProperty.call(CALC_FUNCS, w);
+// Tokenises and compiles a formula: { ids, f } or { error } saying what's
+// wrong, for the editor to show. Only numbers (1.5, .5, 1e5), names,
+// + - * / % ( ) and commas get through: a '.' outside a number is refused,
+// so a formula can't reach properties (udc.constructor) of anything
+function calcParse(expr) {
+  const src = String(expr || '');
+  const tok = /\s+|(\d+\.?\d*(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?)|([A-Za-z_]\w*)|([-+*/%(),])/y;
+  const ids = [];
+  let body = '', m, prevName = null;
+  while (tok.lastIndex < src.length) {
+    const at = tok.lastIndex;
+    if (!(m = tok.exec(src))) return { error: 'Not allowed here: "' + src.slice(at, at + 12) + '"' };
+    if (m[2]) {
+      prevName = m[2];
+      if (isCalcFunc(m[2])) body += '$F.' + m[2];
+      else { body += m[2]; if (!ids.includes(m[2])) ids.push(m[2]); }
+      continue;
+    }
+    if (m[3] === '(' && prevName && !isCalcFunc(prevName)) return { error: 'Unknown function: ' + prevName };
+    if (m[1] || m[3]) {
+      if (prevName && isCalcFunc(prevName) && m[3] !== '(') return { error: prevName + ' needs (…)' };
+      prevName = null;
+    }
+    body += m[0];
+  }
+  if (prevName && isCalcFunc(prevName)) return { error: prevName + ' needs (…)' };
+  if (!body.trim()) return { error: 'Empty formula' };
+  try {
+    // helpers come in as $F: a formula can't contain $, so no spot value can shadow it
+    const f = new Function('$F', ...ids, '"use strict";return (' + body + ')');
+    return { ids, f: (...a) => f(CALC_FUNCS, ...a) };
+  } catch (e) { return { error: 'Syntax error' }; }
+}
+const calcNames = (expr) => calcParse(expr).ids || [];
 const _calcCache = {};
 function calcEval(expr, vals) {
   let c = _calcCache[expr];
-  if (c === undefined) {
-    c = null;
-    if (/^[\w\s+\-*/().,]+$/.test(expr)) {
-      try {
-        const ids = calcNames(expr);
-        const body = String(expr).replace(/[A-Za-z_]\w*/g, w => CALC_FUNCS[w] ? 'Math.' + w : w);
-        c = { ids, f: new Function(...ids, '"use strict";return (' + body + ')') };
-      } catch (e) { c = null; }
-    }
-    _calcCache[expr] = c;
-  }
-  if (!c) return NaN;
+  if (c === undefined) c = _calcCache[expr] = calcParse(expr);
+  if (!c.f) return NaN;
   try {
     const args = c.ids.map(n => vals[n]);
     if (args.some(a => a == null || isNaN(a))) return NaN;
@@ -4755,6 +4954,7 @@ const BarGauge = ({ value, min = 0, max = 100, unit, color, enums, decimals = 1,
       })()}
       <div class="bar-val g-val" style=${'font-size:' + vfs + 'px'}>
         ${disp}${!enums && unit ? html`<span class="g-unit" style="display:inline;margin-left:4px;font-size:.5em">${unit}</span>` : ''}
+        ${peaks && !enums && h >= 44 && w >= 90 && html`<${PeakReadout} peaks=${peaks} decimals=${decimals} fs=".42em" />`}
       </div>
       ${showEnds && html`
         <span class="bar-end bar-lo">${loLabel}</span>
@@ -4965,7 +5165,7 @@ const SliderTile = ({ g, value, editing, w, h }) => {
 // ==================== Dashboard widgets ====================
 
 // The run state: what the Dashboard's hero card always showed
-const StatusTile = ({ g, nameVals }) => {
+const StatusTile = ({ g, nameVals, tick }) => {
   const { state } = useContext(Store);
   const sv = state.spotValues || {};
   const live = (n) => (nameVals && typeof nameVals[n] === 'number' && !isNaN(nameVals[n])) ? nameVals[n]
@@ -4973,6 +5173,7 @@ const StatusTile = ({ g, nameVals }) => {
   const show = (n) => { const v = live(n); return v == null ? null : (sv[n] && sv[n].enums ? enumText(v, sv[n].enums) : fmtNum(v)); };
   const figs = statusFigs(g);
   const hist = useRef({});
+  const lastTick = useRef(null);
   // A short tile shows the metric rows that fit and hides the rest whole,
   // rather than scrolling or cutting a row in half
   const metricsRef = useRef(null);
@@ -4987,12 +5188,18 @@ const StatusTile = ({ g, nameVals }) => {
     ro.observe(box);
     return () => ro.disconnect();
   }, [!!metricsRef.current, figs.length]);
-  figs.forEach(n => {
-    const v = live(n);
-    if (typeof v !== 'number' || isNaN(v)) return;
-    const a = hist.current[n] || (hist.current[n] = []);
-    if (a[a.length - 1] !== v) { a.push(v); if (a.length > 60) a.shift(); }
-  });
+  // One point per sample (stream tick, or json poll until the stream
+  // delivers), changed or not — a steady value still scrolls in time
+  const tickKey = tick || state.spotValues;
+  if (lastTick.current !== tickKey) {
+    lastTick.current = tickKey;
+    figs.forEach(n => {
+      const v = live(n);
+      if (typeof v !== 'number' || isNaN(v)) return;
+      const a = hist.current[n] || (hist.current[n] = []);
+      a.push(v); if (a.length > 60) a.shift();
+    });
+  }
   if (state.status == null && live('opmode') == null) return html`<${Spinner} />`;
   const opmode = show('opmode') || state.opmode;
   const offline = state.commError || (state.canMode && !state.canConnected);
@@ -5031,11 +5238,14 @@ const StatusTile = ({ g, nameVals }) => {
 };
 
 // One value with its unit and a sparkline of the last minute or so
-const MetricTile = ({ g, value, unit, enums }) => {
+const MetricTile = ({ g, value, unit, enums, tick }) => {
   const hist = useRef([]);
-  if (typeof value === 'number' && !isNaN(value)) {
+  const lastTick = useRef(null);
+  // One point per stream sample, changed or not (see StatusTile)
+  if (tick !== lastTick.current && typeof value === 'number' && !isNaN(value)) {
+    lastTick.current = tick;
     const a = hist.current;
-    if (a[a.length - 1] !== value) { a.push(value); if (a.length > 60) a.shift(); }
+    a.push(value); if (a.length > 60) a.shift();
   }
   const label = g.label || DASH_METRIC_LABELS[g.name] || g.name || 'tap to set up';
   const shown = value == null || isNaN(value) ? '—'
@@ -5421,6 +5631,32 @@ const PageBackground = ({ bg, editing }) => {
         + (bg.opacity ? ';opacity:' + bg.opacity / 100 : '')} />
   </div>`;
 };
+// An editor field that shows exactly what is typed while it has focus. The
+// gauge view re-renders on every poll and sample, and a plain controlled
+// `value` is written back over a half-typed entry ("0." loses its point, a
+// cleared field snaps back, a list being typed vanishes). `onInput` gets each
+// edit's text (live preview), `onCommit` the final text on change (blur,
+// Enter, a spinner step); once it loses focus the field shows the stored
+// value again, normalised.
+const DraftInput = ({ value, onInput, onCommit, ...rest }) => {
+  const [draft, setDraft] = useState(null);
+  const draftRef = useRef(null);
+  const commitRef = useRef(onCommit);
+  commitRef.current = onCommit;
+  const done = (text) => {
+    if (draftRef.current == null) return;
+    draftRef.current = null;
+    setDraft(null);
+    if (commitRef.current) commitRef.current(text);
+  };
+  // Closing the editor mid-edit unmounts the field without a blur
+  useEffect(() => () => done(draftRef.current), []);
+  return html`<input ...${rest} value=${draft != null ? draft : value}
+    oninput=${e => { draftRef.current = e.target.value; setDraft(e.target.value); if (onInput) onInput(e.target.value); }}
+    onchange=${e => done(e.target.value)} onblur=${e => done(e.target.value)}
+    onkeydown=${e => { if (e.key === 'Enter') done(e.target.value); }} />`;
+};
+
 // The page settings' Background section; Rows starts at the page's current
 // height so the picture covers what's already there
 const BackgroundSettings = ({ page, update }) => {
@@ -5453,17 +5689,17 @@ const BackgroundSettings = ({ page, update }) => {
         </div>
         <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <label style="width:4.5em">Size</label>
-          <input id="bg-cols" type="number" min="1" max=${GRID_COLS - (bg.x || 0)} value=${bg.cols || (GRID_COLS - (bg.x || 0))} title="Columns"
-            oninput=${e => { const n = parseInt(e.target.value); if (n > 0) update({ ...bg, cols: n }); }} style="width:4.5em;padding:4px 6px" />
+          <${DraftInput} id="bg-cols" type="number" min="1" max=${GRID_COLS - (bg.x || 0)} value=${bg.cols || (GRID_COLS - (bg.x || 0))} title="Columns"
+            onInput=${t => { const n = parseInt(t); if (n > 0) update({ ...bg, cols: n }); }} style="width:4.5em;padding:4px 6px" />
           <span style="color:var(--text3)">×</span>
-          <input id="bg-rows" type="number" min="1" max=${BG_MAX_ROWS} value=${bg.rows} title="Rows"
-            oninput=${e => { const n = parseInt(e.target.value); if (n > 0) update({ ...bg, rows: n }); }} style="width:4.5em;padding:4px 6px" />
+          <${DraftInput} id="bg-rows" type="number" min="1" max=${BG_MAX_ROWS} value=${bg.rows} title="Rows"
+            onInput=${t => { const n = parseInt(t); if (n > 0) update({ ...bg, rows: n }); }} style="width:4.5em;padding:4px 6px" />
           <label style="margin-left:6px">At</label>
-          <input id="bg-x" type="number" min="0" max=${GRID_COLS - 1} value=${bg.x || 0} title="Column"
-            oninput=${e => { const n = parseInt(e.target.value); if (n >= 0) update({ ...bg, x: n }); }} style="width:4.5em;padding:4px 6px" />
+          <${DraftInput} id="bg-x" type="number" min="0" max=${GRID_COLS - 1} value=${bg.x || 0} title="Column"
+            onInput=${t => { const n = parseInt(t); if (n >= 0) update({ ...bg, x: n }); }} style="width:4.5em;padding:4px 6px" />
           <span style="color:var(--text3)">,</span>
-          <input id="bg-y" type="number" min="0" max=${BG_MAX_ROWS - 1} value=${bg.y || 0} title="Row"
-            oninput=${e => { const n = parseInt(e.target.value); if (n >= 0) update({ ...bg, y: n }); }} style="width:4.5em;padding:4px 6px" />
+          <${DraftInput} id="bg-y" type="number" min="0" max=${BG_MAX_ROWS - 1} value=${bg.y || 0} title="Row"
+            onInput=${t => { const n = parseInt(t); if (n >= 0) update({ ...bg, y: n }); }} style="width:4.5em;padding:4px 6px" />
         </div>
         <div style="display:flex;gap:8px;align-items:center">
           <label style="width:4.5em">Opacity</label>
@@ -5476,10 +5712,10 @@ const BackgroundSettings = ({ page, update }) => {
 };
 
 // While editing, a widget is inert: a tap configures it instead of firing it
-const WidgetTile = ({ g, value, unit, enums, nameVals, editing }) => html`
+const WidgetTile = ({ g, value, unit, enums, nameVals, tick, editing }) => html`
   <div class="widget-body wt-${g.type}" inert=${editing || undefined}>
-    ${g.type === 'status' ? html`<${StatusTile} g=${g} nameVals=${nameVals} />`
-      : g.type === 'metric' ? html`<${MetricTile} g=${g} value=${value} unit=${unit} enums=${enums} />`
+    ${g.type === 'status' ? html`<${StatusTile} g=${g} nameVals=${nameVals} tick=${tick} />`
+      : g.type === 'metric' ? html`<${MetricTile} g=${g} value=${value} unit=${unit} enums=${enums} tick=${tick} />`
       : g.type === 'messages' ? html`<${MessagesTile} editing=${editing} />`
       : g.type === 'terminal' ? html`<${TerminalTile} />`
       : g.type === 'actions' ? html`<${ActionsTile} g=${g} />`
@@ -5487,7 +5723,7 @@ const WidgetTile = ({ g, value, unit, enums, nameVals, editing }) => html`
       : html`<${CanSendTile} />`}
   </div>`;
 
-const GaugeTileBody = ({ g, title, value, value2, unit, enums, editing, canMode, presets, peaks }) => {
+const GaugeTileBody = ({ g, title, value, value2, tick, unit, enums, editing, canMode, presets, peaks }) => {
   const ref = useRef(null);
   const [dim, setDim] = useState({ w: 0, h: 0 });
   // Alarm: fires once when the value crosses INTO the warn zone (the visual
@@ -5561,7 +5797,7 @@ const GaugeTileBody = ({ g, title, value, value2, unit, enums, editing, canMode,
       ${w > 12 && (g.type === 'text' ? gh > 7 : gh > 12) && ((g.type === 'line')
         ? html`<${GaugeLine} key=${g.id + '-' + (g.name2 || '')} name=${g.name} name2=${g.name2 || ''} min=${g.min} max=${g.max}
             min2=${g.min2} max2=${g.max2}
-            value=${value} value2=${value2} unit=${unit} color=${g.color || ''} color2=${g.color2 || ''} enums=${enums}
+            value=${value} value2=${value2} tick=${tick} unit=${unit} color=${g.color || ''} color2=${g.color2 || ''} enums=${enums}
             points=${g.points || 20} sampleMs=${g.sampleMs || 100} decimals=${g.decimals != null ? g.decimals : 1}
             w=${w - 4} h=${gh - 2} />`
         : (g.type === 'indicator')
@@ -5635,6 +5871,7 @@ const Gauges = ({ dash = false }) => {
   const [dashId, setDashId] = useState(DASH_PAGE_ID);
   const [activePage, setActivePage] = useState(dash ? DASH_PAGE_ID : 1);
   const [nameVals, setNameVals] = useState({}); // latest streamed value per name (status tiles)
+  const lastVals = useRef({}); // latest streamed value per name, for the formula editor's preview
   const [narrow, setNarrow] = useState(() => window.matchMedia('(max-width: 599px)').matches);
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 599px)');
@@ -5643,6 +5880,9 @@ const Gauges = ({ dash = false }) => {
     return () => mq.removeEventListener('change', on);
   }, []);
   const [lineVals, setLineVals] = useState({});
+  const seqRef = useRef(0); // stream samples applied so far (the traces' clock)
+  const ssePortRef = useRef(0); // read by the stream effect, which mustn't restart when it lands
+  ssePortRef.current = state.ssePort;
   const [editing, setEditing] = useState(false);
   const [editActionsOpen, setEditActionsOpen] = useState(false); // responsive-only expander for the editor's page/condition/starter sections
   const [configId, setConfigId] = useState(null); // gauge whose settings modal is open
@@ -5761,7 +6001,7 @@ const Gauges = ({ dash = false }) => {
     (async () => {
       let data = null;
       try {
-        const r = await fetch('/gauges.json');
+        const r = await bootFetch('/gauges.json');
         if (r.ok) data = await r.json();
       } catch (e) { /* no saved layout */ }
       const { pages: all, dashId: did } = withDashboardPage(migrateGauges(data), data);
@@ -6201,6 +6441,7 @@ const Gauges = ({ dash = false }) => {
       if (vals.length !== names.length) return;
       const byName = {};
       names.forEach((n, i) => { byName[n] = parseFloat(vals[i]); });
+      Object.assign(lastVals.current, byName);
       if (wantNames) setNameVals(prev => ({ ...prev, ...byName }));
       // Session recorder rides the stream, whatever the transport
       if (recRef.current) {
@@ -6226,6 +6467,7 @@ const Gauges = ({ dash = false }) => {
         if (next[k] < p.min) p.min = next[k];
         if (next[k] > p.max) p.max = next[k];
       }
+      seqRef.current++; // sparklines and line tiles advance once per sample
       setLineVals(prev => ({ ...prev, ...next }));
       // Conditional page display: when a page's condition STARTS matching,
       // switch to it. A persisting match doesn't re-trigger, so the user can
@@ -6239,12 +6481,18 @@ const Gauges = ({ dash = false }) => {
         }
       }
     };
+    // Both transports start at once: the /cmd poll shows values after one
+    // round trip and stands down when the stream delivers its first sample.
+    // A stream that never answers (a router forwarding only port 80) or is
+    // slow to open (ticket, connect) then costs nothing but the push itself.
+    let polling = false, streamLive = false, streamTried = false;
     const fetchLoop = async () => {
-      if (!active) return;
+      if (!active || streamLive) { polling = false; return; }
+      startStream(); // sse_port can land after the layout: pick it up here
       const t0 = performance.now();
       try {
         const text = await api.getText('get ' + names.join(','));
-        if (!active) return;
+        if (!active || streamLive) { polling = false; return; }
         applyText(text);
       } catch (e) { /* ignore */ }
       if (active) {
@@ -6252,37 +6500,41 @@ const Gauges = ({ dash = false }) => {
         fetchRef.current = setTimeout(fetchLoop, Math.max(0, interval - elapsed));
       }
     };
+    const poll = () => {
+      if (polling || !active) return;
+      polling = true;
+      fetchRef.current = setTimeout(fetchLoop, 0);
+    };
     // Prefer server push when the firmware offers it (sse_port in /settings):
     // one long-lived connection instead of an HTTP round-trip per sample,
     // whichever backend (UART or CAN) is behind it. Any error — old
-    // firmware, blocked port — falls back to the polling loop, which is
+    // firmware, blocked port — hands back to the polling loop, which is
     // always available.
-    if (state.ssePort && window.EventSource) {
-      (async () => {
-        let ticket = '';
-        if (AUTH.enabled) {
-          try { ticket = (await (await fetch('/auth/stream-ticket')).json()).ticket || ''; } catch (e) {}
-          if (!active) return;
-          if (!ticket) { fetchRef.current = setTimeout(fetchLoop, 0); return; } // poll instead
-        }
-        const url = location.protocol + '//' + location.hostname + ':' + state.ssePort +
-          '/stream?names=' + names.join(',') + '&ms=' + interval + (ticket ? '&t=' + ticket : '');
-        es = new EventSource(url);
-        es.onmessage = (ev) => { if (active) applyText(ev.data); };
-        es.onerror = () => {
-          if (es) { es.close(); es = null; if (active) fetchRef.current = setTimeout(fetchLoop, 0); }
-        };
-      })();
-    } else {
-      fetchRef.current = setTimeout(fetchLoop, 0);
-    }
+    const startStream = async () => {
+      if (streamTried || !ssePortRef.current || !window.EventSource) return;
+      streamTried = true;
+      let ticket = '';
+      if (AUTH.enabled) {
+        try { ticket = (await (await fetch('/auth/stream-ticket')).json()).ticket || ''; } catch (e) {}
+        if (!active || !ticket) return; // no ticket: keep polling
+      }
+      const url = location.protocol + '//' + location.hostname + ':' + ssePortRef.current +
+        '/stream?names=' + names.join(',') + '&ms=' + interval + (ticket ? '&t=' + ticket : '');
+      es = new EventSource(url);
+      es.onmessage = (ev) => { if (!active) return; streamLive = true; applyText(ev.data); };
+      es.onerror = () => {
+        if (es) { es.close(); es = null; streamLive = false; poll(); }
+      };
+    };
+    startStream();
+    poll();
     return () => {
       active = false;
       if (es) { es.close(); es = null; }
       dispatch({ type: 'SET_LOGGING', payload: false });
       if (fetchRef.current) { clearTimeout(fetchRef.current); fetchRef.current = null; }
     };
-  }, [items, configId, autoPage, state.canMode, state.ssePort, pages.map(p => (p.cond && p.cond.name) || '').join()]);
+  }, [items, configId, autoPage, state.canMode, pages.map(p => (p.cond && p.cond.name) || '').join()]);
 
   const spotNames = state.spotValues ? Object.keys(state.spotValues) : [];
 
@@ -6321,11 +6573,11 @@ const Gauges = ({ dash = false }) => {
             </div>
             <div style="display:flex;gap:8px;align-items:center">
               <label style="width:3.5em">Min</label>
-              <input type="number" value=${page.cond.min != null ? page.cond.min : ''} step="any" placeholder="any" style="width:5em;padding:4px 6px"
-                oninput=${e => { const n = parseFloat(e.target.value); updatePageCond('min', isNaN(n) ? undefined : n); }} />
+              <${DraftInput} type="number" value=${page.cond.min != null ? page.cond.min : ''} step="any" placeholder="any" style="width:5em;padding:4px 6px"
+                onInput=${t => { const n = parseFloat(t); updatePageCond('min', isNaN(n) ? undefined : n); }} />
               <label>Max</label>
-              <input type="number" value=${page.cond.max != null ? page.cond.max : ''} step="any" placeholder="any" style="width:5em;padding:4px 6px"
-                oninput=${e => { const n = parseFloat(e.target.value); updatePageCond('max', isNaN(n) ? undefined : n); }} />
+              <${DraftInput} type="number" value=${page.cond.max != null ? page.cond.max : ''} step="any" placeholder="any" style="width:5em;padding:4px 6px"
+                onInput=${t => { const n = parseFloat(t); updatePageCond('max', isNaN(n) ? undefined : n); }} />
             </div>
             <label style="display:flex;gap:8px;align-items:center;cursor:pointer">
               <span style="width:3.5em">Invert</span>
@@ -6416,7 +6668,7 @@ const Gauges = ({ dash = false }) => {
                     static-text tile is fully configured without a value or
                     label (its body IS the text), and an action tile shows its
                     label on the button itself (no name row) */ ''}
-                ${WIDGET_TYPES.has(g.type) ? html`<${WidgetTile} g=${g} value=${lineVals[g.id]} unit=${unit} enums=${enums} nameVals=${nameVals} editing=${editing} />` : (() => {
+                ${WIDGET_TYPES.has(g.type) ? html`<${WidgetTile} g=${g} value=${lineVals[g.id]} unit=${unit} enums=${enums} nameVals=${nameVals} tick=${seqRef.current} editing=${editing} />` : (() => {
                   const configured = g.type === 'text' ? !!(g.name || g.label || g.calc || (g.text && String(g.text).trim()))
                     : g.type === 'action' ? !!(g.label || g.param || g.canId || g.presetId != null)
                     : g.type === 'toggle' ? !!(g.label || g.param || g.canId)
@@ -6425,7 +6677,7 @@ const Gauges = ({ dash = false }) => {
                   const title = g.type === 'action' ? (editing && !configured ? 'tap to set up' : '—')
                     : (g.label || g.name || ((g.type === 'toggle' || g.type === 'slider') && g.param) || g.calc
                        || (editing && !configured ? 'tap to set up' : '—'));
-                  return html`<${GaugeTileBody} g=${g} title=${title} value=${lineVals[g.id]} value2=${lineVals[g.id + ':2']} unit=${unit} enums=${enums}
+                  return html`<${GaugeTileBody} g=${g} title=${title} value=${lineVals[g.id]} value2=${lineVals[g.id + ':2']} tick=${seqRef.current} unit=${unit} enums=${enums}
                     editing=${editing} canMode=${state.canMode} presets=${state.presets}
                     peaks=${g.peak ? peaksRef.current[g.id] : undefined} />`;
                 })()}
@@ -6506,14 +6758,14 @@ const Gauges = ({ dash = false }) => {
               <div style="display:flex;gap:8px;align-items:center">
                 <label style="width:4.5em">Size</label>
                 ${tileFreeform(cfg.type) ? html`
-                  <input type="number" min=${tileFloor(cfg.type)} max=${GRID_COLS} value=${cfg.w} title="Width (cells)"
-                    onchange=${e => setGaugeSize(cfg.id, parseInt(e.target.value), cfg.h)} style="width:5em;padding:5px 6px" />
+                  <${DraftInput} type="number" min=${tileFloor(cfg.type)} max=${GRID_COLS} value=${cfg.w} title="Width (cells)"
+                    onCommit=${t => setGaugeSize(cfg.id, parseInt(t), cfg.h)} style="width:5em;padding:5px 6px" />
                   <label>×</label>
-                  <input type="number" min=${tileFloor(cfg.type)} max=${GRID_COLS} value=${cfg.h} title="Height (cells)"
-                    onchange=${e => setGaugeSize(cfg.id, cfg.w, parseInt(e.target.value))} style="width:5em;padding:5px 6px" />
+                  <${DraftInput} type="number" min=${tileFloor(cfg.type)} max=${GRID_COLS} value=${cfg.h} title="Height (cells)"
+                    onCommit=${t => setGaugeSize(cfg.id, cfg.w, parseInt(t))} style="width:5em;padding:5px 6px" />
                 ` : html`
-                  <input type="number" min=${tileFloor(cfg.type)} max=${GRID_COLS} value=${cfg.w} title="Size (cells, square)"
-                    onchange=${e => setGaugeSize(cfg.id, parseInt(e.target.value), parseInt(e.target.value))} style="width:5em;padding:5px 6px" />
+                  <${DraftInput} type="number" min=${tileFloor(cfg.type)} max=${GRID_COLS} value=${cfg.w} title="Size (cells, square)"
+                    onCommit=${t => setGaugeSize(cfg.id, parseInt(t), parseInt(t))} style="width:5em;padding:5px 6px" />
                   <span style="font-size:.72rem;color:var(--text3)">cells (of ${GRID_COLS})</span>
                 `}
               </div>
@@ -6547,8 +6799,8 @@ const Gauges = ({ dash = false }) => {
                   </div>
                   <div style="display:flex;gap:8px;align-items:center">
                     <label style="width:4.5em">Set to</label>
-                    <input id="gauge-setto" type="number" step="any" value=${cfg.value != null ? cfg.value : ''}
-                      oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'value', isNaN(n) ? undefined : n); }}
+                    <${DraftInput} id="gauge-setto" type="number" step="any" value=${cfg.value != null ? cfg.value : ''}
+                      onInput=${t => { const n = parseFloat(t); updateGaugeConfig(cfg.id, 'value', isNaN(n) ? undefined : n); }}
                       style="width:8em;padding:5px 6px" />
                   </div>
                   <p style="font-size:.72rem;color:var(--text3);margin:0">Pressing the button runs <b>set ${cfg.param || '…'} ${cfg.value != null ? cfg.value : '…'}</b>. The change is live immediately but not saved to flash — use the Parameters tab to save permanently.</p>
@@ -6589,12 +6841,12 @@ const Gauges = ({ dash = false }) => {
                   </div>
                   <div style="display:flex;gap:8px;align-items:center">
                     <label style="width:4.5em">On</label>
-                    <input type="number" step="any" value=${cfg.onValue != null ? cfg.onValue : ''}
-                      oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'onValue', isNaN(n) ? undefined : n); }}
+                    <${DraftInput} type="number" step="any" value=${cfg.onValue != null ? cfg.onValue : ''}
+                      onInput=${t => { const n = parseFloat(t); updateGaugeConfig(cfg.id, 'onValue', isNaN(n) ? undefined : n); }}
                       style="width:6em;padding:5px 6px" />
                     <label>Off</label>
-                    <input type="number" step="any" value=${cfg.offValue != null ? cfg.offValue : ''}
-                      oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'offValue', isNaN(n) ? undefined : n); }}
+                    <${DraftInput} type="number" step="any" value=${cfg.offValue != null ? cfg.offValue : ''}
+                      onInput=${t => { const n = parseFloat(t); updateGaugeConfig(cfg.id, 'offValue', isNaN(n) ? undefined : n); }}
                       style="width:6em;padding:5px 6px" />
                   </div>
                   <p style="font-size:.72rem;color:var(--text3);margin:0">The switch position follows the parameter's live value, so it shows the inverter's real state. Change is live immediately, not saved to flash.</p>
@@ -6652,16 +6904,38 @@ const Gauges = ({ dash = false }) => {
                 </div>
                 <div style="display:flex;gap:8px;align-items:center">
                   <label style="width:4.5em">Formula</label>
-                  <input id="gauge-calc" type="text" value=${cfg.calc || ''} placeholder="(optional — e.g. udc*idc/1000)" maxlength="60"
+                  <input id="gauge-calc" type="text" value=${cfg.calc || ''} placeholder="(optional — e.g. udc*idc/1000)" maxlength="120"
+                    title="+ - * / % ( ) and abs min max sqrt round floor ceil pow, mod(a,b) (always 0..b), wrap180(angle) (to -180..180), sin cos (degrees)"
                     oninput=${e => updateGaugeConfig(cfg.id, 'calc', e.target.value || undefined)} style="flex:1;padding:5px 8px;font-family:var(--mono)" />
                 </div>
                 ${cfg.calc ? html`
+                  ${(() => {
+                    // What's wrong with the formula, or what it gives now
+                    const c = calcParse(cfg.calc);
+                    const unknown = c.ids && spotNames.length ? c.ids.filter(n => !spotNames.includes(n)) : [];
+                    // The stream pauses while this dialog is open: use the last streamed
+                    // values, else the main poll's
+                    const vals = {};
+                    for (const n of c.ids || []) {
+                      const sv = state.spotValues && state.spotValues[n];
+                      vals[n] = n in lastVals.current ? lastVals.current[n] : sv ? parseFloat(sv.value) : NaN;
+                    }
+                    const v = c.f ? calcEval(cfg.calc, vals) : NaN;
+                    const [msg, col] = c.error ? [c.error, 'var(--red)']
+                      : unknown.length ? ['Unknown value' + (unknown.length > 1 ? 's' : '') + ': ' + unknown.join(', '), 'var(--amber)']
+                      : isFinite(v) ? ['= ' + Number(v.toPrecision(6)), 'var(--green)']
+                      : ['No result yet (waiting for values, or not a number)', 'var(--text3)'];
+                    return html`<p id="gauge-calc-status" style=${'margin:0 0 0 calc(4.5em + 8px);font-size:.75rem;font-family:var(--mono);color:' + col}>${msg}</p>`;
+                  })()}
                   <div style="display:flex;gap:8px;align-items:center">
                     <label style="width:4.5em">Unit</label>
                     <input type="text" value=${cfg.unit || ''} placeholder="kW" maxlength="8"
                       oninput=${e => updateGaugeConfig(cfg.id, 'unit', e.target.value || undefined)} style="width:6em;padding:5px 8px" />
                     <span style="font-size:.72rem;color:var(--text3)">computed from spot values — overrides Value</span>
                   </div>
+                  <p id="gauge-calc-help" style="margin:0;font-size:.72rem;color:var(--text3)">
+                    <code>+ - * / %</code>, <code>abs min max sqrt round floor ceil pow</code>, <code>mod(a,b)</code> (always 0…b), <code>wrap180(angle)</code> (to −180…180), <code>sin cos</code> (degrees)
+                  </p>
                 ` : ''}
                 ${cfg.type === 'text' ? html`
                   <div style="display:flex;gap:8px;align-items:center">
@@ -6689,12 +6963,12 @@ const Gauges = ({ dash = false }) => {
                   ${cfg.name2 && html`
                     <div style="display:flex;gap:8px;align-items:center">
                       <label style="width:4.5em">2nd min</label>
-                      <input id="gauge-min2" type="number" step="any" value=${cfg.min2 != null ? cfg.min2 : ''} placeholder="(1st)"
-                        oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'min2', isNaN(n) ? undefined : n); }}
+                      <${DraftInput} id="gauge-min2" type="number" step="any" value=${cfg.min2 != null ? cfg.min2 : ''} placeholder="(1st)"
+                        onInput=${t => { const n = parseFloat(t); updateGaugeConfig(cfg.id, 'min2', isNaN(n) ? undefined : n); }}
                         style="width:6em;padding:5px 6px" />
                       <label>Max</label>
-                      <input id="gauge-max2" type="number" step="any" value=${cfg.max2 != null ? cfg.max2 : ''} placeholder="(1st)"
-                        oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'max2', isNaN(n) ? undefined : n); }}
+                      <${DraftInput} id="gauge-max2" type="number" step="any" value=${cfg.max2 != null ? cfg.max2 : ''} placeholder="(1st)"
+                        onInput=${t => { const n = parseFloat(t); updateGaugeConfig(cfg.id, 'max2', isNaN(n) ? undefined : n); }}
                         style="width:6em;padding:5px 6px" />
                     </div>
                     <p style="font-size:.72rem;color:var(--text3);margin:0">Scale for the second series, drawn on the right of the graph. Leave blank to share the main scale (left).</p>
@@ -6709,19 +6983,19 @@ const Gauges = ({ dash = false }) => {
                       minus be typed — a hard 0 fallback reset the field and ate
                       the '-' (couldn't enter negative ranges) */ ''}
                   <label style="width:4.5em">Min</label>
-                  <input id="gauge-min" type="number" value=${cfg.min != null ? cfg.min : ''}
-                    oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'min', isNaN(n) ? undefined : n); }} style="width:6em;padding:5px 6px" step="any" />
+                  <${DraftInput} id="gauge-min" type="number" value=${cfg.min != null ? cfg.min : ''}
+                    onInput=${t => { const n = parseFloat(t); updateGaugeConfig(cfg.id, 'min', isNaN(n) ? undefined : n); }} style="width:6em;padding:5px 6px" step="any" />
                   <label>Max</label>
-                  <input id="gauge-max" type="number" value=${cfg.max != null ? cfg.max : ''}
-                    oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'max', isNaN(n) ? undefined : n); }} style="width:6em;padding:5px 6px" step="any" />
+                  <${DraftInput} id="gauge-max" type="number" value=${cfg.max != null ? cfg.max : ''}
+                    onInput=${t => { const n = parseFloat(t); updateGaugeConfig(cfg.id, 'max', isNaN(n) ? undefined : n); }} style="width:6em;padding:5px 6px" step="any" />
                 </div>
                 ${cfg.type === 'slider' ? decimalsRow : ''}
               `}
               ${((cfg.type || 'radial') === 'radial' || cfg.type === 'bar') && html`
                 <div style="display:flex;gap:8px;align-items:center">
                   <label style="width:4.5em">Centre</label>
-                  <input type="number" step="any" value=${cfg.center != null ? cfg.center : ''} placeholder="(min)"
-                    oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'center', isNaN(n) ? undefined : n); }}
+                  <${DraftInput} type="number" step="any" value=${cfg.center != null ? cfg.center : ''} placeholder="(min)"
+                    onInput=${t => { const n = parseFloat(t); updateGaugeConfig(cfg.id, 'center', isNaN(n) ? undefined : n); }}
                     style="width:6em;padding:5px 6px" />
                   <span style="font-size:.72rem;color:var(--text3)">gauge sweeps from this value both ways — e.g. 0 on a power gauge</span>
                 </div>
@@ -6783,8 +7057,8 @@ const Gauges = ({ dash = false }) => {
               ${cfg.type === 'line' && html`
                 <div style="display:flex;gap:8px;align-items:center">
                   <label style="width:4.5em">Points</label>
-                  <input type="number" min="5" max="500" value=${cfg.points || 20}
-                    oninput=${e => updateGaugeConfig(cfg.id, 'points', Math.max(5, Math.min(500, parseInt(e.target.value) || 20)))}
+                  <${DraftInput} type="number" min="5" max="500" value=${cfg.points || 20}
+                    onCommit=${t => updateGaugeConfig(cfg.id, 'points', Math.max(5, Math.min(500, parseInt(t) || 20)))}
                     style="width:6em;padding:5px 6px" />
                   <label>Sample</label>
                   <select value=${String(cfg.sampleMs || 100)} onchange=${e => updateGaugeConfig(cfg.id, 'sampleMs', parseInt(e.target.value))}
@@ -6803,8 +7077,8 @@ const Gauges = ({ dash = false }) => {
                 <p class="modal-sect">Warning</p>
                 <div style="display:flex;gap:8px;align-items:center">
                   <label style="width:4.5em">Warn ≥</label>
-                  <input type="number" step="any" value=${cfg.warn != null ? cfg.warn : ''} placeholder="(off)"
-                    oninput=${e => { const n = parseFloat(e.target.value); updateGaugeConfig(cfg.id, 'warn', isNaN(n) ? undefined : n); }}
+                  <${DraftInput} type="number" step="any" value=${cfg.warn != null ? cfg.warn : ''} placeholder="(off)"
+                    onInput=${t => { const n = parseFloat(t); updateGaugeConfig(cfg.id, 'warn', isNaN(n) ? undefined : n); }}
                     style="width:6em;padding:5px 6px" />
                   <label>Colour</label>
                   <input type="color" value=${cfg.warnColor || '#f59e0b'} oninput=${e => updateGaugeConfig(cfg.id, 'warnColor', e.target.value)}
@@ -6835,11 +7109,11 @@ const Gauges = ({ dash = false }) => {
                 <p class="modal-sect">Status</p>
                 <div style="display:flex;gap:8px;align-items:center">
                   <label style="width:4.5em">Figures</label>
-                  <input id="status-figs" type="text" value=${(cfg.figs || []).join(', ')} placeholder=${getDashMetrics().join(', ')}
-                    onchange=${e => { const v = e.target.value.split(/[\s,]+/).filter(Boolean).slice(0, 6); updateGaugeConfig(cfg.id, 'figs', v.length ? v : undefined); }}
+                  <${DraftInput} id="status-figs" type="text" value=${(cfg.figs || []).join(', ')} placeholder=${getDashMetrics().join(', ')}
+                    onCommit=${t => { const v = t.split(/[\s,]+/).filter(Boolean).slice(0, 6); updateGaugeConfig(cfg.id, 'figs', v.length ? v : undefined); }}
                     style="flex:1;padding:5px 8px;font-family:var(--mono)" />
                 </div>
-                <p style="font-size:.72rem;color:var(--text3);margin:0">Spot values shown under the state, comma separated. Empty uses the Dashboard metrics from Settings.</p>`}
+                <p style="font-size:.72rem;color:var(--text3);margin:0">Spot values shown under the state, comma separated. Empty shows the default (${getDashMetrics().join(', ')}).</p>`}
               ${cfg.type === 'actions' && html`
                 <p class="modal-sect">Buttons</p>
                 ${DASH_ACTIONS.map(a => {
@@ -6939,7 +7213,7 @@ const App = () => {
   // Load CAN settings on mount
   useEffect(() => {
     fetch('/version').then(r => r.text()).then(v => dispatch({ type: 'SET_WEB_VERSION', payload: v.trim() })).catch(() => {});
-    fetch('/settings').then(r => r.json()).then(data => {
+    bootFetch('/settings').then(r => r.json()).then(data => {
       const mode = data.can_mode === true;
       const nodeId = data.can_node_id || 1;
       dispatch({ type: 'SET_CAN_CONFIG', payload: { canMode: mode, canNodeId: nodeId } });
@@ -7160,6 +7434,22 @@ const Root = () => {
   if (view.view === 'app') return html`<${App} />`;
   return html`<div class="auth-loading"><div class="css-spinner css-spinner-lg"></div></div>`;
 };
+
+// What the first screen needs before it can show a live value — the device
+// settings (stream port) and, for a gauge page or the Dashboard, the layout —
+// is asked for now, alongside /auth/state, instead of a round trip later
+// once the app has mounted: far from the device that's a visible wait.
+// Each reply is used once, and only if it came back OK.
+const bootFetches = {};
+const bootPrefetch = (path) => { bootFetches[path] = _rawFetch(path, { headers: { 'X-OI-Auth': '1' } }).catch(() => null); };
+const bootFetch = async (path) => {
+  const pending = bootFetches[path];
+  delete bootFetches[path];
+  const r = pending && await pending;
+  return (r && r.ok) ? r : fetch(path);
+};
+bootPrefetch('/settings');
+if (['dashboard', 'gauges'].includes(parseHash().tab || 'dashboard')) bootPrefetch('/gauges.json');
 
 // ==================== Mount ====================
 render(html`<${Root} />`, document.body);

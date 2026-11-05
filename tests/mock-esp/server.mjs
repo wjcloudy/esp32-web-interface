@@ -89,11 +89,13 @@ function freshInverterState() {
       potmax:   { unit: 'dig', value: 4095, isparam: true, minimum: 0, maximum: 4095, default: 4095, category: 'Throttle', i: 7, id: 8 },
       // RTC clock setting — always differs from default; preset capture must skip it
       Set_Hour: { unit: 'Hours', value: 9, isparam: true, minimum: 0, maximum: 23, default: 0, category: 'Clock', i: 8, id: 9 },
+      // Bitmask parameter: flags combine (5 = CurrentSensor12 + PWMOutput13)
+      pinswap:  { unit: '0=None, 1=CurrentSensor12, 2=Encoder/Resolver, 4=PWMOutput13, 8=PWMOutput23', value: 0, isparam: true, minimum: 0, maximum: 15, default: 0, category: 'Motor', i: 9, id: 10 },
     },
     spot: {
       version: { unit: '4=5.27.R-sine', value: 4, isparam: false, id: 2000 },
       opmode:  { unit: '0=Off, 1=Run, 2=ManualRun, 3=Boost, 4=Buck, 5=Sine, 6=AcHeat, 7=Chademo', value: 0, isparam: false, id: 2001 },
-      status:  { unit: '0=None, 1=UdcLow, 2=UdcHigh, 4=UdcBelowUdcSw, 8=UdcLim, 16=EmcyStop, 32=MProt, 64=PotPressed, 128=TmpHs, 256=WaitStart', value: 0, isparam: false, id: 2002 },
+      status:  { unit: '0=None, 1=UdcLow, 2=UdcHigh, 4=UdcBelowUdcSw, 8=UdcLim, 16=EmcyStop, 32=MProt, 64=PotPressed, 128=TmpHs, 256=WaitStart, 512=BrakeCheck, 1024=CanCrc, 2048=CanCounter, 4096=PrechargeTimeout, 8192=HwShutdown', value: 0, isparam: false, id: 2002 },
       lasterr: { unit: '0=NONE, 1=OVERCURRENT, 2=THROTTLE1', value: 0, isparam: false, id: 2003 },
       udc:     { unit: 'V', value: 398.5, isparam: false, id: 2004 },
       tmphs:   { unit: '°C', value: 31.2, isparam: false, id: 2005 },
@@ -107,6 +109,8 @@ function freshInverterState() {
 function freshSettings() {
   return {
     dev_name: '', txrx_swapped: false, uart_rx_pin: 1, uart_tx_pin: 3, ap_fallback: false,
+    // SD support built in (SD_AVAILABLE), probing off by default (SD_DEFAULT_ENABLED 0), so no card
+    sd_available: true, sd_enabled: false, sd_card: false,
     can_mode: false, can_node_id: 1, can_speed: 2, can_rx_pin: 4, can_tx_pin: 5,
     can_pwr_pin: -1, can_pwr_inv: false, can_en_pin: -1, can_en_inv: false, arch: 'esp32',
   };
@@ -127,6 +131,13 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
   let otaFlashes = 0; // web-interface OTA images accepted by /espupdate
   let wifi = { apSSID: 'inverter', staSSID: 'mocknet' }; // what WiFi.softAPSSID()/SSID() report
   let sseMode = 'on';
+  let latencyMs = 0; // added before every reply on both ports (a far-away client)
+  // UART timing (off by default): with jsonMs set, a 'json' holds the
+  // serial link that long and every other /cmd and stream sample queues
+  // behind it, as loop() serialises them on the device
+  let jsonMs = 0;
+  let uartQueue = Promise.resolve();
+  const onUart = (ms, fn) => { uartQueue = uartQueue.then(() => new Promise(r => setTimeout(() => { fn(); r(); }, ms))); };
   let sseRes = null; // the one live stream (firmware: newest stream wins)
   let clockOffset = 0;
   const now = () => Date.now() + clockOffset;
@@ -198,8 +209,39 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
       case 'stop': return 'Stopped';
       case 'reset': return 'Resetting';
       case 'fastuart': return 'OK fast uart on';
+      case 'can': return uartCan(args);
       default: return 'Unknown command: ' + verb;
     }
+  }
+
+  // libopeninv's TerminalCommands::MapCan: dispatches on the first letter
+  // (p = print, c = clear, d = del, t/r = tx/rx); print writes one
+  // "can tx|rx name canid pos len gain offset" line per item
+  function uartCan(args) {
+    const a = args.trim().split(/\s+/);
+    const op = (a[0] || '')[0];
+    const nameOf = (id) => Object.keys(allValues()).find(n => allValues()[n].id === id) || '?';
+    if (op === 'p') {
+      return canMap.map(m => 'can ' + (m.isrx ? 'rx ' : 'tx ') + nameOf(m.paramid) + ' ' + m.cobid + ' ' + m.position + ' ' +
+        m.length + ' ' + m.gain.toFixed(2) + ' ' + m.offset + '\r\n').join('');
+    }
+    if (op === 'c') { canMap = []; return 'All message definitions cleared\r\n'; }
+    if (a.length < 2) return 'Missing argument\r\n';
+    const entry = findParamByName(a[1]);
+    if (!entry) return 'Unknown parameter\r\n';
+    if (op === 'd') {
+      const n = canMap.length;
+      canMap = canMap.filter(m => m.paramid !== entry.id);
+      return (n - canMap.length) + ' entries removed\r\n';
+    }
+    if (op !== 't' && op !== 'r') return 'Unknown parameter\r\n'; // libopeninv reads the name first
+    if (a.length < 5) return 'Missing argument\r\n';
+    canMap.push({
+      isrx: op === 'r', cobid: toInt(a[2]), paramid: entry.id, position: toInt(a[3]), length: toInt(a[4]),
+      gain: a[5] !== undefined ? (parseFloat(a[5]) || 0) : 1, offset: a[6] !== undefined ? toInt(a[6]) : 0,
+    });
+    const msgs = new Set(canMap.map(m => m.isrx + ':' + m.cobid)).size;
+    return 'CAN map successful, ' + msgs + ' message' + (msgs > 1 ? 's' : '') + ' active\r\n';
   }
 
   // ---------------- CAN: the firmware's canExecuteCommand() ----------------
@@ -368,7 +410,9 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
     const q = url.searchParams;
     const chunks = [];
     req.on('data', c => chunks.push(c));
-    req.on('end', () => {
+    // Test hooks always answer at once; everything else waits out the latency
+    req.on('end', () => (latencyMs && !p.startsWith('/__test/') ? setTimeout(handle, latencyMs) : handle()));
+    const handle = () => {
       const body = Buffer.concat(chunks);
       // WebServer: a urlencoded body's fields join the query arguments
       if ((req.headers['content-type'] || '').startsWith('application/x-www-form-urlencoded')) {
@@ -401,12 +445,18 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
         inverter.foc = true;
         inverter.focBlocked = q.get('blocked') === '1';
         inverter.params.manualstart = { unit: '0=Off, 1=On', value: 0, isparam: true, minimum: 0, maximum: 1, default: 0, category: 'Testing', i: 90, id: 150 };
+        // FOC-only (param_prj.h): the syncofs tuner's two knobs, and the
+        // d/q currents it reads back
+        inverter.params.syncofs = { unit: 'dig', value: 0, isparam: true, minimum: 0, maximum: 65535, default: 0, category: 'Motor', i: 91, id: 70 };
+        inverter.params.manualid = { unit: 'A', value: 0, isparam: true, minimum: -400, maximum: 400, default: 0, category: 'Testing', i: 92, id: 152 };
+        inverter.spot.id = { unit: 'A', value: 0, isparam: false, id: 2049 };
+        inverter.spot.iq = { unit: 'A', value: 0, isparam: false, id: 2050 };
         return text('ok');
       }
       if (p === '/__test/reset') {
         auth.clear(); clockOffset = 0;
         inverter = freshInverterState(); files = new Map(); commandLog = []; fwSteps = []; otaFlashes = 0;
-        settings = freshSettings(); canNodes = null; wifi = { apSSID: 'inverter', staSSID: 'mocknet' }; canMap = []; canCacheLoaded = true; sseMode = 'on';
+        settings = freshSettings(); canNodes = null; wifi = { apSSID: 'inverter', staSSID: 'mocknet' }; canMap = []; canCacheLoaded = true; sseMode = 'on'; latencyMs = 0; jsonMs = 0;
         fwStatus = { state: 0 };
         return text('reset');
       }
@@ -436,10 +486,16 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
         if (a) settings.arch = a; else delete settings.arch;
         return text('ok');
       }
+      // A reboot's SD probe: finds the card only if probing is on
+      if (p === '/__test/sd-boot') { settings.sd_card = settings.sd_enabled && q.get('card') === '1'; return text('ok'); }
+      if (p === '/__test/latency') { latencyMs = toInt(q.get('ms')); return text('ok'); }
+      if (p === '/__test/uart') { jsonMs = toInt(q.get('jsonMs')); return text('ok'); }
       if (p === '/__test/can-cache') { canCacheLoaded = q.get('loaded') !== '0'; return text('ok'); }
       if (p === '/__test/sse') {
         const mode = q.get('mode') || 'on';
-        if (!['on', 'off', '404'].includes(mode)) return send(400, 'bad mode');
+        // 'hang' = the port takes the connection and never answers (e.g. a
+        // router that only forwards port 80 and drops everything else)
+        if (!['on', 'off', '404', 'hang'].includes(mode)) return send(400, 'bad mode');
         sseMode = mode;
         if (mode !== 'on' && sseRes) { sseRes.destroy(); sseRes = null; }
         return text('ok');
@@ -564,7 +620,19 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
       if (p === '/auth/users') {
         if (req.method !== 'POST') return ok({ enabled: auth.enabled(), me: me ? me.name : null, max: USER_MAX, users: auth.users().map(u => ({ name: u.name, role: u.role })) });
         if (!csrf()) return refuse(403, 'cross-site request refused');
-        const op = q.get('op'), name = (q.get('user') || '').slice(0, 40).trim().toLowerCase(), r = q.get('role') || '';
+        const op = q.get('op');
+        if (op === 'disable') {
+          // authDisable(): the signed-in admin's own password, then every account goes
+          if (!auth.enabled() || slot < 0) return refuse(400, 'sign-in is off');
+          const wait = auth.allowed(ipOf, me.name);
+          if (wait) { res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': String(wait) }); return res.end('{"error":"too many attempts, wait a few minutes"}'); }
+          if (auth.verify(me.name, (q.get('password') || '').slice(0, PASSWORD_MAX + 1)) < 0) { auth.failure(ipOf, me.name); return refuse(403, 'password is incorrect'); }
+          auth.removeAll();
+          auth.revokeAll();
+          slot = -1; me = null;
+          return ok({ ok: true }, { 'Set-Cookie': 'oisess=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0' });
+        }
+        const name = (q.get('user') || '').slice(0, 40).trim().toLowerCase(), r = q.get('role') || '';
         const actor = me ? me.name : null;
         const wasEnabled = auth.enabled();
         let err;
@@ -572,7 +640,7 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
         else if (op === 'remove') { err = auth.remove(name, actor); if (!err) auth.revokeUser(name); }
         else if (op === 'role') { err = auth.setRole(name, r, actor); if (!err) auth.revokeUser(name); }
         else if (op === 'password') { err = auth.setPassword(name, q.get('password') || ''); if (!err) auth.revokeUser(name); }
-        else return refuse(400, 'op must be add, remove, role or password');
+        else return refuse(400, 'op must be add, remove, role, password or disable');
         if (err) return refuse(auth.resultStatus(err), err);
         const extra = {};
         if (!wasEnabled && auth.enabled()) {
@@ -611,6 +679,7 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
         commandLog.push(cmd);
         let out = uartCommand(cmd);
         for (let i = 0; i < repeat; i++) out += uartCommand(cmd);
+        if (jsonMs) return onUart(cmd === 'json' ? jsonMs : 0, () => text(out, 'text/json'));
         return text(out, 'text/json');
       }
 
@@ -674,6 +743,8 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
         }
         if (mayWrite && q.has('dev_name')) { settings.dev_name = q.get('dev_name').slice(0, 32); return ok(); }
         if (mayWrite && q.has('ap_fallback')) { settings.ap_fallback = q.get('ap_fallback') === '1'; return ok(); }
+        // Saved, but the card is only probed at boot: sd_card doesn't change here
+        if (mayWrite && q.has('sd_enabled')) { settings.sd_enabled = q.get('sd_enabled') === '1'; return ok(); }
         if (mayWrite && q.has('can_mode')) {
           const s = settings;
           s.can_mode = q.get('can_mode') === '1';
@@ -773,11 +844,16 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
 
       // A table route the mock doesn't implement (rtc, sdcard, can-debug ...)
       send(404, 'FileNotFound', 'text/plain', { Refresh: '6; url=/update' });
-    });
+    };
   });
 
   // ---------------- SSE value stream (firmware: raw-TCP listener on :81) ----------------
   const sseServer = http.createServer((req, res) => {
+    if (sseMode === 'hang') return; // never answers; close() drops it
+    if (latencyMs) setTimeout(() => sseHandle(req, res), latencyMs);
+    else sseHandle(req, res);
+  });
+  function sseHandle(req, res) {
     const url = new URL(req.url, 'http://localhost');
     const names = url.searchParams.get('names') || '';
     // Firmware: spot value names only ([A-Za-z0-9_,.-], 1..120 chars), else 404
@@ -820,7 +896,7 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
     // req 'close' fires as soon as the (empty) body is consumed — the
     // response is what stays open until the client disconnects
     res.on('close', () => { clearInterval(timer); if (sseRes === res) sseRes = null; });
-  });
+  }
 
   const close = async () => {
     for (const s of [server, sseServer]) {

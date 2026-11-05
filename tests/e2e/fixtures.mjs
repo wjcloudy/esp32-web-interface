@@ -22,8 +22,12 @@ export const test = base.extend({
       }),
       /** Switch the device into CAN mode before the page loads (as a saved setting). */
       enableCan: async () => fetch(url + '/settings?can_mode=1', { method: 'POST' }),
-      /** SSE listener state: 'on', 'off' (port refuses connections) or '404'. */
+      /** SSE listener state: 'on', 'off' (port refuses connections), '404' or 'hang' (takes the connection, never answers). */
       setSse: async (mode) => fetch(url + '/__test/sse?mode=' + mode),
+      /** Delay every reply (both ports) by `ms`: a client far away. */
+      setLatency: async (ms) => fetch(url + '/__test/latency?ms=' + ms),
+      /** A 'json' holds the simulated UART for `ms`; other commands and stream samples queue behind it. */
+      setJsonCost: async (ms) => fetch(url + '/__test/uart?jsonMs=' + ms),
       /** Create an account directly (first one must be an admin). */
       addUser: async (name, password, role = 'viewer') => {
         const r = await fetch(url + '/__test/add-user?' + new URLSearchParams({ name, password, role }));

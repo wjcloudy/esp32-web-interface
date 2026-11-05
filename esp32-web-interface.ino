@@ -76,10 +76,11 @@ using weblogic::findArrayEnd;
 #else
 #define SD_AVAILABLE 0
 #endif
-// Factory default for the runtime "sd_enabled" setting (boards without an
-// SD slot can be built with -D SD_DEFAULT_ENABLED=0; users can toggle it)
+// Factory default for the runtime "sd_enabled" setting: off, so boards with
+// no SD slot (most) don't probe the SDIO pins at boot. SD users switch it on
+// in Settings (a saved setting always wins); builds may pass -D SD_DEFAULT_ENABLED=1
 #ifndef SD_DEFAULT_ENABLED
-#define SD_DEFAULT_ENABLED 1
+#define SD_DEFAULT_ENABLED 0
 #endif
 
 #define INVERTER_PORT UART_NUM_0
@@ -1249,14 +1250,18 @@ void handleFileList() {
 //   Inverter.readStringUntil('\n'); //consume echo  
 // }
 
-void uart_readUntill(char val)
+// Reads up to and including val; returns what came before it ("" on timeout)
+String uart_readUntill(char val)
 {
+  String line;
   int retVal;
   do
   {
     retVal = uart_read_bytes(INVERTER_PORT, uartMessBuff, 1, UART_TIMEOUT);
+    if (retVal > 0 && uartMessBuff[0] != val && line.length() < 160) line += uartMessBuff[0];
   }
   while((retVal>0) && (uartMessBuff[0] != val));
+  return line;
 }
 
 // Read one chunk of a reply: wait up to firstByteTimeout for it to start,
@@ -1339,7 +1344,9 @@ static void initUART(bool reinit = false)
   delay(100);
 }
 
-static void sendCommand(String cmd)
+// Returns whether the inverter echoed cmd back, i.e. it is listening at this
+// baud, even when the command itself then prints nothing
+static bool sendCommand(String cmd)
 {
   DBG_OUTPUT_PORT.println("Sending '" + cmd + "' to inverter");
   //Inverter.print("\n");
@@ -1352,8 +1359,20 @@ static void sendCommand(String cmd)
   uart_write_bytes(INVERTER_PORT, cmd.c_str(), cmd.length());
   //Inverter.print("\n");
   uart_write_bytes(INVERTER_PORT, "\n", 1);
-  //Inverter.readStringUntil('\n'); //consume echo  
-  uart_readUntill('\n');
+  //Inverter.readStringUntil('\n'); //consume echo
+  // The inverter's echo of the leading newline can land after the flush
+  // above, as can the tail of a slow earlier reply: skip up to two such
+  // lines to reach the command's echo.
+  // libopeninv's terminal doesn't rewind its echo index after a bare "\n",
+  // so the echo usually lacks the command's first character ("an print")
+  String tail = cmd.length() > 1 ? cmd.substring(1) : cmd;
+  for (int i = 0; i < 3; i++) {
+    uartMessBuff[0] = 0;
+    String line = uart_readUntill('\n');
+    if (tail.length() > 0 && line.indexOf(tail) >= 0) return true;
+    if (line.length() == 0 && uartMessBuff[0] != '\n') return false; // timed out: nothing listening at this baud
+  }
+  return false;
 }
 
 // CAN command handler — routes OpenInverter commands over CAN bus
@@ -1460,22 +1479,35 @@ static void handleCommand() {
   }
 
   InverterUartPort port;
-  sendCommand(cmd);
+  bool echoed = sendCommand(cmd);
   // Full timeout only while waiting for a reply (or repetition) to start;
   // once it's flowing, a short silence means it's done
-  output = weblogic::readReply(port, repeat, UART_TIMEOUT, UART_IDLE_TIMEOUT);
+  // save prints "CANMAP stored", then writes flash before "Parameters
+  // stored": a short idle would leave that line for the next command
+  output = weblogic::readReply(port, repeat, UART_TIMEOUT, cmd == "save" ? UART_TIMEOUT : UART_IDLE_TIMEOUT);
 
-  if (fastUart && output.length() == 0)
+  if (output.length() == 0 && !echoed)
   {
-    // Empty reply at fast baud: the inverter likely rebooted back to
-    // 115200 underneath us (the stale-desync case that used to require an
-    // ESP reboot). Drop to base baud, resync and retry the command once.
-    uart_set_baudrate(INVERTER_PORT, 115200);
-    fastUart = false;
+    // No echo and no reply: we're at the wrong baud. At fast baud the
+    // inverter likely rebooted back to 115200 underneath us (the
+    // stale-desync case that used to require an ESP reboot); at base baud
+    // it may still be fast after we dropped (which used to need an INVERTER
+    // reboot). Try the other rate once; if that hears nothing either, settle
+    // on 115200, where a rebooted inverter starts.
+    // An echoed command that prints nothing (can print with no mappings)
+    // is a real empty reply and keeps the baud.
+    bool wasFast = fastUart;
+    uart_set_baudrate(INVERTER_PORT, wasFast ? 115200 : 921600);
+    fastUart = !wasFast;
     fastUartAvailable = false; // re-armed below only once slow comms answer
     uartResync();
-    sendCommand(cmd);
+    echoed = sendCommand(cmd);
     output = weblogic::readReply(port, repeat, UART_TIMEOUT, UART_IDLE_TIMEOUT);
+    if (fastUart && output.length() == 0 && !echoed)
+    {
+      uart_set_baudrate(INVERTER_PORT, 115200);
+      fastUart = false;
+    }
   }
 
   // Proof of life at slow baud re-arms fast negotiation (bounded by the
@@ -2843,7 +2875,45 @@ static void handleAuthPassword()
   server.send(200, "application/json", "{\"ok\":true}");
 }
 
-// Admin user management. GET lists; POST op=add|remove|role|password.
+// Turn sign-in off again (op=disable): deletes every account, so the device
+// is back to its no-users state exactly as after a BOOT-button reset, but
+// without the reboot. Admin only (the route), and the admin must re-enter
+// their own password (rate-limited like sign-in), so a browser left signed
+// in can't do it in passing.
+static void authDisable()
+{
+  if (!authEnabled() || authReq.session < 0) { authSendError(400, "sign-in is off"); return; }
+  String me = authReq.user; // copy: the table is about to be wiped
+  uint32_t ip = (uint32_t)server.client().remoteIP();
+  uint32_t wait = 0;
+  if (!authLimiter.allowed(ip, me.c_str(), nowMs(), &wait)) {
+    server.sendHeader("Retry-After", String(wait));
+    authSendError(429, "too many attempts, wait a few minutes");
+    return;
+  }
+  String pw = server.arg("password").substring(0, weblogic::PASSWORD_MAX + 1);
+  if (authUsers.verify(me.c_str(), pw.c_str()) < 0) {
+    authLimiter.failure(ip, me.c_str(), nowMs());
+    authSendError(403, "password is incorrect");
+    return;
+  }
+  authUsers.clear();
+  if (!authSave()) {
+    authLoad(); // NVS still holds the accounts: keep them in RAM too
+    authSendError(500, "could not save, sign-in is still on");
+    return;
+  }
+  DBG_OUTPUT_PORT.printf("Auth: all users deleted by %s, sign-in is now off\n", me.c_str());
+  authSessions.revokeAll();
+  authReq = AuthReq();
+  authReq.role = weblogic::ROLE_ADMIN;
+  authClearCookie();
+  ArduinoOTA.begin(); // as at a boot with sign-in off (does nothing if already running)
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json", "{\"ok\":true}");
+}
+
+// Admin user management. GET lists; POST op=add|remove|role|password|disable.
 // With sign-in off this is how the first account (an admin) is created,
 // which switches sign-in on and signs its creator in.
 static void handleAuthUsers()
@@ -2865,6 +2935,7 @@ static void handleAuthUsers()
   }
   if (!authCsrfOk()) { authSendError(403, "cross-site request refused"); return; }
   String op = server.arg("op");
+  if (op == "disable") { authDisable(); return; }
   String name = authArgLower("user", 40);
   weblogic::Role role = weblogic::roleFromName(server.arg("role").c_str());
   const char* actor = authReq.user;
@@ -2885,7 +2956,7 @@ static void handleAuthUsers()
     r = authUsers.setPassword(name.c_str(), server.arg("password").c_str());
     if (r == weblogic::USER_OK) authUsersChanged(name.c_str());
   } else {
-    authSendError(400, "op must be add, remove, role or password");
+    authSendError(400, "op must be add, remove, role, password or disable");
     return;
   }
   if (r != weblogic::USER_OK) {
@@ -2930,7 +3001,7 @@ static void handleStreamTicket()
 static void authRecoveryReset(const char* how)
 {
   DBG_OUTPUT_PORT.printf("Auth: all users deleted (%s), rebooting with sign-in off\n", how);
-  authUsers.count = 0;
+  authUsers.clear();
   authSave();
   authSessions.revokeAll();
   delay(200);

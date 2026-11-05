@@ -221,7 +221,10 @@ another ESP32-S3 board matches before flashing it, or build your own environment
 CAN runs at 125k, 250k or 500k bit/s.
 
 Optional on the classic ESP32:
-- **SD card** (SDIO) for data logging - CLK 14, CMD 15, D0 2, D1 4, D2 12, D3 13
+- **SD card** (SDIO) for data logging - CLK 14, CMD 15, D0 2, D1 4, D2 12, D3 13. The module doesn't
+  look for a card unless told to (most boards have no slot, and some hang probing for one): turn on
+  **Settings → SD Card → Probe for an SD card at boot** and reboot. Builds can make probing the default
+  with `-D SD_DEFAULT_ENABLED=1`; a saved setting always wins.
 - **RTC** (PCF8523 as standard, anything RTClib supports with a sketch change) - SCL 22, SDA 21
 
 ### UART or CAN?
@@ -251,7 +254,7 @@ request needs a signed-in user, and you can add up to eight accounts with one of
 | **Admin** | Operator + user management, Wi-Fi and device settings, firmware updates (inverter and this module), ESP32 reboot, replacing the web interface's own files. |
 
 The module enforces this itself; the interface only greys out what your role can't use. A viewer
-can still type read-only terminal commands (`get`, `json`, `errors`, `stream`, `can list`), but every
+can still type read-only terminal commands (`get`, `json`, `errors`, `stream`, `can list`, `can print`), but every
 other command is refused. Scripts sign in with
 `curl -H 'X-OI-Auth: 1' -d user=NAME -d password=PASS -d token=1 -D - http://inverter.local/auth/login`
 and send the `X-OI-Token` reply header back as `Authorization: Bearer <token>`. (Requests that use
@@ -265,6 +268,10 @@ interface does, a page on another site can't.)
   flash - not in the filesystem, so they are never served, listed, exported or erased by an OTA update.
 - **While sign-in is on**, the network-flashing port (ArduinoOTA, `espota`) is switched off; update
   through the **Update** page as an admin instead.
+- **Turning sign-in off**: an admin can go back to no accounts with **Settings → Users & Access →
+  Turn off sign-in**, which asks for their password again and then deletes every user; the module
+  then behaves as it did before sign-in was set up (ArduinoOTA included). An admin can't remove
+  their own account or demote the last admin, so nobody is locked out while other users remain.
 - **Plain HTTP**: the module has no TLS, so passwords and session cookies cross the network
   unencrypted. Use sign-in on a network you trust (the module's own access point with a strong
   passphrase, or your own Wi-Fi), not on a public one.
