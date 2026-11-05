@@ -125,3 +125,41 @@ test.describe('CAN mode', () => {
     await expect.poll(async () => await mock.commands()).toContain('can tx tmphs 592 0 8 1 0');
   });
 });
+
+// Nothing on the CAN Mapping page scrolls sideways at any window width: the
+// edit rows are grids that wrap, and the device's mapping tables fit
+const overflowing = page => page.evaluate(() => [document.documentElement, ...document.querySelectorAll('#canmapping *')]
+  .filter(e => e.scrollWidth > e.clientWidth + 1 && (e === document.documentElement || ['auto', 'scroll'].includes(getComputedStyle(e).overflowX)))
+  .map(e => e.tagName + '.' + e.className + ' ' + e.scrollWidth + '>' + e.clientWidth));
+const fillRow = async (page) => {
+  await page.locator('#canmapping button', { hasText: 'Add new mapping' }).click();
+  const nums = page.locator('table.canmap-new').first().locator('tbody tr').last().locator('input[type="number"]');
+  for (const [i, v] of ['63', '32', '0.0625', '-128'].entries()) await nums.nth(i).fill(v);
+};
+
+for (const width of [375, 520, 640, 760, 900, 1100, 1440]) {
+  test.describe(`CAN Mapping at ${width}px`, () => {
+    test.use(width < 600 ? { viewport: { width, height: 812 }, isMobile: true, hasTouch: true } : { viewport: { width, height: 800 } });
+
+    test('UART: mappings and a new row fit the window', async ({ page, mock }) => {
+      await cmd(mock, 'can tx udc 257 0 16 1 -7');
+      await cmd(mock, 'can rx pot 512 8 12 2');
+      await openApp(page, mock);
+      await gotoTab(page, 'CAN Mapping');
+      await expect(page.locator('#canmapping tr', { hasText: 'udc' })).toContainText('-7');
+      await fillRow(page);
+      await expect(page.locator('table.canmap-new td[data-label="Bias"] input')).toHaveValue('-128');
+      expect(await overflowing(page)).toEqual([]);
+    });
+
+    test('CAN: virtual values fit the window too', async ({ page, mock }) => {
+      await mock.enableCan();
+      await mock.putFile('virtualvals.json', { items: [{ name: 'v_pack', unit: 'V', id: 0x355, pos: 0, len: 16, gain: 0.1, offset: 0, signed: true }] });
+      await openApp(page, mock);
+      await gotoTab(page, 'CAN Mapping');
+      await expect(page.locator('#canmapping')).toContainText('Virtual spot values');
+      await fillRow(page);
+      expect(await overflowing(page)).toEqual([]);
+    });
+  });
+}

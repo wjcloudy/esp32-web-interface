@@ -838,8 +838,23 @@ td { font-variant-numeric: tabular-nums; }
   .hero-metrics { gap: 1.2rem; }
   .metric-value { font-size: 1.35rem; }
 }
+/* new CAN mappings and virtual values: each row is a labelled grid that
+   wraps to the width it has, so no window size scrolls it sideways */
+table.canmap-new, table.canmap-new tbody { display: block; width: 100% !important; }
+table.canmap-new thead { display: none; }
+table.canmap-new tr { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 124px)); gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--border); }
+table.canmap-new td { display: block; padding: 0; border: 0; }
+table.canmap-new td:first-child { grid-column: span 2; }
+table.canmap-new td[data-label]::before { content: attr(data-label); display: block; margin-bottom: 3px; font-size: .65rem; text-transform: uppercase; letter-spacing: .04em; color: var(--text3); }
+table.canmap-new input:not([type=checkbox]), table.canmap-new select { width: 100% !important; box-sizing: border-box; }
+table.canmap-new td { text-align: left !important; }
+table.canmap-new td.canmap-del { align-self: end; justify-self: end; }
+
 @media (max-width: 600px) {
   .small-modal-container, .large-modal-container, .can-mapping-modal-container { width: 95vw; }
+  /* the device's mappings: six columns plus remove fit at phone width */
+  table.canmap-list th, table.canmap-list td { padding-left: 4px; padding-right: 4px; }
+  table.canmap-list th:first-child { min-width: 0 !important; }
   /* the gauge editor's actions bar wraps to a full-width row on phones and
      eats most of the screen — drop the explanatory help text there */
   .edit-help { display: none; }

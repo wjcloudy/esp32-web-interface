@@ -2966,7 +2966,7 @@ const CanMapping = () => {
             loadMappings();
           };
           const mapTable = (list) => html`
-            <table style="width:auto;table-layout:auto;margin-bottom:1rem">
+            <table class="canmap-list" style="width:auto;table-layout:auto;margin-bottom:1rem">
               <thead><tr><th style="min-width:110px">Parameter</th><th>CAN ID</th><th>Offset</th><th>Length</th><th>Gain</th><th>Bias</th><th></th></tr></thead>
               <tbody>
                 ${list.map((m, i) => html`
@@ -3000,24 +3000,24 @@ const CanMapping = () => {
         })()}
         <${Gate} need="operator">
         <h3 class="underline">New mappings</h3>
-        <table style="width:auto;table-layout:auto">
+        <table class="canmap-new" style="width:auto;table-layout:auto">
           <thead><tr><th style="min-width:110px">Spot Value</th><th>TX/RX</th><th style="min-width:60px">CAN ID</th><th style="min-width:50px">Offset</th><th style="min-width:50px">Length</th><th style="min-width:50px">Gain</th><th style="min-width:50px">Bias</th><th></th></tr></thead>
           <tbody>
             ${mappings.map((m, i) => html`
               <tr key=${i}>
-                <td><select value=${m.name} onchange=${e => { const nm = [...mappings]; nm[i].name = e.target.value; setMappings(nm); }} style="width:100%">
+                <td data-label="Spot value"><select value=${m.name} onchange=${e => { const nm = [...mappings]; nm[i].name = e.target.value; setMappings(nm); }} style="width:100%">
                   <option value="">Select...</option>
                   ${spotNames.map(n => html`<option value=${n}>${n}</option>`)}
                 </select></td>
-                <td><select value=${m.txrx} onchange=${e => { const nm = [...mappings]; nm[i].txrx = e.target.value; setMappings(nm); }}>
+                <td data-label="TX/RX"><select value=${m.txrx} onchange=${e => { const nm = [...mappings]; nm[i].txrx = e.target.value; setMappings(nm); }}>
                   <option value="tx">TX</option><option value="rx">RX</option>
                 </select></td>
-                <td><input type="text" value=${m.canid} placeholder="0x250" oninput=${e => { const nm = [...mappings]; nm[i].canid = e.target.value; setMappings(nm); }} style="width:6em;font-family:var(--num)" /></td>
-                <td><input type="number" value=${m.pos} oninput=${e => { const nm = [...mappings]; nm[i].pos = e.target.value; setMappings(nm); }} style="width:5.5em" /></td>
-                <td><input type="number" value=${m.bits} oninput=${e => { const nm = [...mappings]; nm[i].bits = e.target.value; setMappings(nm); }} style="width:5.5em" /></td>
-                <td><input type="number" value=${m.gain} oninput=${e => { const nm = [...mappings]; nm[i].gain = e.target.value; setMappings(nm); }} style="width:7em" /></td>
-                <td><input type="number" step="1" value=${m.offset} oninput=${e => { const nm = [...mappings]; nm[i].offset = e.target.value; setMappings(nm); }} style="width:5.5em" /></td>
-                <td><button onclick=${() => setMappings(mappings.filter((_, j) => j !== i))} style="padding:2px 6px;font-size:.7rem">✕</button></td>
+                <td data-label="CAN ID"><input type="text" value=${m.canid} placeholder="0x250" oninput=${e => { const nm = [...mappings]; nm[i].canid = e.target.value; setMappings(nm); }} style="width:6em;font-family:var(--num)" /></td>
+                <td data-label="Offset"><input type="number" value=${m.pos} oninput=${e => { const nm = [...mappings]; nm[i].pos = e.target.value; setMappings(nm); }} style="width:5.5em" /></td>
+                <td data-label="Length"><input type="number" value=${m.bits} oninput=${e => { const nm = [...mappings]; nm[i].bits = e.target.value; setMappings(nm); }} style="width:5.5em" /></td>
+                <td data-label="Gain"><input type="number" value=${m.gain} oninput=${e => { const nm = [...mappings]; nm[i].gain = e.target.value; setMappings(nm); }} style="width:7em" /></td>
+                <td data-label="Bias"><input type="number" step="1" value=${m.offset} oninput=${e => { const nm = [...mappings]; nm[i].offset = e.target.value; setMappings(nm); }} style="width:5.5em" /></td>
+                <td class="canmap-del"><button onclick=${() => setMappings(mappings.filter((_, j) => j !== i))} style="padding:2px 6px;font-size:.7rem">✕</button></td>
               </tr>
             `)}
           </tbody>
@@ -3030,23 +3030,23 @@ const CanMapping = () => {
             and are included in the Settings export. Max 16.
           </p>
           ${virtuals.length > 0 && html`
-            <table style="width:auto;table-layout:auto;margin-bottom:.5rem">
+            <table class="canmap-new" style="width:auto;table-layout:auto;margin-bottom:.5rem">
               <thead><tr><th>Name</th><th>CAN ID</th><th>Start bit</th><th>Bits</th><th>Gain</th><th>Offset</th><th>Unit</th><th>Signed</th><th></th></tr></thead>
               <tbody>
                 ${virtuals.map((v, i) => html`
                   <tr key=${'v' + i}>
-                    <td><div style="display:flex;align-items:center">
+                    <td data-label="Name"><div style="display:flex;align-items:center">
                       <span style="color:var(--text3);font-family:var(--num)">v_</span>
                       <input type="text" value=${v.name} oninput=${e => { const nv = [...virtuals]; nv[i].name = e.target.value; setVirtuals(nv); }} style="width:7em;font-family:var(--num)" />
                     </div></td>
-                    <td><input type="text" value=${v.id} placeholder="0x250" oninput=${e => { const nv = [...virtuals]; nv[i].id = e.target.value; setVirtuals(nv); }} style="width:6em;font-family:var(--num)" /></td>
-                    <td><input type="number" min="0" max="63" value=${v.pos} oninput=${e => { const nv = [...virtuals]; nv[i].pos = e.target.value; setVirtuals(nv); }} style="width:5.5em" /></td>
-                    <td><input type="number" min="1" max="32" value=${v.len} oninput=${e => { const nv = [...virtuals]; nv[i].len = e.target.value; setVirtuals(nv); }} style="width:5.5em" /></td>
-                    <td><input type="number" step="any" value=${v.gain} oninput=${e => { const nv = [...virtuals]; nv[i].gain = e.target.value; setVirtuals(nv); }} style="width:4.5em" /></td>
-                    <td><input type="number" step="any" value=${v.offset} oninput=${e => { const nv = [...virtuals]; nv[i].offset = e.target.value; setVirtuals(nv); }} style="width:4.5em" /></td>
-                    <td><input type="text" value=${v.unit || ''} oninput=${e => { const nv = [...virtuals]; nv[i].unit = e.target.value; setVirtuals(nv); }} style="width:3.5em" /></td>
-                    <td style="text-align:center"><input type="checkbox" checked=${!!v.signed} onchange=${e => { const nv = [...virtuals]; nv[i].signed = e.target.checked; setVirtuals(nv); }} /></td>
-                    <td><button onclick=${() => setVirtuals(virtuals.filter((_, j) => j !== i))} style="padding:2px 6px;font-size:.7rem;color:var(--red)">✕</button></td>
+                    <td data-label="CAN ID"><input type="text" value=${v.id} placeholder="0x250" oninput=${e => { const nv = [...virtuals]; nv[i].id = e.target.value; setVirtuals(nv); }} style="width:6em;font-family:var(--num)" /></td>
+                    <td data-label="Start bit"><input type="number" min="0" max="63" value=${v.pos} oninput=${e => { const nv = [...virtuals]; nv[i].pos = e.target.value; setVirtuals(nv); }} style="width:5.5em" /></td>
+                    <td data-label="Bits"><input type="number" min="1" max="32" value=${v.len} oninput=${e => { const nv = [...virtuals]; nv[i].len = e.target.value; setVirtuals(nv); }} style="width:5.5em" /></td>
+                    <td data-label="Gain"><input type="number" step="any" value=${v.gain} oninput=${e => { const nv = [...virtuals]; nv[i].gain = e.target.value; setVirtuals(nv); }} style="width:4.5em" /></td>
+                    <td data-label="Offset"><input type="number" step="any" value=${v.offset} oninput=${e => { const nv = [...virtuals]; nv[i].offset = e.target.value; setVirtuals(nv); }} style="width:4.5em" /></td>
+                    <td data-label="Unit"><input type="text" value=${v.unit || ''} oninput=${e => { const nv = [...virtuals]; nv[i].unit = e.target.value; setVirtuals(nv); }} style="width:3.5em" /></td>
+                    <td data-label="Signed" style="text-align:center"><input type="checkbox" checked=${!!v.signed} onchange=${e => { const nv = [...virtuals]; nv[i].signed = e.target.checked; setVirtuals(nv); }} /></td>
+                    <td class="canmap-del"><button onclick=${() => setVirtuals(virtuals.filter((_, j) => j !== i))} style="padding:2px 6px;font-size:.7rem;color:var(--red)">✕</button></td>
                   </tr>
                 `)}
               </tbody>
