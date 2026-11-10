@@ -83,9 +83,15 @@ using weblogic::findArrayEnd;
 #define SD_DEFAULT_ENABLED 0
 #endif
 
+#ifndef INVERTER_PORT
 #define INVERTER_PORT UART_NUM_0
+#endif
+#ifndef INVERTER_RX
 #define INVERTER_RX 1 //3 - Swapped for Wemos board onto Zombie and other OI boards
+#endif
+#ifndef INVERTER_TX
 #define INVERTER_TX 3 //1 - Swapped for Wemos board onto Zombie and other OI boards
+#endif
 #define UART_TIMEOUT (100 / portTICK_PERIOD_MS)
 // Silence that ends a reply once bytes have started arriving. uart_read_bytes
 // waits the full timeout unless the buffer fills, so using UART_TIMEOUT here
@@ -1320,6 +1326,14 @@ bool uart_readStartsWith(const char *val)
 
 static void initUART(bool reinit = false)
 {
+#ifdef OI_USB_UART0_CONSOLE
+  // Older Wemos settings often select GPIO1/3. Even UART1 would steal
+  // those physical USB-console pins if we applied that saved assignment.
+  if (uartRxPin == 1 || uartRxPin == 3 || uartTxPin == 1 || uartTxPin == 3) {
+    uartRxPin = INVERTER_RX;
+    uartTxPin = INVERTER_TX;
+  }
+#endif
   // uart_set_pin(port, tx_io, rx_io, ...) — the configured pins are used
   // directly (a board preset in the UI fills them; Wemos = TX3/RX1)
   if (reinit) {
@@ -1527,34 +1541,16 @@ static void handleCommand() {
 
 // SDO read with abort detection and index verification (for walking mapping/error tables)
 static bool canSdoReadEntry(uint16_t index, uint8_t subIndex, int32_t* value) {
-  twai_message_t resp;
-  while (canDriverReceive(&resp)) {} // drain stale frames
-
-  if (!canSdoRead(canNodeId, index, subIndex)) return false;
-  if (!canReceiveForNode(canNodeId, &resp, 50)) return false;
-  if (resp.data[0] == SDO_ABORT) return false;
-
-  uint16_t rIndex;
-  uint8_t rSubIndex;
-  if (!canSdoParseResponse(&resp, NULL, &rIndex, &rSubIndex, value)) return false;
-  return rIndex == index && rSubIndex == subIndex;
+  CanSdoResult result = canSdoReadChecked(canNodeId, index, subIndex, 50);
+  if (result.ok && value) *value = result.value;
+  return result.ok;
 }
 
 // SDO write that waits for and verifies the confirmation
 // Returns 0 on success, the SDO abort code on rejection, -1 on comm failure
 static int32_t canSdoWriteChecked(uint16_t index, uint8_t subIndex, int32_t value) {
-  twai_message_t resp;
-  while (canDriverReceive(&resp)) {} // drain stale frames
-
-  if (!canSdoWrite(canNodeId, index, subIndex, value)) return -1;
-  if (!canReceiveForNode(canNodeId, &resp, 200)) return -1;
-  if (resp.data[0] == SDO_WRITE_RESPONSE) return 0;
-  if (resp.data[0] == SDO_ABORT) {
-    int32_t code;
-    memcpy(&code, &resp.data[4], 4);
-    return code ? code : -1;
-  }
-  return -1;
+  CanSdoResult result = canSdoWriteConfirmed(canNodeId, index, subIndex, value);
+  return result.ok ? 0 : result.abortCode ? (int32_t)result.abortCode : -1;
 }
 
 // Translate an error/enum value to its name using a unit string like "0=None, 1=UdcLow"
@@ -1726,7 +1722,7 @@ static String canExecuteCommand(const String& cmdStr, int repeat) {
       bool first = true;
       for (int dir = 0; dir < 2; dir++) {
         uint16_t index = dir ? CAN_INDEX_MAP_RD_RX : CAN_INDEX_MAP_RD;
-        while (true) {
+        while (index < (dir ? 0x3200 : 0x3180)) {
           int32_t cobid;
           if (!canSdoReadEntry(index, 0, &cobid)) break; // no more messages
           int sub = 1;
@@ -2024,26 +2020,21 @@ static void canFwUpdateTask(void* arg)
   vTaskDelete(NULL);
 }
 
-static void handleCanFwUpdate()
+// Shared entry point for HTTP and the physical serial console.
+static bool startCanFwUpdate(const String& path, String& error)
 {
-  if (!canMode) { server.send(400, "text/plain", "CAN mode required"); return; }
-  if (!server.hasArg("file")) { server.send(500, "text/plain", "BAD ARGS"); return; }
-
-  if (canFwState == CANFW_WAITBOOT || canFwState == CANFW_FLASHING) {
-    server.send(409, "text/json", "{\"message\":\"Update already in progress\"}");
-    return;
-  }
-
-  File file = SPIFFS.open(server.arg("file"), "r");
-  if (!file) { server.send(500, "text/json", "{\"message\":\"Failed to open file\"}"); return; }
+  if (!canMode || !canDriverIsRunning()) { error = "CAN mode required"; return false; }
+  if (canFwBusy()) { error = "Update already in progress"; return false; }
+  File file = SPIFFS.open(path, "r");
+  if (!file) { error = "Failed to open file"; return false; }
   size_t fileSize = file.size();
   file.close();
-  if (fileSize == 0) { server.send(500, "text/json", "{\"message\":\"Firmware file is empty\"}"); return; }
+  if (fileSize == 0) { error = "Firmware file is empty"; return false; }
 
   // The CAN bootloader protocol caps the page count at one byte
-  if (fileSize > 255 * 1024) { server.send(500, "text/json", "{\"message\":\"Firmware too large (max 255KB)\"}"); return; }
+  if (fileSize > 255 * 1024) { error = "Firmware too large (max 255KB)"; return false; }
 
-  canFwPath = server.arg("file");
+  canFwPath = path;
   canFwMsg = "";
   canFwState = CANFW_WAITBOOT;
   canFwPage = 0;
@@ -2054,7 +2045,19 @@ static void handleCanFwUpdate()
   if (xTaskCreate(canFwUpdateTask, "canfw", 8192, NULL, 2, NULL) != pdPASS) {
     canFwState = CANFW_ERROR;
     canFwMsg = "Could not start update task (out of memory?)";
-    server.send(500, "text/json", "{\"message\":\"Could not start update task\"}");
+    error = "Could not start update task";
+    return false;
+  }
+  return true;
+}
+
+static void handleCanFwUpdate()
+{
+  if (!canMode) { server.send(400, "text/plain", "CAN mode required"); return; }
+  if (!server.hasArg("file")) { server.send(500, "text/plain", "BAD ARGS"); return; }
+  String error;
+  if (!startCanFwUpdate(server.arg("file"), error)) {
+    server.send(canFwBusy() ? 409 : 500, "text/json", "{\"message\":\"" + jsonEscape(error) + "\"}");
     return;
   }
 
@@ -3020,22 +3023,11 @@ static bool authResetPinUsable()
 #endif
 }
 
+#include "src/serial_can_console.h"
+
 static void authRecoveryTick()
 {
-  static char line[24];
-  static uint8_t len = 0;
-  while (DBG_OUTPUT_PORT.available()) {
-    int c = DBG_OUTPUT_PORT.read();
-    if (c == '\r' || c == '\n') {
-      line[len] = 0;
-      if (len && strcmp(line, "auth reset") == 0) {
-        if (authEnabled()) authRecoveryReset("serial");
-        else DBG_OUTPUT_PORT.println("Auth: no users, nothing to reset");
-      }
-      len = 0;
-    } else if (len < sizeof(line) - 1) line[len++] = (char)c;
-    else len = 0; // line noise longer than any command: start over
-  }
+  serialCanConsoleTick();
 #if AUTH_RESET_PIN >= 0
   static bool pinReady = false, seenHigh = false;
   static uint32_t lowSince = 0;
@@ -3732,7 +3724,7 @@ void loop(void){
     }
     else //not active so start
     {
-      if(haveSDCard && fastLoggingEnabled && (startLogAttempt < 3) && (millis() > LOG_DELAY_VAL))
+      if(!canMode && haveSDCard && fastLoggingEnabled && (startLogAttempt < 3) && (millis() > LOG_DELAY_VAL))
       {
         startLogAttempt++;
         binaryLoggingStart();
