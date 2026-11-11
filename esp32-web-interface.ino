@@ -64,6 +64,7 @@
 
 using weblogic::jsonEscape;
 using weblogic::findArrayEnd;
+#include "src/mqtt_publisher.h"
 
 #ifndef DBG_OUTPUT_PORT
 #define DBG_OUTPUT_PORT Serial2
@@ -2833,8 +2834,7 @@ static void sseTick()
   sseClient.print("data: " + out + "\n\n");
 }
 
-// ==================== Sign-in endpoints (/auth/*) ====================
-
+// ==================== Sign-in endpoints (/auth/*) =============
 static String authArgLower(const char* name, unsigned int maxLen)
 {
   String v = server.arg(name).substring(0, maxLen);
@@ -3300,6 +3300,64 @@ private:
 bool AuthRouter::_publicStatic = false;
 static AuthRouter authRouter;
 
+// Fetch helper used by the MQTT publisher (reads via UART or CAN SDO)
+static bool fetchSpotValuesForMqtt(const String& names, String& out)
+{
+  if (canMode) {
+    if (canFwBusy()) return false;
+    out = canExecuteCommand("get " + names, 0);
+    if (out.length() == 0 || out == "update in progress") return false;
+    return true;
+  }
+  sendCommand("get " + names);
+  char buffer[255];
+  int len;
+  out = "";
+  do {
+    memset(buffer, 0, sizeof(buffer));
+    len = uart_read_bytes(INVERTER_PORT, buffer, sizeof(buffer), UART_TIMEOUT);
+    if (len > 0) out.concat(buffer, len);
+  } while (len > 0);
+  return (out.length() > 0);
+}
+
+static void handleMqttSettings()
+{
+  if (server.method() == HTTP_POST) {
+    MqttConfig cfg = mqttPublisher.getConfig();
+    if (server.hasArg("enabled")) cfg.enabled = (server.arg("enabled") == "1" || server.arg("enabled") == "true");
+    if (server.hasArg("host")) cfg.host = server.arg("host");
+    if (server.hasArg("port")) {
+      int p = server.arg("port").toInt();
+      cfg.port = (p > 0 && p < 65536) ? p : 1883;
+    }
+    if (server.hasArg("user")) cfg.user = server.arg("user");
+    if (server.hasArg("pass")) {
+      // Allow clearing or setting new pass; if omitted in POST, preserve existing
+      cfg.pass = server.arg("pass");
+    }
+    if (server.hasArg("client_id")) cfg.clientId = server.arg("client_id");
+    if (server.hasArg("prefix")) cfg.prefix = server.arg("prefix");
+    if (server.hasArg("names")) cfg.names = server.arg("names");
+    if (server.hasArg("interval")) {
+      int iv = server.arg("interval").toInt();
+      cfg.intervalSec = (iv < 1) ? 1 : (iv > 3600) ? 3600 : iv;
+    }
+    if (server.hasArg("retain")) cfg.retain = (server.arg("retain") == "1" || server.arg("retain") == "true");
+
+    mqttPublisher.setConfig(cfg);
+    mqttPublisher.saveConfig();
+    server.send(200, "application/json", "{\"result\":\"ok\"}");
+  } else {
+    server.send(200, "application/json", mqttPublisher.getConfigJson());
+  }
+}
+
+static void handleMqttStatus()
+{
+  server.send(200, "application/json", mqttPublisher.getStatusJson());
+}
+
 void setup(void){
   DBG_OUTPUT_PORT.begin(115200);
   //Inverter.setRxBufferSize(50000);
@@ -3409,6 +3467,8 @@ void setup(void){
 
   MDNS.begin(mdnsHost.c_str());
 
+  mqttPublisher.begin(mdnsHost, fetchSpotValuesForMqtt);
+
   //SERVER INIT
   // ArduinoOTA (port 3232) has no notion of users: it runs only while
   // sign-in is off. With users, update through the Update tab (admin).
@@ -3485,6 +3545,9 @@ void setup(void){
   route("/baud", weblogic::M_ANY, handleBaud);
   route("/settings", weblogic::M_GET, handleSettings);
   route("/settings", weblogic::M_POST, handleSettings);
+  server.on("/mqtt", HTTP_GET, handleMqttSettings);
+  server.on("/mqtt", HTTP_POST, handleMqttSettings);
+  server.on("/mqtt-status", HTTP_GET, handleMqttStatus);
   #ifndef WEB_VERSION
 #define WEB_VERSION "dev"
 #endif
@@ -3800,7 +3863,10 @@ void loop(void){
   // SSE value stream (gauges page). Never while binary logging owns the
   // UART at its own baud rate — though logging only runs with no WiFi
   // clients, so the two can't really coexist anyway.
-  if (!fastLoggingActive) sseTick();
+  if (!fastLoggingActive) {
+    sseTick();
+    mqttPublisher.loop();
+  }
 
   // AP-fallback mode transitions (drop the AP once the station is up, bring
   // it back if the station falls over) — checked every 15 s
