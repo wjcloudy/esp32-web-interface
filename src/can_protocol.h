@@ -88,6 +88,7 @@ inline float canDecodeValue(int32_t raw) {
 // Diagnostic status of the last segmented transfer
 // stage: 0=complete 1=initSendFail 2=initTimeout 3=initBadCmd 4=abort
 //        5=segSendFail 6=segTimeout 7=toggleMismatch 8=bufferFull
+//        9=sinkFailed 10=badSegment
 struct CanSegStatus { uint8_t stage; uint8_t cmd; uint32_t bytes; };
 extern CanSegStatus canSegStatus;
 
@@ -97,3 +98,15 @@ extern CanSegStatus canSegStatus;
 // true only when the device's last-segment flag was received (i.e. the transfer
 // finished cleanly rather than timing out or overflowing the buffer).
 uint32_t canSdoReadSegmented(uint8_t nodeId, uint16_t index, uint8_t* buffer, uint32_t maxLen, uint32_t timeoutPerSegmentMs, bool* outComplete = nullptr);
+
+// Streaming upload: begin receives an optional size hint (0 = unknown), then
+// write receives each payload once. Returning false stops the transfer with
+// stage 9 and complete=false. No object-sized scratch allocation is required.
+struct CanSdoSink {
+  void* context;
+  bool (*begin)(void*, uint32_t sizeHint);
+  bool (*write)(void*, const uint8_t*, uint8_t length);
+};
+uint32_t canSdoReadSegmentedTo(uint8_t nodeId, uint16_t index, const CanSdoSink& sink,
+                             uint32_t maxLen, uint32_t timeoutPerSegmentMs,
+                             bool* outComplete = nullptr);

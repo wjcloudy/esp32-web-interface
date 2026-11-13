@@ -55,11 +55,13 @@
 #include "driver/uart.h"
 #include "src/can_driver.h"
 #include "src/can_protocol.h"
+#include "src/can_transfer_sink.h"
 #include "src/web_logic.h"
 #include "src/web_auth.h"
 #include "esp_timer.h"
 #include <functional>
 #include <vector>
+#include <utility>
 
 using weblogic::jsonEscape;
 using weblogic::findArrayEnd;
@@ -297,38 +299,38 @@ static bool canDownloadParamCache() {
   if (!canMode || !canDriverIsRunning()) return false;
   DBG_OUTPUT_PORT.println("CAN: downloading parameter database...");
 
-  // Allocate buffer for JSON string (ZombieVerter-class param databases run >32KB)
-  const uint32_t bufSize = 49152;
-  uint8_t* buf = (uint8_t*)malloc(bufSize);
-  if (!buf) return false;
+  // Collect directly into the candidate's final String storage. A fixed 48 KiB
+  // scratch buffer plus a cache String and response copy exhausted/fragmented
+  // the classic ESP32 heap after the first successful download.
+  const uint32_t maxBytes = 49151;
+  if (!canParamCacheLoaded) canParamJson = String(); // release invalid cache capacity
 
   // A single lost segment truncates the transfer, so retry the whole download
   // and only cache transfers that finished with the device's last-segment flag.
   // (A retry after a truncated attempt may resume mid-transfer on the device
   // side — the sanity check below rejects that and the next attempt is fresh.)
   for (int attempt = 1; attempt <= 3; attempt++) {
-    memset(buf, 0, bufSize);
+    String candidate;
+    CanTextSink<String> collector(candidate, maxBytes);
     bool complete = false;
-    uint32_t bytesRead = canSdoReadSegmented(canNodeId, CAN_INDEX_JSON, buf, bufSize - 1, 100, &complete);
+    uint32_t bytesRead = canSdoReadSegmentedTo(canNodeId, CAN_INDEX_JSON, collector.sink(), maxBytes, 100, &complete);
 
     // Sanity check: a real param database is a non-trivial JSON object
     uint32_t end = bytesRead;
-    while (end > 0 && (buf[end - 1] == 0 || isspace(buf[end - 1]))) end--;
-    bool looksValid = end > 64 && buf[0] == '{' && buf[end - 1] == '}';
+    while (end > 0 && (candidate[end - 1] == 0 || isspace((unsigned char)candidate[end - 1]))) end--;
+    bool looksValid = end > 64 && candidate[0] == '{' && candidate[end - 1] == '}';
 
     if (bytesRead > 0 && complete && looksValid) {
-      buf[bytesRead] = 0;
-      canParamJson = String((char*)buf);
+      candidate.remove(end);
+      canParamJson = std::move(candidate);
       canParamCacheLoaded = true;
       DBG_OUTPUT_PORT.printf("CAN: downloaded %u bytes of parameter data (attempt %d)\n", bytesRead, attempt);
-      free(buf);
       return true;
     }
     DBG_OUTPUT_PORT.printf("CAN: parameter download incomplete (%u bytes, attempt %d)\n", bytesRead, attempt);
     delay(50);
   }
 
-  free(buf);
   DBG_OUTPUT_PORT.println("CAN: parameter download failed");
   return false;
 }
@@ -3544,26 +3546,27 @@ void setup(void){
       return;
     }
     // Run a single segmented download attempt and report where it ended up
-    const uint32_t bufSize = 49152;
-    uint8_t* buf = (uint8_t*)malloc(bufSize);
-    if (!buf) { server.send(500, "text/json", "{\"error\":\"oom\"}"); return; }
+    CanPreviewSink<24> preview;
+    uint32_t heapBefore = ESP.getFreeHeap();
     bool complete = false;
     uint32_t t0 = millis();
-    uint32_t bytesRead = canSdoReadSegmented(canNodeId, CAN_INDEX_JSON, buf, bufSize - 1, 100, &complete);
+    uint32_t bytesRead = canSdoReadSegmentedTo(canNodeId, CAN_INDEX_JSON, preview.sink(), 49151, 100, &complete);
     uint32_t elapsed = millis() - t0;
     String head = "";
-    for (uint32_t i = 0; i < 24 && i < bytesRead; i++) {
-      char c = (char)buf[i];
+    for (size_t i = 0; i < preview.length; i++) {
+      char c = preview.bytes[i];
       if (c == '"' || c == '\\') head += '\\';
       head += (c >= 32 && c < 127) ? c : '.';
     }
-    free(buf);
     String r = "{\"nodeId\":" + String(canNodeId) +
                ",\"bytes\":" + String(bytesRead) +
                ",\"complete\":" + (complete ? "true" : "false") +
                ",\"stage\":" + String(canSegStatus.stage) +
                ",\"cmd\":" + String(canSegStatus.cmd) +
                ",\"ms\":" + String(elapsed) +
+               ",\"heap_before\":" + String(heapBefore) +
+               ",\"heap_free\":" + String(ESP.getFreeHeap()) +
+               ",\"heap_largest\":" + String(ESP.getMaxAllocHeap()) +
                ",\"head\":\"" + head + "\"}";
     server.send(200, "text/json", r);
   });
