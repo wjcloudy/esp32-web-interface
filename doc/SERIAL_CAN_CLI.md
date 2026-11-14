@@ -1,5 +1,9 @@
 # CANopen over the physical serial console
 
+For coding agents developing ECU firmware on a real bench, start with the
+[ECU agent workflow](ECU_AGENT_GUIDE.md). It covers target identification,
+snapshots, controlled writes, flashing, recovery, evidence, and limitations.
+
 The debug console accepts CAN commands at **115200 baud**, newline terminated.
 It works without a browser, Wi-Fi connection, or HTTP server. The existing
 `auth reset` recovery command remains available. This is a **trusted physical
@@ -139,3 +143,139 @@ and return an ID-0 error. One command runs per main-loop iteration, sharing the
 existing bus services with HTTP/SSE. Long scans, dumps and sniff operations can
 delay web requests; clients should serialize commands and allow enough timeout
 (Python default 60 seconds).
+
+## Detailed command contract
+
+Commands are case-sensitive. There is no shell, quoting, expansion, or scripting
+on the device. Arguments are separated by whitespace; names and SPIFFS paths
+must contain no spaces. The parser accepts at most 12 tokens including the
+optional `@oi ID` prefix. The Python client accepts a local upload filename with
+spaces as a single quoted operating-system argument.
+
+In the tables, **bridge** means the ESP32 and **target** means the CAN ECU.
+Replies below are the string inside `result`; parse that string again for JSON
+objects/arrays. All commands can return `ok:false` with an explanatory string.
+
+### Discovery and bridge configuration
+
+| Command | Inputs / result | Side effects |
+|---|---|---|
+| `help` | No arguments; semicolon-separated syntax summary | None |
+| `status` | JSON: `version`, `can_mode`, `running`, `node`, `kbps`, `tx`, `rx`, `wifi_ip`, `cache` | None; running is bridge driver state, not proof of an ECU |
+| `bus RATE [TX RX]` | RATE exactly 125, 250, or 500 kbit/s; either both GPIOs or neither; valid, distinct pins | Reinitializes bridge CAN, enables CAN mode, clears metadata cache, saves bridge settings; no ECU bitrate write |
+| `transceiver PWR INV EN INV` | Each GPIO `-1` or valid output; inversion `0`/`1`; conflicts rejected | Releases previous control GPIOs, applies new output levels and saves bridge settings; may electrically disconnect the bus |
+| `node N` | N=1..127 | Changes active bridge selection, saves settings and invalidates cache; does not change ECU node ID |
+| `scan [FIRST LAST]` | Both bounds 1..127, FIRST<=LAST; default entire range; JSON array of `{nodeId,serial}` | Sends reads of `0x5000:0` at each node; nominal 40 ms timeout per probe, plus bus/console overhead |
+| `auth reset` | No extra args | Physical recovery: deletes bridge web users and reboots if auth is enabled; does not reset ECU parameters |
+
+CAN configuration changes must use the physical transceiver wiring. GPIO
+validation does not guarantee a pin is free on a particular carrier. For the
+WeAct UART0 console, GPIO1/3 and ESP32 flash pins GPIO6..11 are rejected.
+An existing saved GUI boot-default node can override `node N` after reboot.
+
+### Metadata, values, and raw SDO
+
+| Command | Inputs / result | Contract |
+|---|---|---|
+| `db` | JSON parameter metadata keyed by name | Uses existing cache or downloads it; cached `value` fields are not fresh telemetry |
+| `db refresh` | Same JSON | Discards cache and downloads from selected target; failure leaves cache invalid |
+| `json` | Web-compatible JSON including fresh values and `can_cache:true` on a loaded database | Uses shared web backend; see limitations below |
+| `get NAME[,NAME...]` | One comma-separated token, 1..128 names; JSON object with numeric values | Fresh, matching SDO reads for physical values; bridge virtual values supported; missing/invalid values fail the request |
+| `set NAME VALUE` | Finite numeric VALUE; JSON `{raw,size}` from write acknowledgement | Fixed point: truncates VALUE*32 toward zero to signed int32; the agent must check metadata `isparam`, minimum/maximum and ECU semantics first |
+| `sdo read INDEX SUB` | INDEX=0..65535, SUB=0..255; JSON `{raw,size}` | Expedited 1..4-byte reads; matching node/index/sub required; short values zero-extended; four-byte values represented as signed int32 |
+| `sdo write INDEX SUB RAW` | Same address; RAW signed int32 or unsigned 32-bit bit pattern | Always four bytes, little-endian; matching SDO acknowledgement required; no fixed-point conversion |
+| `errors` | Text lines `[timestamp]: error-name`, or `No errors logged.` | Reads target log; does not clear it |
+
+OpenInverter metadata IDs are UIDs, addressed as
+`index = 0x2100 | (id >> 8)`, `subindex = id & 0xff`.
+Only OpenInverter parameter values use raw/32; identity, command, mapping and
+vendor-specific objects have their own encoding. Example: metadata id 2001
+maps to `sdo read 0x2107 209`. Never infer an address from a parameter's array
+position. Cache and `json` may contain virtual entries without a target UID.
+
+`get` returns five decimal places but values are generally quantized in steps
+of 1/32. It is not a simultaneous multi-signal sample. A failure partway through
+a list returns an error, not a partially successful result object.
+
+The shared `json`, `errors`, and `can list` backend uses abort/timeout as an
+end-of-list convention. `json` can substitute zero for a failed physical read;
+an empty error/mapping list alone does not prove communication succeeded.
+Use `sdo read` and `get` for assertions where a timeout must fail the test.
+
+### Target control
+
+| Command | Target operation at `0x5002` | Verification |
+|---|---|---|
+| `save` | sub 0, raw 0: persist parameters/mappings as supported by ECU | Readback, then verify after an authorized reset if persistence matters |
+| `load` | sub 1, raw 0: load saved settings | Refresh metadata if needed and read affected values |
+| `reset` | sub 2, raw 1: reboot ECU | Rediscover the same device and verify application; an acknowledgement may be lost during reboot |
+| `defaults` | sub 3, raw 0: restore defaults | Destructive configuration operation; behavior/persistence is ECU-specific |
+| `start`, `start 2` | sub 4, raw 0: start target | May energize hardware; `2` is an alias, not a selectable operating mode |
+| `stop` | sub 5, raw 0: stop target | Observe actual ECU state; an SDO acknowledgement is not proof of physical shutdown |
+
+These commands return the confirmed raw SDO result. Support is determined by
+the ECU firmware; the bridge does not implement a generic ECU state machine.
+
+### CAN mappings and raw frames
+
+| Command | Constraints / result | Effect |
+|---|---|---|
+| `can list` | JSON array: `isrx,id,paramid,position,length,gain,offset,index,subindex` | Reads target mappings; `index/subindex` identify entries for removal |
+| `can clear` | `cleared`, or failure | Removes all target mappings via command 6 |
+| `can rm INDEX SUB` | INDEX=0x3100..0x31ff; odd SUB=1..99; `ok`, or failure | Removes one target entry; refresh list afterwards because positions can change |
+| `can tx NAME ID BIT LENGTH [GAIN [OFFSET]]` | ID=0..0x7ff; BIT=0..63; LENGTH=-32..-1 or 1..32; BIT+abs(LENGTH)<=64; default GAIN=1/OFFSET=0 | Configures ECU transmission, not bridge transmission |
+| `can rx NAME ID BIT LENGTH [GAIN [OFFSET]]` | Same bounds | Configures ECU reception; can alter control behavior |
+| `send ID [HEXBYTES]` | ID=0..0x1fffffff; contiguous even-length hex, 0..8 bytes | Queues one standard frame for ID<=0x7ff, extended otherwise; no RTR option; success proves queueing only |
+| `sniff MS` | MS=1..8000; JSON array `{id,ext,rtr,data}` | Consumes at most 40 queued frames, stops early at limit; timestamps and completeness are not provided |
+| `debug reset` | No additional args; same frame array | Sends ECU reset without waiting for SDO acknowledgement, then captures up to 8 s / 40 frames; this is not a read-only diagnostic |
+
+Mapping GAIN is finite and encoded as signed 24-bit fixed point *1000
+(-8388.608..8388.607); OFFSET is signed integer -128..127. Negative LENGTH
+means a signed signal. The target validates supported parameters/mapping
+capacity. Read `can list` back and compare the actual mapping before `save`.
+Do not run `sniff` concurrently with SDO traffic; it can consume replies.
+
+### Firmware staging and flashing
+
+| Command | Result / limits | Effect |
+|---|---|---|
+| `file begin SIZE CRC32` | SIZE=1..261120 bytes; CRC32 unsigned uint32; `ready` | Replaces any incomplete staging upload; requires SIZE+8192 bytes free |
+| `file chunk HEX` | 1..256 bytes; result is cumulative accepted byte count in decimal | Appends in order; no offset, deduplication or resume support |
+| `file finish` | `/cli-firmware.bin` | Checks exact length and IEEE CRC32, closes and renames staging file; replaces previous completed CLI image |
+| `file abort` | `aborted` | Removes incomplete `.part` only; previous completed image can still exist |
+| `flash [PATH]` | Default `/cli-firmware.bin`; explicit absolute SPIFFS path, not `.part`; acceptance text | Starts asynchronous CAN bootloader operation; acceptance is not completion |
+| `flash-status` | JSON `{state,page,pages,message}` | States 0=idle, 1=waiting for bootloader, 2=flashing, 3=done, 4=error; progress is accepted pages, not a percentage |
+
+The 60-second staging timeout is measured since begin/last successful chunk.
+CRC32 is the standard `binascii.crc32(binary)` value, not the STM32 page CRC.
+The updater handles its own STM32 word/page CRC, 1 KiB pages, and `0xff` final
+padding. A new flash resets the selected node and waits up to 30 s for bootloader
+magic. Bootloader traffic uses shared IDs `0x7dd/0x7de`, not per-node SDO IDs:
+isolate one intended bootloader target on the bench.
+
+Only `help`, `status`, and `flash-status` work while waiting/flashing. Bridge
+flash completion means protocol acceptance; verify target boot, identity,
+version, parameters, mappings and behavior separately. There is no firmware
+readback, image-signature check, MCU/hardware compatibility check, parameter
+backup, or automatic rollback in this interface. A raw application `.bin` is
+required; Intel HEX, ELF, ESP32 images and combined bootloader images must not
+be sent as application data.
+
+### Host-only commands and options
+
+`upload LOCAL.bin` runs begin/chunk/finish without resetting/flashing the ECU.
+`flash-local LOCAL.bin` stages then calls `flash`. `--wait` on `flash` or
+`flash-local` polls every 0.5 s for up to 600 s, returns state 3, and fails on
+state 0/4. A wait timeout does not cancel the device's flash operation.
+
+Options must appear before the command: `--port` (required), `--baud` (115200),
+`--timeout` (60 s per request), `--json`, and `--wait`. There is no separate
+command-line option for the 600 s total flash wait; Python callers can use
+`Console.wait_flash(timeout=...)`. `--timeout` is not a CAN bus timeout.
+
+Python API: `Console(serial_port, timeout=60)`, `request(command)` (returns an
+envelope even on device failure), `checked(command)` (raises `DeviceError` on
+`ok:false`), `upload(path)`, and `wait_flash(timeout=600)`. The caller owns and
+closes the serial port. `CliError` represents local/protocol timeouts; do not
+interpret it as proof that a mutating command did not execute. On upload failure
+the client attempts `file abort`, without retrying the failed chunk.
