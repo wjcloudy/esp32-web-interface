@@ -55,6 +55,20 @@ bool canSdoRead(uint8_t nodeId, uint16_t index, uint8_t subIndex);
 // Build an SDO write request (32-bit value) and send via CAN
 bool canSdoWrite(uint8_t nodeId, uint16_t index, uint8_t subIndex, int32_t value);
 
+// A queued frame is not a successful operation. These wait for the matching
+// standard data frame, node, index, subindex and command; expose abort codes.
+struct CanSdoResult {
+  bool ok = false;
+  int32_t value = 0;
+  uint32_t abortCode = 0;
+  uint8_t size = 0;
+  const char* error = "timeout";
+};
+CanSdoResult canSdoReadChecked(uint8_t nodeId, uint16_t index, uint8_t subIndex,
+                             uint32_t timeoutMs = 200);
+CanSdoResult canSdoWriteConfirmed(uint8_t nodeId, uint16_t index, uint8_t subIndex,
+                                int32_t value, uint32_t timeoutMs = 200);
+
 // Send a device command (e.g., start, stop, reset)
 bool canSdoCommand(uint8_t nodeId, uint8_t command);
 

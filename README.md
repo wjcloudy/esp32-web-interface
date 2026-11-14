@@ -405,6 +405,18 @@ After editing a file in `data/`, regenerate its `.gz` twin with `python gzip_ass
 carries the `.gz` of files that have one (`fs_stage.py` stages it in `.pio/fsdata`): the ESP
 always serves the gzip, so the raw sources stay in `data/` for the demo and tests.
 
+### Serial CANopen CLI
+
+CAN parameter reads/writes, node scanning, mappings, diagnostics and the CAN
+bootloader updater are also available without a GUI or Wi-Fi through the physical
+serial console. For the WeAct USB adapter, build `esp32_weact_cli`; automate it
+with `python tools/oi_cli.py --port COM27 help`.
+See [Serial CANopen CLI](doc/SERIAL_CAN_CLI.md) for wiring, commands and framing.
+The CLI also controls SD logging, records selected CAN values as CSV and downloads
+closed SD files with chunk CRC checks (`sd`, `log`, and host `download` commands).
+Coding agents can use the [real ECU development workflow](doc/ECU_AGENT_GUIDE.md)
+for target identification, snapshots, controlled writes, flashing and recovery.
+
 ## Credits
 
 A fork of [jsphuebner/esp32-web-interface](https://github.com/jsphuebner/esp32-web-interface) with a
