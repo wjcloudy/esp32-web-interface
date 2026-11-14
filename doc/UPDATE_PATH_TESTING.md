@@ -46,6 +46,15 @@ board running and serving pages.
 | E6 | `http://PC:8099/stall` (4 KiB, then silence) | `Download stalled (no data for 30s)` after ~30 s |
 | E7 | a second request while one is downloading | HTTP 409, the first carries on |
 
+If the PC's firewall won't let the board reach the local server, httpbin.org
+covers the redirect cases (it only ever receives plain GETs):
+
+| # | URL | Expected message |
+|---|---|---|
+| E5 | `https://httpbin.org/redirect/10` (10 relative redirects) | `Too many redirects` |
+| R1 | `http://httpbin.org/relative-redirect/2` (plain HTTP, relative) | `Not a combined OTA image` (both hops followed, then a JSON page) |
+| R2 | `https://httpbin.org/redirect/5` (the most redirects allowed) | `Not a combined OTA image` |
+
 ## 3. Local happy path (plain HTTP, a port, redirects)
 
 `http://PC:8099/r` (relative redirect) and `http://PC:8099/abs` (absolute,
