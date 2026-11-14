@@ -494,6 +494,131 @@ inline bool csrfOk(bool bearer, const char* origin, const char* referer, const c
   return false;
 }
 
+// ---- Downloading an update image ------------------------------------------
+// The ESP fetches release images itself (GitHub's downloads can't be read
+// cross-origin by the browser) with one plain GET that follows redirects.
+
+struct HttpUrl {
+  bool https = false;
+  String host;
+  uint16_t port = 0;
+  String path;   // starts with '/', query included
+};
+
+// "http(s)://host[:port][/path][?query]". No user info, IPv6 literals or
+// other schemes; no spaces or control characters, which would end the
+// request line early
+inline bool parseHttpUrl(const String& url, HttpUrl& out)
+{
+  unsigned int p;
+  if (url.startsWith("https://")) { out.https = true; p = 8; }
+  else if (url.startsWith("http://")) { out.https = false; p = 7; }
+  else return false;
+  unsigned int end = p;
+  while (end < url.length() && url[end] != '/' && url[end] != '?') end++;
+  unsigned int hostEnd = end;
+  out.port = out.https ? 443 : 80;
+  for (unsigned int i = p; i < end; i++) {
+    if (url[i] != ':') continue;
+    if (i + 1 == end || end - i - 1 > 5) return false;
+    uint32_t port = 0;
+    for (unsigned int j = i + 1; j < end; j++) {
+      if (url[j] < '0' || url[j] > '9') return false;
+      port = port * 10 + (url[j] - '0');
+    }
+    if (port < 1 || port > 65535) return false;
+    out.port = (uint16_t)port;
+    hostEnd = i;
+    break;
+  }
+  if (hostEnd == p) return false;
+  for (unsigned int i = p; i < hostEnd; i++) {
+    char c = url[i];
+    bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+              c == '.' || c == '-' || c == '_';
+    if (!ok) return false;
+  }
+  out.host = url.substring(p, hostEnd);
+  String rest = url.substring(end);
+  if (rest.length() && rest[0] == '/') out.path = rest;
+  else { out.path = "/"; out.path += rest; } // "" or a bare "?query"
+  for (unsigned int i = 0; i < out.path.length(); i++) {
+    unsigned char c = (unsigned char)out.path[i];
+    if (c <= 0x20 || c == 0x7f) return false;
+  }
+  return true;
+}
+
+// The Host header / origin: the port only when it isn't the scheme's default
+inline String httpHostHeader(const HttpUrl& u)
+{
+  if (u.port == (u.https ? 443 : 80)) return u.host;
+  return u.host + ":" + String((int)u.port);
+}
+
+inline bool httpIsRedirect(int code)
+{
+  return code == 301 || code == 302 || code == 303 || code == 307 || code == 308;
+}
+
+// A Location header against the URL that sent it: absolute, scheme-relative
+// ("//host/x") or a path on the same server. Directory-relative ones aren't
+// used by release hosts and are refused
+inline bool resolveRedirect(const HttpUrl& from, const String& location, String& next)
+{
+  if (location.startsWith("http://") || location.startsWith("https://")) { next = location; return true; }
+  if (location.startsWith("//")) { next = String(from.https ? "https:" : "http:") + location; return true; }
+  if (location.length() && location[0] == '/') {
+    next = String(from.https ? "https://" : "http://") + httpHostHeader(from) + location;
+    return true;
+  }
+  return false;
+}
+
+// "HTTP/1.x NNN reason" -> NNN, or -1 for anything else
+inline int httpStatusCode(const String& line)
+{
+  if (!line.startsWith("HTTP/1.") || line.length() < 12 || line[8] != ' ') return -1;
+  int code = 0;
+  for (unsigned int i = 9; i < 12; i++) {
+    if (line[i] < '0' || line[i] > '9') return -1;
+    code = code * 10 + (line[i] - '0');
+  }
+  if (line.length() > 12 && line[12] != ' ' && line[12] != '\r') return -1;
+  return code;
+}
+
+// "Name: value" when the name matches (any case): value without surrounding
+// whitespace or the line's '\r'
+inline bool httpHeader(const String& line, const char* name, String& value)
+{
+  size_t n = strlen(name);
+  if (line.length() <= n || line[n] != ':') return false;
+  for (size_t i = 0; i < n; i++) {
+    char a = line[i], b = name[i];
+    if (a >= 'A' && a <= 'Z') a += 'a' - 'A';
+    if (b >= 'A' && b <= 'Z') b += 'a' - 'A';
+    if (a != b) return false;
+  }
+  unsigned int s = n + 1, e = line.length();
+  while (s < e && (line[s] == ' ' || line[s] == '\t')) s++;
+  while (e > s && (line[e - 1] == ' ' || line[e - 1] == '\t' || line[e - 1] == '\r')) e--;
+  value = line.substring(s, e);
+  return true;
+}
+
+// Content-Length: digits only, no overflow; -1 when absent or malformed
+inline int32_t httpContentLength(const String& value)
+{
+  if (value.length() == 0 || value.length() > 9) return -1;
+  int32_t n = 0;
+  for (unsigned int i = 0; i < value.length(); i++) {
+    if (value[i] < '0' || value[i] > '9') return -1;
+    n = n * 10 + (value[i] - '0');
+  }
+  return n;
+}
+
 // ---- Config files kept across OTA updates ---------------------------------
 // A web-interface OTA rewrites the whole SPIFFS partition, which used to wipe
 // the device config with it (UART/CAN pins: the ESP then stopped talking to

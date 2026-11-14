@@ -414,6 +414,93 @@ void test_cfgSyncAction_file_wins_when_present()
   TEST_ASSERT_EQUAL_INT(CFG_SYNC_SAVE_TO_NVS, cfgSyncAction(true, CFG_MIRROR_MAX, false, false));
 }
 
+void test_parseHttpUrl_release_and_cdn_urls()
+{
+  HttpUrl u;
+  TEST_ASSERT_TRUE(parseHttpUrl("https://github.com/wjcloudy/esp32-web-interface/releases/download/v4.28/esp32_v4.28-ota.bin", u));
+  TEST_ASSERT_TRUE(u.https);
+  TEST_ASSERT_EQUAL_STRING("github.com", u.host.c_str());
+  TEST_ASSERT_EQUAL_UINT16(443, u.port);
+  TEST_ASSERT_EQUAL_STRING("/wjcloudy/esp32-web-interface/releases/download/v4.28/esp32_v4.28-ota.bin", u.path.c_str());
+  // The CDN redirect carries a long signed query string
+  std::string sig(900, 'a');
+  TEST_ASSERT_TRUE(parseHttpUrl(String(("https://release-assets.githubusercontent.com/x/1?sp=r&sig=" + sig).c_str()), u));
+  TEST_ASSERT_EQUAL_STRING("release-assets.githubusercontent.com", u.host.c_str());
+  TEST_ASSERT_EQUAL_UINT32(strlen("/x/1?sp=r&sig=") + 900, u.path.length());
+}
+
+void test_parseHttpUrl_ports_and_bare_hosts()
+{
+  HttpUrl u;
+  TEST_ASSERT_TRUE(parseHttpUrl("http://192.168.1.10:8080/fw.bin", u));
+  TEST_ASSERT_FALSE(u.https);
+  TEST_ASSERT_EQUAL_STRING("192.168.1.10", u.host.c_str());
+  TEST_ASSERT_EQUAL_UINT16(8080, u.port);
+  TEST_ASSERT_EQUAL_STRING("192.168.1.10:8080", httpHostHeader(u).c_str());
+  TEST_ASSERT_TRUE(parseHttpUrl("http://nas", u));
+  TEST_ASSERT_EQUAL_UINT16(80, u.port);
+  TEST_ASSERT_EQUAL_STRING("/", u.path.c_str());
+  TEST_ASSERT_EQUAL_STRING("nas", httpHostHeader(u).c_str());
+  TEST_ASSERT_TRUE(parseHttpUrl("https://nas?f=1", u));
+  TEST_ASSERT_EQUAL_STRING("/?f=1", u.path.c_str());
+}
+
+void test_parseHttpUrl_rejects_what_it_cannot_request()
+{
+  HttpUrl u;
+  const char* bad[] = {
+    "ftp://host/x", "https://", "https:///x", "https://user:pw@host/x", "https://[::1]/x",
+    "https://host:/x", "https://host:0/x", "https://host:65536/x", "https://host:80a/x",
+    "https://host/a b", "https://host/x\r\nInjected: 1", "https://ho st/x", "HTTPS://host/x",
+  };
+  for (const char* s : bad) TEST_ASSERT_FALSE_MESSAGE(parseHttpUrl(s, u), s);
+}
+
+void test_resolveRedirect_forms()
+{
+  HttpUrl from;
+  TEST_ASSERT_TRUE(parseHttpUrl("https://github.com/a/b", from));
+  String next;
+  TEST_ASSERT_TRUE(resolveRedirect(from, "https://cdn.example/x?y=1", next));
+  TEST_ASSERT_EQUAL_STRING("https://cdn.example/x?y=1", next.c_str());
+  TEST_ASSERT_TRUE(resolveRedirect(from, "//cdn.example/x", next));
+  TEST_ASSERT_EQUAL_STRING("https://cdn.example/x", next.c_str());
+  TEST_ASSERT_TRUE(resolveRedirect(from, "/other", next));
+  TEST_ASSERT_EQUAL_STRING("https://github.com/other", next.c_str());
+  TEST_ASSERT_TRUE(parseHttpUrl("http://nas:8080/a", from));
+  TEST_ASSERT_TRUE(resolveRedirect(from, "/b", next));
+  TEST_ASSERT_EQUAL_STRING("http://nas:8080/b", next.c_str());
+  TEST_ASSERT_FALSE(resolveRedirect(from, "b", next));
+  TEST_ASSERT_FALSE(resolveRedirect(from, "", next));
+  TEST_ASSERT_TRUE(httpIsRedirect(302) && httpIsRedirect(301) && httpIsRedirect(307) && httpIsRedirect(308));
+  TEST_ASSERT_FALSE(httpIsRedirect(200) || httpIsRedirect(304) || httpIsRedirect(404));
+}
+
+void test_http_status_and_headers()
+{
+  TEST_ASSERT_EQUAL_INT(200, httpStatusCode("HTTP/1.1 200 OK\r"));
+  TEST_ASSERT_EQUAL_INT(302, httpStatusCode("HTTP/1.0 302 Found"));
+  TEST_ASSERT_EQUAL_INT(204, httpStatusCode("HTTP/1.1 204"));
+  TEST_ASSERT_EQUAL_INT(-1, httpStatusCode("HTTP/2 200"));
+  TEST_ASSERT_EQUAL_INT(-1, httpStatusCode("HTTP/1.1 2000 OK"));
+  TEST_ASSERT_EQUAL_INT(-1, httpStatusCode("HTTP/1.1 20x OK"));
+  TEST_ASSERT_EQUAL_INT(-1, httpStatusCode(""));
+  String v;
+  TEST_ASSERT_TRUE(httpHeader("location:  https://x/y \r", "Location", v));
+  TEST_ASSERT_EQUAL_STRING("https://x/y", v.c_str());
+  TEST_ASSERT_TRUE(httpHeader("Content-Length: 1234\r", "content-length", v));
+  TEST_ASSERT_EQUAL_INT32(1234, httpContentLength(v));
+  TEST_ASSERT_FALSE(httpHeader("Content-Length-X: 1\r", "Content-Length", v));
+  TEST_ASSERT_FALSE(httpHeader("Content-Lengt: 1\r", "Content-Length", v));
+  TEST_ASSERT_TRUE(httpHeader("Location:\r", "Location", v));
+  TEST_ASSERT_EQUAL_STRING("", v.c_str());
+  TEST_ASSERT_EQUAL_INT32(-1, httpContentLength(""));
+  TEST_ASSERT_EQUAL_INT32(-1, httpContentLength("12a"));
+  TEST_ASSERT_EQUAL_INT32(-1, httpContentLength("-5"));
+  TEST_ASSERT_EQUAL_INT32(-1, httpContentLength("9999999999"));
+  TEST_ASSERT_EQUAL_INT32(999999999, httpContentLength("999999999"));
+}
+
 int main(int, char**)
 {
   UNITY_BEGIN();
@@ -450,5 +537,10 @@ int main(int, char**)
   RUN_TEST(test_cfgNvsKey_only_for_mirrored_files);
   RUN_TEST(test_cfgSyncAction_restores_what_an_update_erased);
   RUN_TEST(test_cfgSyncAction_file_wins_when_present);
+  RUN_TEST(test_parseHttpUrl_release_and_cdn_urls);
+  RUN_TEST(test_parseHttpUrl_ports_and_bare_hosts);
+  RUN_TEST(test_parseHttpUrl_rejects_what_it_cannot_request);
+  RUN_TEST(test_resolveRedirect_forms);
+  RUN_TEST(test_http_status_and_headers);
   return UNITY_END();
 }

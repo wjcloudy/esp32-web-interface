@@ -37,7 +37,6 @@
 #include <WiFi.h>
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
-#include <HTTPClient.h>
 #include <WebServer.h>
 #include <Preferences.h>
 #include <SPIFFS.h>
@@ -1018,44 +1017,80 @@ void handleEspUpdateUpload(){
   }
 }
 
+// One GET over an open-ended client (plain or TLS). HTTP/1.0, so the body is
+// never chunked and can be read straight off the socket. Returns the status
+// (-1: no usable reply); a redirect's target goes to location, a 200's body
+// through espOtaFeed. Replaces HTTPClient, whose cookie, auth and date
+// handling (~13 KB) this one request never needed
+template <class Net>
+static int espOtaGet(Net& net, const weblogic::HttpUrl& u, String& location){
+  net.setTimeout(20); // seconds, for the connect and each read
+  if(!net.connect(u.host.c_str(), u.port)){ espOtaErr = "Could not connect to " + u.host; return -1; }
+  net.print("GET " + u.path + " HTTP/1.0\r\nHost: " + weblogic::httpHostHeader(u) +
+            "\r\nUser-Agent: OpenInverter-ESP32\r\nAccept: */*\r\nConnection: close\r\n\r\n");
+  int code = weblogic::httpStatusCode(net.readStringUntil('\n'));
+  int32_t total = -1;
+  bool headersEnded = false;
+  for(int i = 0; code >= 0 && i < 64; i++){
+    String line = net.readStringUntil('\n');
+    if(line.length() == 0 || line == "\r"){ headersEnded = true; break; }
+    String v;
+    if(weblogic::httpHeader(line, "Location", v)) location = v;
+    else if(weblogic::httpHeader(line, "Content-Length", v)) total = weblogic::httpContentLength(v);
+  }
+  if(code < 0 || !headersEnded){ espOtaErr = "Bad HTTP reply from " + u.host; net.stop(); return -1; }
+  if(code != 200){ net.stop(); return code; }
+
+  uint8_t buf[1024];
+  uint32_t got = 0;
+  uint32_t idleMs = 0; // a live-but-silent peer must not stall the task forever
+  while(espOtaPhase < 3){
+    int avail = net.available();
+    if(avail > 0){
+      int n = net.read(buf, avail > (int)sizeof(buf) ? (int)sizeof(buf) : avail);
+      if(n > 0){
+        espOtaFeed(buf, n); got += n; idleMs = 0;
+        if(total > 0) espOtaDlPct = (int)((uint64_t)got * 100 / (uint32_t)total);
+        continue;
+      }
+    }
+    if(!net.connected()) break; // closed and drained
+    delay(1);
+    if(++idleMs > 30000){ espOtaErr = "Download stalled (no data for 30s)"; break; }
+  }
+  net.stop();
+  return code;
+}
+
 // Download a combined OTA image from a URL and flash it server-side. The ESP
 // fetches it directly (the browser can't — GitHub release downloads have no CORS
-// headers), following redirects, and streams the body through the same parser.
-// Runs as a background task so the web server stays responsive and the UI can
-// poll /espupdate-status for progress.
+// headers), following redirects (GitHub sends release downloads on to its CDN),
+// and streams the body through the same parser. Runs as a background task so
+// the web server stays responsive and the UI can poll /espupdate-status.
 static void espOtaDownloadTask(void* param){
   (void)param;
   espOtaReset();
   espOtaDlPct = 0; espOtaDlState = 1;
 
-  WiFiClientSecure client;
-  client.setInsecure();            // skip cert validation; the image is validated on flash
-  HTTPClient http;
-  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  http.setTimeout(20000);
-  if(!http.begin(client, espOtaDlUrl)){
-    espOtaErr = "Could not start download"; espOtaDlState = 3; vTaskDelete(NULL); return;
-  }
-  int code = http.GET();
-  if(code != HTTP_CODE_OK){
-    http.end(); espOtaErr = String("Download HTTP ") + code; espOtaDlState = 3; vTaskDelete(NULL); return;
-  }
-  int total = http.getSize();
-  WiFiClient* stream = http.getStreamPtr();
-  uint8_t buf[1024];
-  uint32_t got = 0;
-  uint32_t idleMs = 0; // a live-but-silent peer must not stall the task forever
-  while(http.connected() && espOtaPhase < 3){
-    size_t avail = stream->available();
-    if(avail){
-      int n = stream->readBytes(buf, avail > sizeof(buf) ? sizeof(buf) : avail);
-      if(n > 0){ espOtaFeed(buf, n); got += n; if(total > 0) espOtaDlPct = (int)((uint64_t)got * 100 / (uint32_t)total); idleMs = 0; }
+  String url = espOtaDlUrl;
+  int code = -1;
+  for(int hop = 0; hop < 6; hop++){
+    weblogic::HttpUrl u;
+    if(!weblogic::parseHttpUrl(url, u)){ espOtaErr = "Unsupported download URL"; break; }
+    String location;
+    if(u.https){
+      WiFiClientSecure net;
+      net.setInsecure();           // skip cert validation; the image is validated on flash
+      code = espOtaGet(net, u, location);
     } else {
-      delay(1);
-      if(++idleMs > 30000){ espOtaErr = "Download stalled (no data for 30s)"; break; }
+      WiFiClient net;
+      code = espOtaGet(net, u, location);
     }
+    if(!weblogic::httpIsRedirect(code)) break;
+    if(!weblogic::resolveRedirect(u, location, url)){ espOtaErr = "Bad redirect from " + u.host; break; }
   }
-  http.end();
+  if(espOtaErr.length() == 0 && code != 200)
+    espOtaErr = weblogic::httpIsRedirect(code) ? String("Too many redirects") : String("Download HTTP ") + code;
   espOtaDone = true;
   espOtaOk = (espOtaPhase == 3);
   if(espOtaOk){
