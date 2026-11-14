@@ -138,9 +138,15 @@ static void test_sdo_failures() {
   r = canSdoReadChecked(0, 0x2134, 7); TEST_ASSERT_FALSE(r.ok);
   TEST_ASSERT_EQUAL(before, sends);
 }
+static void test_sd_paths() {
+  for (const char* p : {"/capture.csv", "/logs/capture-2.bin"}) TEST_ASSERT_TRUE(serialcli::sdPath(p));
+  for (const char* p : {"", "/", "relative", "/../file", "/logs/../file", "/./file", "/a//b", "/a/", "/name with space", "/a\\b", "/a\nreset"})
+    TEST_ASSERT_FALSE(serialcli::sdPath(p));
+}
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_lines); RUN_TEST(test_framing); RUN_TEST(test_numbers); RUN_TEST(test_hex_and_crc);
   RUN_TEST(test_sdo_read_matching); RUN_TEST(test_sdo_widths); RUN_TEST(test_sdo_write_ack_matching); RUN_TEST(test_sdo_failures);
+  RUN_TEST(test_sd_paths);
   return UNITY_END();
 }

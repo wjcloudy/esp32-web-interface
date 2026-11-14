@@ -412,6 +412,8 @@ bootloader updater are also available without a GUI or Wi-Fi through the physica
 serial console. For the WeAct USB adapter, build `esp32_weact_cli`; automate it
 with `python tools/oi_cli.py --port COM27 help`.
 See [Serial CANopen CLI](doc/SERIAL_CAN_CLI.md) for wiring, commands and framing.
+The CLI also controls SD logging, records selected CAN values as CSV and downloads
+closed SD files with chunk CRC checks (`sd`, `log`, and host `download` commands).
 Coding agents can use the [real ECU development workflow](doc/ECU_AGENT_GUIDE.md)
 for target identification, snapshots, controlled writes, flashing and recovery.
 

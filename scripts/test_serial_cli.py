@@ -1,6 +1,8 @@
 """Host CLI tests: fragmented replies, correlation and no unsafe retries."""
 import importlib.util
 import json
+import binascii
+import hashlib
 from pathlib import Path
 import tempfile
 import unittest
@@ -99,6 +101,74 @@ class SerialCliTests(unittest.TestCase):
                 cli.Console(port).upload(firmware)
         self.assertEqual("file abort", port.commands[-1])
         self.assertEqual(1, sum(c.startswith("file chunk") for c in port.commands))
+
+
+class SdDownloadTests(unittest.TestCase):
+    def port(self, data, corrupt=None, changed=False):
+        stats = 0
+        def handler(command):
+            nonlocal stats
+            if command.startswith('sd stat '):
+                stats += 1
+                return True, json.dumps({'size': len(data), 'modified': 10 + (changed and stats > 1)})
+            _, _, path, offset, count = command.split()
+            self.assertEqual('/capture.bin', path)
+            offset, count = int(offset), int(count)
+            block = data[offset:offset + count]
+            obj = {'size': len(data), 'offset': offset, 'eof': offset + len(block) == len(data),
+                   'crc32': f'{binascii.crc32(block):08x}', 'hex': block.hex()}
+            if corrupt:
+                obj.update(corrupt)
+            return True, json.dumps(obj)
+        return FakePort(handler)
+
+    def test_binary_download_exact_bytes_and_sha256(self):
+        data = bytes(range(256)) * 10 + b'\x00\xff\r\n'
+        port = self.port(data)
+        with tempfile.TemporaryDirectory() as directory:
+            dest = Path(directory) / 'capture.bin'
+            reply = cli.Console(port).download('/capture.bin', dest)
+            self.assertEqual(data, dest.read_bytes())
+            self.assertEqual(hashlib.sha256(data).hexdigest(), json.loads(reply['result'])['sha256'])
+            self.assertEqual([dest], list(Path(directory).iterdir()))
+        self.assertEqual(3, sum(c.startswith('sd read ') for c in port.commands))
+
+    def test_empty_file_download(self):
+        with tempfile.TemporaryDirectory() as directory:
+            dest = Path(directory) / 'empty.bin'
+            cli.Console(self.port(b'')).download('/capture.bin', dest)
+            self.assertEqual(b'', dest.read_bytes())
+
+    def test_corruption_offset_and_truncation_leave_no_final_file(self):
+        for corrupt in [{'crc32': '00000000'}, {'offset': 1}, {'hex': 'aa'}, {'eof': False}, {'hex': 'invalid'}]:
+            with self.subTest(corrupt=corrupt), tempfile.TemporaryDirectory() as directory:
+                dest = Path(directory) / 'capture.bin'
+                with self.assertRaises(cli.CliError):
+                    cli.Console(self.port(b'correct data', corrupt)).download('/capture.bin', dest)
+                self.assertEqual([], list(Path(directory).iterdir()))
+
+    def test_changed_sd_file_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            dest = Path(directory) / 'capture.bin'
+            with self.assertRaisesRegex(cli.CliError, 'changed'):
+                cli.Console(self.port(b'data', changed=True)).download('/capture.bin', dest)
+            self.assertEqual([], list(Path(directory).iterdir()))
+
+    def test_existing_destination_is_preserved_without_device_requests(self):
+        port = self.port(b'data')
+        with tempfile.TemporaryDirectory() as directory:
+            dest = Path(directory) / 'capture.bin'; dest.write_bytes(b'keep')
+            with self.assertRaisesRegex(cli.CliError, 'already exists'):
+                cli.Console(port).download('/capture.bin', dest)
+            self.assertEqual(b'keep', dest.read_bytes())
+        self.assertEqual([], port.commands)
+
+    def test_invalid_path_rejected_before_device_requests(self):
+        port = self.port(b'data')
+        for path in ['relative.bin', '/file\nreset', '/name with spaces']:
+            with self.assertRaises(cli.CliError):
+                cli.Console(port).download(path, 'unused.bin')
+        self.assertEqual([], port.commands)
 
 
 if __name__ == "__main__":

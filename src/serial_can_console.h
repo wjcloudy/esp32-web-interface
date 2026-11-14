@@ -1,6 +1,7 @@
 #pragma once
 // Included by the sketch after its shared CAN/settings/update services.
 #include "serial_cli.h"
+#include "serial_sd_console.h"
 
 static void consoleReply(uint32_t id, bool ok, const String& result) {
   DBG_OUTPUT_PORT.printf("@oi {\"id\":%lu,\"ok\":%s,\"result\":\"",
@@ -112,7 +113,9 @@ static String consoleRun(const serialcli::Words& w, bool& ok) {
            "can list; can clear; can rm <index> <sub>; can tx/rx <name> <id> <bit> <signed-length> [gain [offset]]; "
            "send <id> [hexbytes]; sniff <1..8000ms>; debug reset; "
            "file begin <size> <crc32>; file chunk <hex>; file finish; file abort; "
-           "flash [SPIFFS-path]; flash-status; auth reset";
+           "flash [SPIFFS-path]; flash-status; auth reset; "
+           "sd status; sd enable <0|1>; sd mount; sd unmount; sd list [offset count]; sd stat <path>; sd read <path> <offset> <count>; "
+           "log status; log start <100..60000ms> <names>; log binary; log stop; log auto";
   }
   if (w.is(0, "status") && w.count == 1) {
     ok = true;
@@ -129,6 +132,9 @@ static String consoleRun(const serialcli::Words& w, bool& ok) {
       ",\"pages\":" + String(canFwPages) + ",\"message\":\"" + jsonEscape(msg) + "\"}";
   }
   if (canFwBusy()) return "CAN firmware update in progress";
+  if (w.is(0, "sd")) return consoleSd(w, ok);
+  if (w.is(0, "log")) return consoleLog(w, ok);
+  if (consoleCsvActive || fastLoggingActive) return "stop logger before other device commands";
   if (w.is(0, "file")) return consoleFile(w, ok);
   if (w.is(0, "auth") && w.is(1, "reset") && w.count == 2) {
     if (authEnabled()) { consoleReply(w.id, true, "resetting users and rebooting"); authRecoveryReset("serial"); }
@@ -306,6 +312,7 @@ static String consoleRun(const serialcli::Words& w, bool& ok) {
 }
 
 static void serialCanConsoleTick() {
+  consoleCsvTick();
   static serialcli::LineBuffer line;
   if (consoleUpload && millis() - consoleUploadTouched > 60000) consoleAbortUpload();
   for (unsigned i = 0; i < 128 && DBG_OUTPUT_PORT.available(); ++i) {
