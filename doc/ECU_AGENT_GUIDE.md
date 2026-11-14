@@ -317,6 +317,9 @@ stopped recorder; there is no live tail or automatic log rotation for CAN CSV.
 Do not start UART binary logging on a CAN-only connection. Never infer an SD
 hardware pass solely from simulated filesystem tests or a successful build.
 
+The [real SD smoke-test report](testing/SD_SERIAL_LOGGING.md) records successful
+CSV recording and multi-chunk downloads on the demonstrated 64 GB card.
+
 ### Communication and recovery
 
 | Symptom | Next action |
