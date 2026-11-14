@@ -276,6 +276,49 @@ the same version, report that limitation and preserve the protocol evidence.
 
 ## Failure handling
 
+### Record a CAN test on SD and retrieve the artifact
+
+Use `sd status` to distinguish an unsupported build, disabled boot setting and
+an absent/unmounted card. Enable/mount only with verified SD_MMC wiring. Current
+S3 builds skip this driver; an SPI-wired socket is not automatically supported.
+See the [SD command contract](SERIAL_CAN_CLI.md#sd-card-logging-and-file-retrieval).
+
+After identifying the ECU, a persistent client can record and fetch a test:
+
+```python
+# cli is the identified Console instance from the example above.
+import time
+
+sd = json.loads(cli.checked("sd status")["result"])
+assert sd["mounted"], sd
+recording = json.loads(cli.checked(
+    "log start 500 version,canspeed,LVDU_12v_battery_voltage")["result"])
+try:
+    time.sleep(5)
+finally:
+    stopped = json.loads(cli.checked("log stop")["result"])
+assert not stopped["active"] and not stopped["error"], stopped
+assert stopped["rows"] > 0 and stopped["read_errors"] == 0, stopped
+local = Path.cwd() / f"ecu-recording-{time.time_ns()}.csv"
+artifact = cli.download(recording["path"], local)
+print(artifact)
+```
+
+Select names supported by the actual ECU; these names are from the demonstrated
+Zombie-Slave bench. Preserve the CSV and its SHA-256 with test results. Treat
+`nan` as a missing measurement, not zero. Check actual `ms` spacing and record
+host start/end timestamps; the logger does not guarantee precise sample timing
+or a valid real-time clock. It records values, not all CAN frames.
+
+`log stop` disables automatic restart for the current boot; `log auto` restores
+the original UART auto-logging behavior. Neither control policy is persisted
+across reboot. Inspect status after reconnecting. Reads/downloads require a
+stopped recorder; there is no live tail or automatic log rotation for CAN CSV.
+Do not start UART binary logging on a CAN-only connection. Never infer an SD
+hardware pass solely from simulated filesystem tests or a successful build.
+
+### Communication and recovery
+
 | Symptom | Next action |
 |---|---|
 | Serial open fails | Resolve the owner/monitor and physical port; do not kill unrelated jobs |

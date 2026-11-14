@@ -13,6 +13,23 @@ namespace serialcli {
 constexpr size_t MAX_LINE = 1024;
 constexpr size_t MAX_WORDS = 12;
 
+// A console path is a single printable ASCII token. Reject traversal and
+// alternate separators rather than normalizing a different file silently.
+inline bool sdPath(const char* path) {
+  if (!path || path[0] != '/' || !path[1] || strlen(path) > 240) return false;
+  const char* segment = path + 1;
+  for (const char* p = segment;; ++p) {
+    if (*p && (*p <= 32 || *p > 126 || *p == '\\')) return false;
+    if (!*p || *p == '/') {
+      size_t n = p - segment;
+      if (!n || (n == 1 && segment[0] == '.') ||
+          (n == 2 && segment[0] == '.' && segment[1] == '.')) return false;
+      if (!*p) return true;
+      segment = p + 1;
+    }
+  }
+}
+
 // Discard an entire overlong/invalid line, never execute its suffix. CRLF is
 // one terminator. Bounded work in loop() is the caller's responsibility.
 struct LineBuffer {

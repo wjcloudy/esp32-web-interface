@@ -621,6 +621,20 @@ bool haveRTC = false;
 volatile bool haveSDCard = false; // also set late by the sdinit task
 bool sdEnabled = SD_DEFAULT_ENABLED; // runtime setting, applied at boot
 volatile bool sdInitDone = false;
+volatile bool sdInitRunning = false;
+static bool startSdMount() {
+#if SD_AVAILABLE
+  if (haveSDCard || sdInitRunning) return true;
+  sdInitDone = false; sdInitRunning = true;
+  if (xTaskCreate([](void*) {
+    haveSDCard = SD_MMC.begin("/sdcard", true, false, 40000, 5U);
+    sdInitDone = true; sdInitRunning = false; vTaskDelete(NULL);
+  }, "sdinit", 4096, NULL, 1, NULL) == pdPASS) return true;
+  sdInitDone = true; sdInitRunning = false;
+#endif
+  return false;
+}
+static bool consoleSdLoggerActive();
 bool fastLoggingEnabled = true;
 bool fastLoggingActive = false;
 uint8_t SDIObuffer[SDIO_BUFFER_SIZE];
@@ -1154,6 +1168,7 @@ void handleRTCSet() {
  }
 }
 void handleSdCardDeleteAll() {
+    if (consoleSdLoggerActive()) { server.send(409, "text/json", "{\"error\":\"Stop logger first\"}"); return; }
     if (haveSDCard) {
       // Never unlink the log file while it's open for writing — FatFs allows
       // it and subsequent writes then corrupt the allocation table
@@ -3237,12 +3252,7 @@ void setup(void){
     // driver or, if it had already exited, deleted a stale handle — both
     // hung boards with no card fitted (issue #5). Flags are globals because
     // the task can outlive setup()'s stack frame.
-    xTaskCreate([](void*) {
-      if (SD_MMC.begin("/sdcard", true, false, 40000, 5U))
-        haveSDCard = true;
-      sdInitDone = true;
-      vTaskDelete(NULL);
-    }, "sdinit", 4096, NULL, 1, NULL);
+    startSdMount();
 
     // Wait up to 1 second; a slow card that comes up later still sets haveSDCard
     for (int i = 0; i < 10 && !sdInitDone; i++) {
@@ -3611,6 +3621,8 @@ void binaryLoggingStart()
     {
       uart_set_baudrate(INVERTER_PORT, 2250000);
       fastLoggingActive = true;
+      indexSDIObuffer = blockCountSD = 0;
+      consoleLogPath = dataFile.name();
       DBG_OUTPUT_PORT.println("Binary logging started");
     }
     else //no response - in case it did actually switch but we missed response send the turn off command
@@ -3646,6 +3658,12 @@ void binaryLoggingStop()
     uart_set_baudrate(INVERTER_PORT, 115200);
     fastUart = false;
     fastLoggingActive = false;
+    // Preserve a final partial block; small recordings used to be empty.
+    if (indexSDIObuffer) {
+      if (dataFile.write(SDIObuffer, indexSDIObuffer) != indexSDIObuffer)
+        consoleLogError = "SD final block write failed";
+      indexSDIObuffer = 0;
+    }
     dataFile.flush(); //make sure up to date
     dataFile.close();
     DBG_OUTPUT_PORT.println("Binary logging terminated");
@@ -3711,7 +3729,13 @@ void loop(void){
         indexSDIObuffer += bytesRead;
         if(indexSDIObuffer >= SDIO_BUFFER_SIZE)
         {
-          dataFile.write(SDIObuffer, SDIO_BUFFER_SIZE);
+          if (dataFile.write(SDIObuffer, SDIO_BUFFER_SIZE) != SDIO_BUFFER_SIZE) {
+            consoleLogError = "SD binary block write failed";
+            indexSDIObuffer = 0; // do not replay a partially written block
+            consoleLogAuto = false;
+            binaryLoggingStop();
+            return;
+          }
           indexSDIObuffer = 0;
           blockCountSD++;
           if(blockCountSD >= FLUSH_WRITES)
@@ -3724,7 +3748,7 @@ void loop(void){
     }
     else //not active so start
     {
-      if(!canMode && haveSDCard && fastLoggingEnabled && (startLogAttempt < 3) && (millis() > LOG_DELAY_VAL))
+      if(consoleLogAuto && !canMode && haveSDCard && fastLoggingEnabled && (startLogAttempt < 3) && (millis() > LOG_DELAY_VAL))
       {
         startLogAttempt++;
         binaryLoggingStart();

@@ -3,7 +3,10 @@
 import argparse
 import binascii
 import json
+import hashlib
+import os
 from pathlib import Path
+import tempfile
 import secrets
 import sys
 import time
@@ -78,6 +81,53 @@ class Console:
                 pass
             raise
 
+    def download(self, remote, local):
+        """Download a closed SD file with bounded reads and per-chunk CRCs.
+
+        Publish only after size/mtime consistency checks; never overwrite an
+        existing destination. Partial data is kept in a private temporary file.
+        """
+        if not remote.startswith('/') or any(ord(c) <= 32 or ord(c) > 126 for c in remote):
+            raise CliError("SD path must be one absolute ASCII token")
+        destination = Path(local)
+        if destination.exists():
+            raise CliError("Download destination already exists")
+        initial = json.loads(self.checked(f"sd stat {remote}")["result"])
+        if not isinstance(initial, dict):
+            raise CliError("Invalid SD file stat")
+        size = initial.get("size")
+        if type(size) is not int or not 0 <= size <= 0xffffffff or type(initial.get("modified")) is not int:
+            raise CliError("Invalid SD file stat")
+        digest = hashlib.sha256()
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=".oi-download-", delete=False) as out:
+                temporary = Path(out.name)
+                offset = 0
+                while offset < size:
+                    count = min(1024, size - offset)
+                    chunk = json.loads(self.checked(f"sd read {remote} {offset} {count}")["result"])
+                    if not isinstance(chunk, dict):
+                        raise CliError("Malformed SD download response")
+                    data = bytes.fromhex(chunk["hex"])
+                    if (chunk.get("offset") != offset or chunk.get("size") != size or
+                            len(data) != count or chunk.get("eof") is not (offset + count == size) or
+                            int(chunk["crc32"], 16) != binascii.crc32(data)):
+                        raise CliError("SD download offset/length/CRC mismatch")
+                    out.write(data); digest.update(data); offset += len(data)
+                if json.loads(self.checked(f"sd stat {remote}")["result"]) != initial:
+                    raise CliError("SD file changed during download")
+                out.flush(); os.fsync(out.fileno())
+            # Hard-link creation is atomic and fails if another process has
+            # created the destination. A plain POSIX rename would overwrite it.
+            os.link(temporary, destination)
+            return {"id": 0, "ok": True, "result": json.dumps({"path": str(destination), "bytes": size, "sha256": digest.hexdigest()})}
+        except (KeyError, TypeError, ValueError) as exc:
+            raise CliError("Malformed SD download response") from exc
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
     def wait_flash(self, timeout=600):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -116,7 +166,11 @@ def main(argv=None):
             port.port = args.port
             port.open()
             cli = Console(port, args.timeout)
-            if args.command[0] in ("upload", "flash-local"):
+            if args.command[0] == "download":
+                if len(args.command) != 3:
+                    raise CliError("download requires SD path and local destination")
+                reply = cli.download(args.command[1], args.command[2])
+            elif args.command[0] in ("upload", "flash-local"):
                 if len(args.command) != 2:
                     raise CliError("upload/flash-local require exactly one local firmware path")
                 reply = cli.upload(args.command[1])

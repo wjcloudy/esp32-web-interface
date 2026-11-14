@@ -93,6 +93,10 @@ before confirming reset may therefore report a timeout even though they reset.
 | `flash [PATH]`, `flash-status` | Start existing CAN bootloader updater; read progress |
 | `file begin SIZE CRC32`, `file chunk HEX`, `file finish`, `file abort` | Stage firmware on SPIFFS over serial |
 | `auth reset` | Existing physical user recovery; deletes users and reboots |
+| `sd status`, `sd enable 0/1`, `sd mount`, `sd unmount` | Inspect/configure/mount the SD card without formatting |
+| `sd list [OFFSET COUNT]`, `sd stat PATH`, `sd read PATH OFFSET COUNT` | List root entries, inspect and read closed files |
+| `log status`, `log start INTERVAL_MS NAME[,NAME...]`, `log stop` | Control CAN CSV recording on SD |
+| `log binary`, `log auto` | Start supported UART binary recording; restore original automatic policy |
 
 Integers accept decimal or explicit `0x` hexadecimal; leading zeroes remain
 decimal. Raw SDO writes accept signed int32 or unsigned 32-bit bit patterns.
@@ -279,3 +283,92 @@ envelope even on device failure), `checked(command)` (raises `DeviceError` on
 closes the serial port. `CliError` represents local/protocol timeouts; do not
 interpret it as proof that a mutating command did not execute. On upload failure
 the client attempts `file abort`, without retrying the failed chunk.
+
+## SD card, logging and file retrieval
+
+SD commands are independent of CAN mode. They use the existing **SD_MMC 1-bit**
+driver, not an SPI card interface. On classic ESP32 this uses CLK14, CMD15 and
+DAT0 GPIO2; check board wiring. `SD_AVAILABLE=0` builds, including the current
+S3 targets with `S3_SKIP_SD_MMC`, report `supported:false` and cannot mount a card.
+No command formats the card. `sd enable 1` saves the boot preference; `sd mount`
+applies it asynchronously now. Poll `sd status` for `mounted:true`, or
+`init_done:true` with `mounted:false` on failure. `sd unmount` refuses while
+initialization or logging is active. Disabling the boot preference does not
+unmount an already mounted card.
+
+| Command | Inputs / result | Contract |
+|---|---|---|
+| `sd status` | JSON `supported,enabled,mounted,init_done,total,used` | Byte counts are 64-bit; does not probe/reinitialize hardware |
+| `sd enable 0/1` | Acceptance text | Saves bridge preference; refuses while recording |
+| `sd mount` | Acceptance text | Starts background mount if enabled/supported; acceptance is not a mounted card |
+| `sd unmount` | Acceptance text | Releases SD filesystem; no formatting/deletion |
+| `sd list [OFFSET COUNT]` | Default 0/16; OFFSET=0..100000, COUNT=1..32; JSON `files,next,more` | Root directory pagination; each entry has `path,size,directory`; no sorting/snapshot guarantee if another client changes directory |
+| `sd stat PATH` | JSON `size,modified` | Closed regular file only; last-write timestamp is a filesystem value, not guaranteed correct wall time |
+| `sd read PATH OFFSET COUNT` | OFFSET=0..file size; COUNT=1..1024 | JSON `offset,size,eof,crc32,hex`; IEEE CRC32 covers decoded bytes; final chunk can be shorter, EOF offset returns empty bytes |
+| `log status` | JSON `active,mode,auto,path,rows,read_errors,interval_ms,error` | Mode `idle`, `can_csv` or `uart_binary`; rows/errors/interval describe the CSV recorder, not binary sample counts; last path/error retained after stop |
+| `log start INTERVAL_MS NAME[,NAME...]` | 100..60000 ms, 1..16 known names in one token | Starts new CAN CSV file; CAN driver and mounted SD required; names restricted to alphanumeric/underscore |
+| `log stop` | Updated status or failure | Stops CAN CSV immediately and flushes/closes it; UART stop must be confirmed; suppresses automatic restart for this bridge boot |
+| `log binary` | Updated status or failure | Uses existing ECU UART `binarylogging` protocol at 2.25 Mbaud; requires UART mode and no Wi-Fi clients, exactly as the original logger policy |
+| `log auto` | Updated status | Requires stopped logger; restores existing automatic disconnected-Wi-Fi UART logger policy |
+
+Paths are absolute ASCII tokens, at most 240 bytes; no spaces, control
+characters, backslashes, empty components, `.` or `..` components. Files in
+subdirectories can be read by known path; `sd list` enumerates the root only.
+File reads/stat/download require stopped logging. `sd list` and status are
+available during recording. Other serial ECU commands are blocked during
+recording, including flash and node/bus changes. Stop recording before changing
+the target or using another HTTP/CAN client. A CAN flash blocks SD/logger
+commands as well as other bus operations.
+
+### CAN CSV recording
+
+```sh
+python tools/oi_cli.py --port COM27 --json sd enable 1
+python tools/oi_cli.py --port COM27 --json sd mount
+python tools/oi_cli.py --port COM27 --json sd status
+# Continue only when mounted is true and the intended target is identified.
+python tools/oi_cli.py --port COM27 --json log start 500 version,canspeed,LVDU_12v_battery_voltage
+python tools/oi_cli.py --port COM27 --json log status
+python tools/oi_cli.py --port COM27 --json log stop
+python tools/oi_cli.py --port COM27 --json sd list 0 16
+python tools/oi_cli.py --port COM27 download /can-EXAMPLE-0.csv recording.csv
+```
+
+Use the actual path returned by `log start`/`log status`, not the example name.
+CAN recording works with Wi-Fi connected; no PC network change is needed.
+CSV files contain a header `ms,NAME,...` and engineering-unit numeric values:
+`ms` is elapsed bridge uptime since recording started (uint32 wrap applies).
+Strict SDO failures/nonfinite values become `nan`, incrementing `read_errors`.
+Physical signals are read sequentially; virtual signals use bridge state.
+The requested interval is a best-effort minimum between sample starts; slow
+SDO replies and other main-loop work can delay it. This is not synchronized
+sampling or high-speed raw CAN capture. Flushing occurs approximately every
+second and at stop; sudden power loss can lose the unflushed tail.
+
+The CSV recorder creates a new `/can-MILLIS-INDEX.csv` file, never overwrites
+existing names, and stops with an error on a short write or less than 64 KiB
+free. It does not prune existing files. In contrast, the **existing UART binary
+logger** retains its original cleanup policy: starting a binary recording can
+delete oldest root files to maintain 2 GB free / fewer than 200 files. Keep
+unrelated files off that logger card. Binary mode also needs a supported ECU
+UART connection; it is not high-speed CAN recording. Pending buffered binary
+bytes are flushed on a confirmed stop, including a partial final block.
+
+### Downloading exact file bytes
+
+`download SD_PATH LOCAL_PATH` is a host-only command, also available as
+`Console.download(remote, local)`. It does not decode binary logs. CSV is UTF-8
+text; UART `.bin` files need a decoder for that ECU's binary logging format.
+
+The client reads in 1024-byte chunks, checks byte counts, offsets, EOF, size and
+each chunk's CRC32, then checks file size/mtime again. It reports local byte
+count and SHA-256 in a synthetic success envelope (ID 0). Existing local files
+are never overwritten, and failed downloads remove their private temporary
+file. Publishing the completed file uses an atomic hard link on the local
+filesystem (e.g. NTFS/ext4); unsupported destinations fail rather than silently
+overwriting. A local pathname may contain spaces when quoted to the shell.
+
+Do not edit/delete/replace a remote file during a download. There is no remote
+snapshot lock against other HTTP clients, and size/mtime checks cannot detect
+every same-size same-timestamp replacement. The returned SHA-256 hashes the
+downloaded bytes; it is not a separately computed whole-file hash on the card.

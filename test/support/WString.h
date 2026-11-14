@@ -7,6 +7,9 @@
 #include <string>
 #include <cstdlib>
 #include <cstring>
+#include <type_traits>
+#include <sstream>
+#include <iomanip>
 
 class String {
 public:
@@ -14,11 +17,15 @@ public:
   String(const char* s) : s_(s ? s : "") {}
   String(const std::string& s) : s_(s) {}
   explicit String(char c) : s_(1, c) {}
-  explicit String(int v) : s_(std::to_string(v)) {}
+  template<class T, typename std::enable_if<std::is_integral<T>::value, int>::type = 0>
+  explicit String(T v) : s_(std::to_string(v)) {}
+  explicit String(double v, unsigned char decimals = 2) {
+    std::ostringstream out; out << std::fixed << std::setprecision(decimals) << v; s_ = out.str();
+  }
 
   unsigned int length() const { return (unsigned int)s_.size(); }
   const char* c_str() const { return s_.c_str(); }
-  void reserve(unsigned int n) { s_.reserve(n); }
+  bool reserve(unsigned int n) { s_.reserve(n); return true; }
 
   char operator[](unsigned int i) const { return i < s_.size() ? s_[i] : 0; }
 
