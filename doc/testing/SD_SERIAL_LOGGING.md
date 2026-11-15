@@ -2,6 +2,10 @@
 
 Date: 2026-11-14 (Europe/Berlin).
 
+Historical results for the revision below. The review follow-up changes CAN read
+failure handling from `nan` rows to discarding the failed row and stopping. See
+[SERIAL_CONSOLE_REVIEW.md](SERIAL_CONSOLE_REVIEW.md) for the current checks.
+
 ## Bench
 
 - WeAct classic ESP32 / CH343, serial 115200 baud.

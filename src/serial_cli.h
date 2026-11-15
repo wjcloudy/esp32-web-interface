@@ -50,6 +50,30 @@ inline size_t formatReply(char* out, size_t capacity, uint32_t id, bool ok, cons
   return size;
 }
 
+// Expand backwards inside the result buffer, avoiding a third large allocation
+// alongside the cached database and its command result.
+inline size_t formatReplyInPlace(char* out, size_t capacity, uint32_t id, bool ok, size_t length) {
+  size_t size = replyLength(id, ok, out, length);
+  if (!size || capacity <= size) return 0;
+  char prefix[64];
+  int head = snprintf(prefix, sizeof(prefix), "@oi {\"id\":%lu,\"ok\":%s,\"result\":\"", (unsigned long)id, ok ? "true" : "false");
+  memcpy(out + size - 3, "\"}\n", 4);
+  size_t end = size - 3;
+  const char* hex = "0123456789abcdef";
+  while (length) {
+    unsigned char c = out[--length];
+    if (c < 32) {
+      end -= 6; memcpy(out + end, "\\u00", 4);
+      out[end + 4] = hex[c >> 4]; out[end + 5] = hex[c & 15];
+    } else {
+      out[--end] = c;
+      if (c == '"' || c == '\\') out[--end] = '\\';
+    }
+  }
+  memcpy(out, prefix, head);
+  return size;
+}
+
 // A console path is a single printable ASCII token. Reject traversal and
 // alternate separators rather than normalizing a different file silently.
 inline bool sdPath(const char* path) {

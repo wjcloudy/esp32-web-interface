@@ -155,6 +155,19 @@ static void test_reply_is_complete_and_bounded() {
   TEST_ASSERT_EQUAL('X', bytes[0]); TEST_ASSERT_EQUAL('X', bytes[n + 2]);
   TEST_ASSERT_EQUAL_STRING("@oi {\"id\":4294967295,\"ok\":true,\"result\":\"line\\u000a\\u0009\\\"\\\\\\u0001\"}\n", bytes.data() + 1);
 }
+static void test_reply_in_place_matches_separate_buffer() {
+  for (const std::string data : {std::string(), std::string("quote\"\\\n\t"), std::string(60000, '\"')}) {
+    size_t n = serialcli::replyLength(42, false, data.data(), data.size());
+    std::vector<char> expected(n + 1), actual(n + 3, 'X');
+    memcpy(actual.data() + 1, data.data(), data.size());
+    TEST_ASSERT_EQUAL(0, serialcli::formatReplyInPlace(actual.data() + 1, n, 42, false, data.size()));
+    TEST_ASSERT_EQUAL(n, serialcli::formatReply(expected.data(), n + 1, 42, false, data.data(), data.size()));
+    TEST_ASSERT_EQUAL(n, serialcli::formatReplyInPlace(actual.data() + 1, n + 1, 42, false, data.size()));
+    TEST_ASSERT_EQUAL_STRING(expected.data(), actual.data() + 1);
+    TEST_ASSERT_EQUAL('X', actual[0]); TEST_ASSERT_EQUAL('X', actual[n + 2]);
+  }
+}
+
 static void test_minimal_recovery_parser() {
   SerialRecoveryLine line;
   for (char c : std::string("@oi 42 auth reset\n")) {
@@ -186,7 +199,7 @@ int main() {
   RUN_TEST(test_lines); RUN_TEST(test_framing); RUN_TEST(test_numbers); RUN_TEST(test_hex_and_crc);
   RUN_TEST(test_sdo_read_matching); RUN_TEST(test_sdo_widths); RUN_TEST(test_sdo_write_ack_matching); RUN_TEST(test_sdo_failures);
   RUN_TEST(test_sd_paths);
-  RUN_TEST(test_reply_is_complete_and_bounded); RUN_TEST(test_minimal_recovery_parser);
+  RUN_TEST(test_reply_is_complete_and_bounded); RUN_TEST(test_reply_in_place_matches_separate_buffer); RUN_TEST(test_minimal_recovery_parser);
   RUN_TEST(test_reserved_and_shared_pins_and_flash_path);
   return UNITY_END();
 }

@@ -1,15 +1,16 @@
 #pragma once
 // Included by the sketch after its shared CAN/settings/update services.
 #include "serial_cli.h"
+#include <utility>
 #include "serial_sd_console.h"
 
-static void consoleReply(uint32_t id, bool ok, const String& result) {
-  size_t size = serialcli::replyLength(id, ok, result.c_str(), result.length());
-  char* line = size && size < SIZE_MAX ? static_cast<char*>(malloc(size + 1)) : nullptr;
-  if (line) {
-    size_t n = serialcli::formatReply(line, size + 1, id, ok, result.c_str(), result.length());
-    DBG_OUTPUT_PORT.write(reinterpret_cast<const uint8_t*>(line), n);
-    free(line);
+static void consoleReply(uint32_t id, bool ok, String&& result) {
+  size_t length = result.length();
+  size_t size = serialcli::replyLength(id, ok, result.c_str(), length);
+  if (size && size < UINT_MAX && result.reserve(size)) {
+    while (result.length() < size) result += ' ';
+    size_t n = serialcli::formatReplyInPlace(&result[0], size + 1, id, ok, length);
+    DBG_OUTPUT_PORT.write(reinterpret_cast<const uint8_t*>(result.c_str()), n);
   } else {
     char error[128];
     int n = snprintf(error, sizeof(error), "@oi {\"id\":%lu,\"ok\":false,\"result\":\"reply allocation failed\"}\n", (unsigned long)id);
@@ -359,7 +360,7 @@ static void serialCanConsoleTick() {
     if (event != serialcli::LineBuffer::READY) continue;
     serialcli::Words words;
     if (!words.parse(consoleLine.data)) consoleReply(words.id, false, "invalid request");
-    else { bool ok; String result = consoleRun(words, ok); consoleReply(words.id, ok, result); }
+    else { bool ok; String result = consoleRun(words, ok); consoleReply(words.id, ok, std::move(result)); }
     return; // one command per loop; HTTP/SSE still get their turn
   }
 }
