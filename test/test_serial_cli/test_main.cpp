@@ -1,8 +1,10 @@
 #include <unity.h>
 #include <deque>
 #include <vector>
+#include <string>
 #include <cstring>
 #include "serial_cli.h"
+#include "serial_recovery.h"
 // Compile the actual protocol implementation against a simulated CAN driver.
 #include "../../src/can_protocol.cpp"
 
@@ -143,10 +145,48 @@ static void test_sd_paths() {
   for (const char* p : {"", "/", "relative", "/../file", "/logs/../file", "/./file", "/a//b", "/a/", "/name with space", "/a\\b", "/a\nreset"})
     TEST_ASSERT_FALSE(serialcli::sdPath(p));
 }
+static void test_reply_is_complete_and_bounded() {
+  const char data[] = "line\n\t\"\\\x01";
+  size_t n = serialcli::replyLength(UINT32_MAX, true, data, sizeof(data) - 1);
+  std::vector<char> bytes(n + 3, 'X');
+  TEST_ASSERT_EQUAL(0, serialcli::formatReply(bytes.data() + 1, n, UINT32_MAX, true, data, sizeof(data) - 1));
+  TEST_ASSERT_EQUAL('X', bytes[1]);
+  TEST_ASSERT_EQUAL(n, serialcli::formatReply(bytes.data() + 1, n + 1, UINT32_MAX, true, data, sizeof(data) - 1));
+  TEST_ASSERT_EQUAL('X', bytes[0]); TEST_ASSERT_EQUAL('X', bytes[n + 2]);
+  TEST_ASSERT_EQUAL_STRING("@oi {\"id\":4294967295,\"ok\":true,\"result\":\"line\\u000a\\u0009\\\"\\\\\\u0001\"}\n", bytes.data() + 1);
+}
+static void test_minimal_recovery_parser() {
+  SerialRecoveryLine line;
+  for (char c : std::string("@oi 42 auth reset\n")) {
+    if (c != '\n') TEST_ASSERT_FALSE(line.push(c));
+    else TEST_ASSERT_TRUE(line.push(c));
+  }
+  TEST_ASSERT_EQUAL(42, line.id); TEST_ASSERT_TRUE(line.framed);
+  for (const char* invalid : {"@oi 4294967296 auth reset\n", "status\n", "@oi -1 auth reset\n", "prefix auth reset\n"})
+    for (const char* p = invalid; *p; ++p) TEST_ASSERT_FALSE(line.push(*p));
+  std::string oversized(80, 'x'); oversized += "auth reset\n";
+  for (char c : oversized) TEST_ASSERT_FALSE(line.push(c));
+  for (char c : std::string("auth reset\n")) if (c == '\n') TEST_ASSERT_TRUE(line.push(c)); else TEST_ASSERT_FALSE(line.push(c));
+}
+static void test_reserved_and_shared_pins_and_flash_path() {
+  for (int pin = 26; pin <= 37; ++pin) TEST_ASSERT_TRUE(serialcli::reservedPin(pin, true, true));
+  TEST_ASSERT_FALSE(serialcli::reservedPin(25, true, true));
+  TEST_ASSERT_FALSE(serialcli::reservedPin(38, true, true));
+  TEST_ASSERT_TRUE(serialcli::reservedPin(6, false, false));
+  TEST_ASSERT_FALSE(serialcli::reservedPin(33, true, false));
+  TEST_ASSERT_TRUE(serialcli::sharedPin(16, 16, 17, false, false));
+  TEST_ASSERT_TRUE(serialcli::sharedPin(14, 16, 17, true, false));
+  TEST_ASSERT_FALSE(serialcli::sharedPin(27, 16, 17, true, false));
+  TEST_ASSERT_TRUE(serialcli::stagedFirmware("/cli-firmware.bin"));
+  TEST_ASSERT_FALSE(serialcli::stagedFirmware("/settings.json"));
+  TEST_ASSERT_FALSE(serialcli::stagedFirmware("/cli-firmware.part"));
+}
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_lines); RUN_TEST(test_framing); RUN_TEST(test_numbers); RUN_TEST(test_hex_and_crc);
   RUN_TEST(test_sdo_read_matching); RUN_TEST(test_sdo_widths); RUN_TEST(test_sdo_write_ack_matching); RUN_TEST(test_sdo_failures);
   RUN_TEST(test_sd_paths);
+  RUN_TEST(test_reply_is_complete_and_bounded); RUN_TEST(test_minimal_recovery_parser);
+  RUN_TEST(test_reserved_and_shared_pins_and_flash_path);
   return UNITY_END();
 }

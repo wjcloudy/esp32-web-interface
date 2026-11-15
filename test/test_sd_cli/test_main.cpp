@@ -47,6 +47,8 @@ struct FakeSd {
   }
 } SD_MMC;
 static bool haveSDCard, sdEnabled, sdInitDone, sdInitRunning, fastLoggingActive, canMode;
+static bool binaryLoggingFault;
+static unsigned metadataLookups, readRequests;
 static int startLogAttempt;
 static uint32_t clockMs;
 uint32_t millis() { return clockMs; }
@@ -60,21 +62,22 @@ static bool canDownloadParamCache() { return true; }
 static uint8_t canNodeId = 33;
 static String jsonEscape(const String& s) { return s; } // fixture paths contain no escapes
 static bool canVirtualFind(const String&, float*) { return false; }
-static int canGetParamId(const String& name) { return name == "version" ? 2001 : name == "canspeed" ? 1 : -1; }
+static int canGetParamId(const String& name) { ++metadataLookups; return name == "version" ? 2001 : name == "canspeed" ? 1 : -1; }
 static uint16_t canParamIndex(int id) { return 0x2100 | (id >> 8); }
 static uint8_t canParamSubIndex(int id) { return id & 255; }
 static bool readOk;
 struct CanSdoResult { bool ok; int32_t value; };
-static CanSdoResult canSdoReadChecked(uint8_t, uint16_t, uint8_t) { return {readOk, 128}; }
+static CanSdoResult canSdoReadChecked(uint8_t, uint16_t, uint8_t, uint32_t timeout = 200) { ++readRequests; if (!readOk) clockMs += timeout; return {readOk, 128}; }
 static float canDecodeValue(int32_t raw) { return raw / 32.0f; }
 #include "serial_sd_console.h"
 void binaryLoggingStart() { fastLoggingActive = true; }
-void binaryLoggingStop() { fastLoggingActive = false; }
+void binaryLoggingStop(bool) { fastLoggingActive = false; binaryLoggingFault = false; }
 
 void setUp() {
   consoleCsvStop(); files.clear(); maxWrite = SIZE_MAX; freeBytes = 1000000;
   haveSDCard = sdEnabled = sdInitDone = canMode = readOk = canParamCacheLoaded = true;
   sdInitRunning = fastLoggingActive = false; consoleLogAuto = true;
+  binaryLoggingFault = false; metadataLookups = readRequests = 0;
   consoleLogError = consoleLogPath = ""; clockMs = 100;
 }
 void tearDown() { consoleCsvStop(); }
@@ -108,18 +111,22 @@ static void test_status_64bit_and_paginated_list() {
 static void test_can_csv_records_strict_values_and_stops() {
   bool ok; command("log start 100 version,canspeed", ok); TEST_ASSERT_TRUE(ok);
   std::string path = consoleLogPath.std();
+  metadataLookups = 0;
   clockMs += 100; consoleCsvTick();
   TEST_ASSERT_EQUAL_STRING("ms,version,canspeed\n100,4.00000,4.00000\n", files[path]->bytes.c_str());
   TEST_ASSERT_EQUAL(1, consoleCsvRows);
+  TEST_ASSERT_EQUAL(0, metadataLookups); // UIDs resolved once at log start
   command("log stop", ok); TEST_ASSERT_TRUE(ok); TEST_ASSERT_FALSE(consoleCsvActive);
   clockMs += 100; consoleCsvTick(); TEST_ASSERT_EQUAL(1, consoleCsvRows);
   TEST_ASSERT_FALSE(consoleLogAuto);
   command("log auto", ok); TEST_ASSERT_TRUE(ok); TEST_ASSERT_TRUE(consoleLogAuto);
 }
-static void test_can_read_failure_is_nan_not_zero() {
-  bool ok; command("log start 100 version", ok); TEST_ASSERT_TRUE(ok);
-  readOk = false; clockMs += 100; consoleCsvTick();
-  TEST_ASSERT_TRUE(files[consoleLogPath.std()]->bytes.find("100,nan\n") != std::string::npos);
+static void test_can_read_failure_pauses_at_first_short_timeout() {
+  bool ok; command("log start 100 version,canspeed,version,canspeed,version,canspeed,version,canspeed,version,canspeed,version,canspeed,version,canspeed,version,canspeed", ok); TEST_ASSERT_TRUE(ok);
+  readOk = false; clockMs += 100; uint32_t start = clockMs; consoleCsvTick();
+  TEST_ASSERT_FALSE(consoleCsvActive); TEST_ASSERT_EQUAL(0, consoleCsvRows);
+  TEST_ASSERT_EQUAL(1, readRequests); TEST_ASSERT_EQUAL(10, clockMs - start);
+  TEST_ASSERT_TRUE(consoleLogError.indexOf("paused") >= 0);
   TEST_ASSERT_EQUAL(1, consoleCsvErrors);
 }
 static void test_low_space_and_write_failure_do_not_delete_files() {
@@ -144,7 +151,7 @@ int main() {
   RUN_TEST(test_sd_read_bounds_crc_and_busy);
   RUN_TEST(test_status_64bit_and_paginated_list);
   RUN_TEST(test_can_csv_records_strict_values_and_stops);
-  RUN_TEST(test_can_read_failure_is_nan_not_zero);
+  RUN_TEST(test_can_read_failure_pauses_at_first_short_timeout);
   RUN_TEST(test_low_space_and_write_failure_do_not_delete_files);
   RUN_TEST(test_invalid_names_intervals_and_no_card);
   return UNITY_END();

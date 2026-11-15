@@ -8,10 +8,47 @@
 #include <errno.h>
 #include <math.h>
 #include <limits.h>
+#include <stdio.h>
 
 namespace serialcli {
 constexpr size_t MAX_LINE = 1024;
 constexpr size_t MAX_WORDS = 12;
+constexpr const char* STAGED_FIRMWARE = "/cli-firmware.bin";
+inline bool stagedFirmware(const char* path) { return path && strcmp(path, STAGED_FIRMWARE) == 0; }
+
+inline bool reservedPin(int pin, bool s3, bool octalPsram) {
+  return s3 ? (pin >= 26 && pin <= (octalPsram ? 37 : 32))
+            : (pin >= 6 && pin <= 11);
+}
+inline bool sharedPin(int pin, int uartRx, int uartTx, bool sdActive, bool s3) {
+  return pin == uartRx || pin == uartTx || (!s3 && sdActive && (pin == 2 || pin == 14 || pin == 15));
+}
+// Allocate exactly once and perform one port.write for the entire reply.
+inline size_t replyLength(uint32_t id, bool ok, const char* data, size_t length) {
+  char prefix[64]; int n = snprintf(prefix, sizeof(prefix), "@oi {\"id\":%lu,\"ok\":%s,\"result\":\"", (unsigned long)id, ok ? "true" : "false");
+  size_t size = n + 3; // closing quote, brace, newline
+  for (size_t i = 0; i < length; ++i) {
+    unsigned char c = data[i];
+    size_t extra = c < 32 ? 6 : (c == '"' || c == '\\') ? 2 : 1;
+    if (size > SIZE_MAX - extra) return 0;
+    size += extra;
+  }
+  return size;
+}
+inline size_t formatReply(char* out, size_t capacity, uint32_t id, bool ok, const char* data, size_t length) {
+  size_t size = replyLength(id, ok, data, length);
+  if (!size || capacity <= size) return 0;
+  int used = snprintf(out, capacity, "@oi {\"id\":%lu,\"ok\":%s,\"result\":\"", (unsigned long)id, ok ? "true" : "false");
+  char* p = out + used;
+  const char* hex = "0123456789abcdef";
+  for (size_t i = 0; i < length; ++i) {
+    unsigned char c = data[i];
+    if (c < 32) { memcpy(p, "\\u00", 4); p[4] = hex[c >> 4]; p[5] = hex[c & 15]; p += 6; }
+    else { if (c == '"' || c == '\\') *p++ = '\\'; *p++ = c; }
+  }
+  memcpy(p, "\"}\n", 3); p[3] = 0;
+  return size;
+}
 
 // A console path is a single printable ASCII token. Reject traversal and
 // alternate separators rather than normalizing a different file silently.

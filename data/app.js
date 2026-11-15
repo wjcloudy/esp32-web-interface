@@ -3676,6 +3676,18 @@ const UsersPanel = () => {
 
 const Settings = () => {
   const { state, dispatch } = useContext(Store);
+  const [serialInfo, setSerialInfo] = useState(null);
+  const [serialMsg, setSerialMsg] = useState('');
+  const [serialSaving, setSerialSaving] = useState(false);
+  const saveSerialConsole = async (enabled) => {
+    setSerialSaving(true); setSerialMsg('');
+    try {
+      const r = await fetch('/settings?serial_console=' + (enabled ? '1' : '0'), { method: 'POST' });
+      if (!r.ok) { const data = await r.json(); throw new Error(data.error || 'Could not save serial console setting'); }
+      setSerialInfo({ ...serialInfo, enabled });
+    } catch (e) { setSerialMsg(e.message); }
+    finally { setSerialSaving(false); }
+  };
   const [uartRxPin, setUartRxPin] = useState(1); // configurable UART pins (default GPIO1/3)
   const [uartTxPin, setUartTxPin] = useState(3);
   const [loading, setLoading] = useState(true);
@@ -3832,6 +3844,8 @@ const Settings = () => {
           if (data.uart_rx_pin != null) setUartRxPin(data.uart_rx_pin);
           if (data.uart_tx_pin != null) setUartTxPin(data.uart_tx_pin);
           setApFb(data.ap_fallback === true);
+          if (data.serial_console_available !== undefined)
+            setSerialInfo({ available: data.serial_console_available === true, enabled: data.serial_console === true });
           // Older firmware doesn't report SD state — keep the box hidden
           if (data.sd_available !== undefined)
             // probed = what this boot did (the toggle only applies after a reboot)
@@ -4142,6 +4156,19 @@ const Settings = () => {
           ${devMsg && html`<p id="dev-name-msg" style="color:var(--accent);font-size:.78rem;font-weight:600;margin:.5rem 0 0">${devMsg}</p>`}
           <p style="font-size:.72rem;color:var(--text3);margin:.35rem 0 0;max-width:350px">The hostname (<b>${(devName.trim().toLowerCase().replace(/[^a-z0-9 _-]/g, '').replace(/[ _]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'inverter')}.local</b>) applies after the next reboot.</p>
         </div>
+
+        ${serialInfo && html`
+        <div class="dash-box compact" id="serial-console-box">
+          <h3>Serial Maintenance Console</h3>
+          <${ToggleRow} label="Enable serial access (bypasses users and roles)" checked=${serialInfo.enabled}
+            disabled=${!serialInfo.available || serialSaving} onChange=${saveSerialConsole} />
+          <p style="font-size:.72rem;color:var(--text3);margin:.35rem 0 0">
+            Off by default. Trusted physical access permits ECU writes, resets, firmware updates and SD logging.
+            ${serialInfo.available ? 'Long bench commands can pause web updates. Auth reset recovery stays available when off.'
+              : 'Not compiled into this firmware. Requires an OI_SERIAL_CONSOLE build, such as esp32_weact_cli.'}
+          </p>
+          ${serialMsg && html`<p role="alert" style="color:var(--red)">${serialMsg}</p>`}
+        </div>`}
 
         ${sdInfo && sdInfo.available && html`
         <div class="dash-box compact" id="sd-card-box">

@@ -4,23 +4,30 @@
 #include "serial_sd_console.h"
 
 static void consoleReply(uint32_t id, bool ok, const String& result) {
-  DBG_OUTPUT_PORT.printf("@oi {\"id\":%lu,\"ok\":%s,\"result\":\"",
-                         (unsigned long)id, ok ? "true" : "false");
-  for (size_t i = 0; i < result.length(); ++i) {
-    unsigned char c = result[i];
-    switch (c) {
-      case '"': DBG_OUTPUT_PORT.print("\\\""); break;
-      case '\\': DBG_OUTPUT_PORT.print("\\\\"); break;
-      case '\n': DBG_OUTPUT_PORT.print("\\n"); break;
-      case '\r': DBG_OUTPUT_PORT.print("\\r"); break;
-      case '\t': DBG_OUTPUT_PORT.print("\\t"); break;
-      default:
-        if (c < 32) DBG_OUTPUT_PORT.printf("\\u%04x", (unsigned)c);
-        else DBG_OUTPUT_PORT.write(c);
-    }
+  size_t size = serialcli::replyLength(id, ok, result.c_str(), result.length());
+  char* line = size && size < SIZE_MAX ? static_cast<char*>(malloc(size + 1)) : nullptr;
+  if (line) {
+    size_t n = serialcli::formatReply(line, size + 1, id, ok, result.c_str(), result.length());
+    DBG_OUTPUT_PORT.write(reinterpret_cast<const uint8_t*>(line), n);
+    free(line);
+  } else {
+    char error[128];
+    int n = snprintf(error, sizeof(error), "@oi {\"id\":%lu,\"ok\":false,\"result\":\"reply allocation failed\"}\n", (unsigned long)id);
+    DBG_OUTPUT_PORT.write(reinterpret_cast<const uint8_t*>(error), n);
   }
-  DBG_OUTPUT_PORT.println("\"}");
 }
+
+static bool consoleTransportSafe() {
+#if defined(CONFIG_IDF_TARGET_ESP32)
+  if ((const void*)&DBG_OUTPUT_PORT == (const void*)&Serial)
+    return INVERTER_PORT != UART_NUM_0 && uartRxPin != 1 && uartRxPin != 3 && uartTxPin != 1 && uartTxPin != 3;
+  if ((const void*)&DBG_OUTPUT_PORT == (const void*)&Serial2)
+    return INVERTER_PORT != UART_NUM_2 && uartRxPin != 16 && uartRxPin != 17 && uartTxPin != 16 && uartTxPin != 17;
+#endif
+  return true;
+}
+
+static serialcli::LineBuffer consoleLine;
 
 static String consoleSdo(const CanSdoResult& r, bool& ok) {
   ok = r.ok;
@@ -33,16 +40,32 @@ static bool consolePin(int pin, bool output, bool optional = false) {
   if (pin < 0 || pin > 48 || !GPIO_IS_VALID_GPIO(pin) ||
       (output && !GPIO_IS_VALID_OUTPUT_GPIO(pin))) return false;
 #if defined(CONFIG_IDF_TARGET_ESP32)
-  if (pin >= 6 && pin <= 11) return false; // attached flash
+  if (serialcli::reservedPin(pin, false, false)) return false;
+  if (serialcli::sharedPin(pin, uartRxPin, uartTxPin, sdEnabled || haveSDCard || sdInitRunning, false)) return false;
   if ((const void*)&DBG_OUTPUT_PORT == (const void*)&Serial && (pin == 1 || pin == 3)) return false;
+  if ((const void*)&DBG_OUTPUT_PORT == (const void*)&Serial2 && (pin == 16 || pin == 17)) return false;
+#elif defined(CONFIG_IDF_TARGET_ESP32S3)
+#ifdef BOARD_HAS_PSRAM
+  const bool psram = true;
+#else
+  const bool psram = false;
+#endif
+  if (serialcli::reservedPin(pin, true, psram) || serialcli::sharedPin(pin, uartRxPin, uartTxPin, false, true)) return false;
+#if ARDUINO_USB_CDC_ON_BOOT
+  if (pin == 19 || pin == 20) return false; // native USB console
+#endif
 #endif
   return true;
 }
 
 static bool consoleStartBus(int speed, int tx, int rx) {
+  // The inverter UART is no longer in use in CAN mode. Release its peripheral
+  // and pin matrix before enabling the transceiver, even on a mode change.
+  if (uart_is_driver_installed(INVERTER_PORT)) uart_driver_delete(INVERTER_PORT);
   applyCanEnablePins();
   if (!canDriverInitForDevice(canNodeId, (CanSpeed)speed, tx, rx)) {
     if (canMode) canDriverInitForDevice(canNodeId, (CanSpeed)canSpeed, canTxPin, canRxPin);
+    else initUART(true);
     return false;
   }
   canMode = true; canSpeed = speed; canTxPin = tx; canRxPin = rx;
@@ -56,12 +79,23 @@ static uint32_t consoleUploadSize = 0, consoleUploadBytes = 0;
 static uint32_t consoleUploadCrc = 0xffffffffU, consoleExpectedCrc = 0;
 static uint32_t consoleUploadTouched = 0;
 static const char* const CONSOLE_PART = "/cli-firmware.part";
-static const char* const CONSOLE_FIRMWARE = "/cli-firmware.bin";
+static const char* const CONSOLE_FIRMWARE = serialcli::STAGED_FIRMWARE;
 
 static void consoleAbortUpload() {
   if (consoleUpload) consoleUpload.close();
   SPIFFS.remove(CONSOLE_PART);
   consoleUploadBytes = consoleUploadSize = 0;
+}
+
+static bool serialConsoleSetEnabled(bool enabled) {
+  if (enabled && !consoleTransportSafe()) return false;
+  if (!enabled) {
+    consoleCsvStop(); consoleAbortUpload();
+    if (fastLoggingActive || binaryLoggingFault) binaryLoggingStop(false);
+    if (fastLoggingActive || binaryLoggingFault) return false;
+  }
+  consoleLine = serialcli::LineBuffer(); recoveryLine = SerialRecoveryLine();
+  serialConsoleEnabled = enabled; return true;
 }
 
 static String consoleFile(const serialcli::Words& w, bool& ok) {
@@ -104,6 +138,12 @@ static String consoleRun(const serialcli::Words& w, bool& ok) {
   ok = false;
   uint32_t a = 0, b = 0;
   int32_t value = 0;
+  // Physical lockout recovery is independent of maintenance access and bus
+  // ownership. In particular it must work during logging and CAN flashing.
+  if (w.is(0, "auth") && w.is(1, "reset") && w.count == 2) {
+    if (authEnabled()) { consoleReply(w.id, true, "resetting users and rebooting"); authRecoveryReset("serial"); }
+    ok = true; return "Auth: no users, nothing to reset";
+  }
   if (w.is(0, "help") && w.count == 1) {
     ok = true;
     return "help; status; bus <125|250|500> [tx rx]; transceiver <pwr|-1> <invert0/1> <en|-1> <invert0/1>; "
@@ -113,7 +153,7 @@ static String consoleRun(const serialcli::Words& w, bool& ok) {
            "can list; can clear; can rm <index> <sub>; can tx/rx <name> <id> <bit> <signed-length> [gain [offset]]; "
            "send <id> [hexbytes]; sniff <1..8000ms>; debug reset; "
            "file begin <size> <crc32>; file chunk <hex>; file finish; file abort; "
-           "flash [SPIFFS-path]; flash-status; auth reset; "
+           "flash [/cli-firmware.bin]; flash-status; auth reset; "
            "sd status; sd enable <0|1>; sd mount; sd unmount; sd list [offset count]; sd stat <path>; sd read <path> <offset> <count>; "
            "log status; log start <100..60000ms> <names>; log binary; log stop; log auto";
   }
@@ -134,12 +174,8 @@ static String consoleRun(const serialcli::Words& w, bool& ok) {
   if (canFwBusy()) return "CAN firmware update in progress";
   if (w.is(0, "sd")) return consoleSd(w, ok);
   if (w.is(0, "log")) return consoleLog(w, ok);
-  if (consoleCsvActive || fastLoggingActive) return "stop logger before other device commands";
+  if (consoleCsvActive || fastLoggingActive || binaryLoggingFault) return "stop/recover logger before other device commands";
   if (w.is(0, "file")) return consoleFile(w, ok);
-  if (w.is(0, "auth") && w.is(1, "reset") && w.count == 2) {
-    if (authEnabled()) { consoleReply(w.id, true, "resetting users and rebooting"); authRecoveryReset("serial"); }
-    ok = true; return "Auth: no users, nothing to reset";
-  }
   if (w.is(0, "bus") && (w.count == 2 || w.count == 4)) {
     if (!number(w.args[1], 500, a) || (a != 125 && a != 250 && a != 500)) return "rate must be 125, 250 or 500";
     int tx = canTxPin, rx = canRxPin;
@@ -175,7 +211,7 @@ static String consoleRun(const serialcli::Words& w, bool& ok) {
   if (w.is(0, "flash") && w.count <= 2) {
     if (consoleUpload) return "finish or abort the active upload first";
     String path = w.count == 2 ? w.args[1] : CONSOLE_FIRMWARE;
-    if (!path.startsWith("/") || path.endsWith(".part")) return "expected a completed SPIFFS firmware path";
+    if (!stagedFirmware(path.c_str())) return "only the staged /cli-firmware.bin may be flashed";
     String error;
     if (!startCanFwUpdate(path, error)) return error;
     ok = true; return "CAN firmware update started; poll flash-status";
@@ -313,17 +349,16 @@ static String consoleRun(const serialcli::Words& w, bool& ok) {
 
 static void serialCanConsoleTick() {
   consoleCsvTick();
-  static serialcli::LineBuffer line;
   if (consoleUpload && millis() - consoleUploadTouched > 60000) consoleAbortUpload();
   for (unsigned i = 0; i < 128 && DBG_OUTPUT_PORT.available(); ++i) {
-    auto event = line.push(DBG_OUTPUT_PORT.read());
+    auto event = consoleLine.push(DBG_OUTPUT_PORT.read());
     if (event == serialcli::LineBuffer::REJECTED) {
       consoleReply(0, false, "invalid/overlong line (max 1024 bytes)");
       return;
     }
     if (event != serialcli::LineBuffer::READY) continue;
     serialcli::Words words;
-    if (!words.parse(line.data)) consoleReply(words.id, false, "invalid request");
+    if (!words.parse(consoleLine.data)) consoleReply(words.id, false, "invalid request");
     else { bool ok; String result = consoleRun(words, ok); consoleReply(words.id, ok, result); }
     return; // one command per loop; HTTP/SSE still get their turn
   }

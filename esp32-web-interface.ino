@@ -128,6 +128,8 @@ int uartRxPin = INVERTER_RX; // configurable UART pins (the swap toggle flips th
 int uartTxPin = INVERTER_TX;
 bool apFallback = false; // true = AP broadcasts only while the station link is down
 bool canMode = false; // true = CAN bus mode, false = UART mode
+bool serialConsoleEnabled = false; // old settings and fresh devices default off
+static bool serialConsoleSetEnabled(bool enabled);
 int canNodeId = CAN_NODE_ID_MIN;
 int canSpeed = 2; // 0=125k, 1=250k, 2=500k
 int canRxPin = CAN_RX_PIN;
@@ -638,6 +640,8 @@ static bool startSdMount() {
 static bool consoleSdLoggerActive();
 bool fastLoggingEnabled = true;
 bool fastLoggingActive = false;
+bool binaryLoggingFault = false;
+void binaryLoggingStop(bool forceLocalStop = false);
 uint8_t SDIObuffer[SDIO_BUFFER_SIZE];
 uint16_t indexSDIObuffer = 0;
 uint16_t blockCountSD = 0;
@@ -2383,7 +2387,7 @@ static void saveSettings(const String& canNodesJson)
 {
   File f = SPIFFS.open("/settings.json", "w");
   if (f) {
-    f.printf("{\"dev_name\":\"%s\",\"txrx_swapped\":%s,\"uart_rx_pin\":%d,\"uart_tx_pin\":%d,\"ap_fallback\":%s,\"sd_enabled\":%s,\"can_mode\":%s,\"can_node_id\":%d,\"can_speed\":%d,\"can_rx_pin\":%d,\"can_tx_pin\":%d,\"can_pwr_pin\":%d,\"can_pwr_inv\":%s,\"can_en_pin\":%d,\"can_en_inv\":%s,\"can_nodes\":%s}",
+    f.printf("{\"dev_name\":\"%s\",\"txrx_swapped\":%s,\"uart_rx_pin\":%d,\"uart_tx_pin\":%d,\"ap_fallback\":%s,\"sd_enabled\":%s,\"can_mode\":%s,\"can_node_id\":%d,\"can_speed\":%d,\"can_rx_pin\":%d,\"can_tx_pin\":%d,\"can_pwr_pin\":%d,\"can_pwr_inv\":%s,\"can_en_pin\":%d,\"can_en_inv\":%s,\"can_nodes\":%s,\"serial_console\":%s}",
              jsonEscape(deviceName).c_str(),
              txrxSwapped ? "true" : "false",
              uartRxPin, uartTxPin,
@@ -2393,7 +2397,7 @@ static void saveSettings(const String& canNodesJson)
              canNodeId, canSpeed, canRxPin, canTxPin,
              canPwrPin, canPwrInv ? "true" : "false",
              canEnPin, canEnInv ? "true" : "false",
-             canNodesJson.c_str());
+             canNodesJson.c_str(), serialConsoleEnabled ? "true" : "false");
     f.close();
     cfgMirrorSave("/settings.json");
   }
@@ -2423,6 +2427,7 @@ static void loadSettings()
       }
 
       apFallback = json.indexOf("\"ap_fallback\":true") >= 0;
+      serialConsoleEnabled = json.indexOf("\"serial_console\":true") >= 0;
       // Absent in older files → keep the build's default
       if (json.indexOf("\"sd_enabled\":false") >= 0) sdEnabled = false;
       else if (json.indexOf("\"sd_enabled\":true") >= 0) sdEnabled = true;
@@ -2526,6 +2531,16 @@ static void handleSettings()
     server.send(200, "text/json", "{\"result\":\"ok\",\"rebooting\":true}");
     delay(250);
     ESP.restart();
+  } else if (server.hasArg("serial_console")) {
+    if (server.arg("serial_console") != "0" && server.arg("serial_console") != "1") {
+      server.send(400, "application/json", "{\"error\":\"serial_console must be 0 or 1\"}"); return;
+    }
+    if (canFwBusy()) { server.send(409, "application/json", "{\"error\":\"Wait for CAN update before changing console access\"}"); return; }
+    if (!serialConsoleSetEnabled(server.arg("serial_console") == "1")) {
+      server.send(409, "application/json", "{\"error\":\"Console unavailable, UART port conflict, or logger stop unconfirmed\"}"); return;
+    }
+    saveSettings();
+    server.send(200, "application/json", "{\"result\":\"ok\"}");
   } else if (server.hasArg("sd_enabled")) {
     sdEnabled = (server.arg("sd_enabled") == "1");
     saveSettings();
@@ -2596,6 +2611,14 @@ static void sendSettingsJson()
     json += SD_AVAILABLE ? "true" : "false";
     json += ",\"sd_enabled\":";
     json += sdEnabled ? "true" : "false";
+    json += ",\"serial_console\":";
+    json += serialConsoleEnabled ? "true" : "false";
+    json += ",\"serial_console_available\":";
+#ifdef OI_SERIAL_CONSOLE
+    json += "true";
+#else
+    json += "false";
+#endif
     json += ",\"sd_card\":";
     json += haveSDCard ? "true" : "false";
     json += ",\"can_mode\":";
@@ -3075,11 +3098,39 @@ static bool authResetPinUsable()
 #endif
 }
 
+#include "src/serial_recovery.h"
+static SerialRecoveryLine recoveryLine;
+#ifdef OI_SERIAL_CONSOLE
 #include "src/serial_can_console.h"
+#else
+static bool consoleSdLoggerActive() { return fastLoggingActive; }
+static bool serialConsoleSetEnabled(bool enabled) {
+  if (enabled) return false;
+  serialConsoleEnabled = false; return true;
+}
+#endif
+
+static void minimalSerialRecoveryTick() {
+  for (unsigned i = 0; i < 128 && DBG_OUTPUT_PORT.available(); ++i) {
+    if (!recoveryLine.push(DBG_OUTPUT_PORT.read())) continue;
+    bool reset = authEnabled();
+    const char* message = reset ? "resetting users and rebooting" : "Auth: no users, nothing to reset";
+    char response[160];
+    int length = recoveryLine.framed
+      ? snprintf(response, sizeof(response), "@oi {\"id\":%lu,\"ok\":true,\"result\":\"%s\"}\n", (unsigned long)recoveryLine.id, message)
+      : snprintf(response, sizeof(response), "%s\n", message);
+    DBG_OUTPUT_PORT.write(reinterpret_cast<const uint8_t*>(response), length);
+    if (reset) authRecoveryReset("serial");
+  }
+}
 
 static void authRecoveryTick()
 {
-  serialCanConsoleTick();
+#ifdef OI_SERIAL_CONSOLE
+  if (serialConsoleEnabled && consoleTransportSafe()) serialCanConsoleTick();
+  else
+#endif
+    minimalSerialRecoveryTick();
 #if AUTH_RESET_PIN >= 0
   static bool pinReady = false, seenHigh = false;
   static uint32_t lowSince = 0;
@@ -3649,6 +3700,7 @@ void setup(void){
 
 void binaryLoggingStart()
 {
+  if (binaryLoggingFault) return; // explicit confirmed stop/recovery required
   if(createNextSDFile())
   {
     sendCommand(""); //flush out buffer in case just had power up
@@ -3660,7 +3712,9 @@ void binaryLoggingStart()
       uart_set_baudrate(INVERTER_PORT, 2250000);
       fastLoggingActive = true;
       indexSDIObuffer = blockCountSD = 0;
+#ifdef OI_SERIAL_CONSOLE
       consoleLogPath = dataFile.name();
+#endif
       DBG_OUTPUT_PORT.println("Binary logging started");
     }
     else //no response - in case it did actually switch but we missed response send the turn off command
@@ -3679,7 +3733,7 @@ void binaryLoggingStart()
   }
 }
 
-void binaryLoggingStop()
+void binaryLoggingStop(bool forceLocalStop)
 {
   uart_write_bytes(INVERTER_PORT, "\n", 1);
   delay(1);
@@ -3691,20 +3745,27 @@ void binaryLoggingStop()
   uart_flush(INVERTER_PORT);
   //data should now have stopped so send command again and check response
   sendCommand("binarylogging 0");
-  if (uart_readStartsWith("OK"))
+  bool confirmed = uart_readStartsWith("OK");
+  bool writeFailed = false;
+  if (confirmed || forceLocalStop)
   {
     uart_set_baudrate(INVERTER_PORT, 115200);
     fastUart = false;
     fastLoggingActive = false;
     // Preserve a final partial block; small recordings used to be empty.
     if (indexSDIObuffer) {
-      if (dataFile.write(SDIObuffer, indexSDIObuffer) != indexSDIObuffer)
+      if (dataFile.write(SDIObuffer, indexSDIObuffer) != indexSDIObuffer) {
+        binaryLoggingFault = writeFailed = true;
+#ifdef OI_SERIAL_CONSOLE
         consoleLogError = "SD final block write failed";
+#endif
+      }
       indexSDIObuffer = 0;
     }
     dataFile.flush(); //make sure up to date
     dataFile.close();
-    DBG_OUTPUT_PORT.println("Binary logging terminated");
+    DBG_OUTPUT_PORT.println(confirmed ? "Binary logging terminated" : "Binary logging stopped locally; target stop unconfirmed");
+    if (confirmed && !forceLocalStop && !writeFailed) binaryLoggingFault = false;
   }
   else
   { //assume still logging so try again next time round
@@ -3768,10 +3829,13 @@ void loop(void){
         if(indexSDIObuffer >= SDIO_BUFFER_SIZE)
         {
           if (dataFile.write(SDIObuffer, SDIO_BUFFER_SIZE) != SDIO_BUFFER_SIZE) {
-            consoleLogError = "SD binary block write failed";
+            binaryLoggingFault = true;
             indexSDIObuffer = 0; // do not replay a partially written block
+#ifdef OI_SERIAL_CONSOLE
+            consoleLogError = "SD binary block write failed; target stop may be unconfirmed";
             consoleLogAuto = false;
-            binaryLoggingStop();
+#endif
+            binaryLoggingStop(true); // close the failing file even without target ACK
             return;
           }
           indexSDIObuffer = 0;
@@ -3786,7 +3850,11 @@ void loop(void){
     }
     else //not active so start
     {
-      if(consoleLogAuto && !canMode && haveSDCard && fastLoggingEnabled && (startLogAttempt < 3) && (millis() > LOG_DELAY_VAL))
+      if(
+#ifdef OI_SERIAL_CONSOLE
+         consoleLogAuto &&
+#endif
+         !binaryLoggingFault && !canMode && haveSDCard && fastLoggingEnabled && (startLogAttempt < 3) && (millis() > LOG_DELAY_VAL))
       {
         startLogAttempt++;
         binaryLoggingStart();

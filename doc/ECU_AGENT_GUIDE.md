@@ -19,11 +19,11 @@ The named parameter API requires the ECU's OpenInverter JSON object at
 device does not automatically support metadata, save/load, start/stop, or this
 bootloader. Use the ECU source and hardware documentation to establish support.
 
-Physical serial access bypasses web users and roles. Keep the bridge on the
-development bench. Actions already authorized in the development task can be
-performed within that scope; do not ask again for every command. If a requested
-test would additionally energize outputs, overwrite another device, erase
-configuration, or flash a different image, establish that scope first.
+Enabled physical serial access bypasses web users and roles. It can energize
+outputs, erase configuration or overwrite ECU firmware. The person operating
+the agent determines the allowed operations, confirmation policy and physical
+bench safeguards. This guide describes the mechanisms and risks; it does not
+set an agent's authorization or confirmation policy.
 
 ## Bench profile: resolve before sending writes
 
@@ -74,11 +74,21 @@ ordinary Wemos builds use the console ports described in the CLI reference.
 Do not overwrite the WeAct build with a generic ESP32 OTA image when USB CLI
 availability is required. No PC network change is required.
 
-Repeated metadata refreshes on a classic ESP32 also need the streaming cache
-memory fix tracked in [Cloudy PR #14](https://github.com/wjcloudy/esp32-web-interface/pull/14),
-in addition to the CLI in [PR #15](https://github.com/wjcloudy/esp32-web-interface/pull/15),
-until both are present in the chosen upstream revision. Record the exact commits
-used in an integration build; do not silently substitute a different firmware.
+The maintenance console is compiled only with `OI_SERIAL_CONSOLE`, set by
+`esp32_weact_cli`. Standard release/debug builds omit it. Even in a CLI build,
+`serial_console` defaults to false: an administrator must enable **Settings →
+Device & Connection → Enable serial access (bypasses users and roles)** once.
+This setting is kept in settings.json/NVS across updates. When off (or compiled
+out), only the minimal `auth reset` recovery parser runs. It accepts plain
+`auth reset` and framed recovery requests even during logging/CAN updates.
+After opt-in, normal CLI use needs no web connection. Disabling access stops
+CSV recording and aborts incomplete staging; the UI refuses changes during a
+CAN update or if a UART logger's stop is unconfirmed.
+
+The streaming cache memory fix from
+[Cloudy PR #14](https://github.com/wjcloudy/esp32-web-interface/pull/14) is now in
+`dev`; this CLI branch is rebased onto it. Record the exact upstream and CLI
+commits used in the bridge build.
 
 Only one process may own the serial port. Close the IDE monitor before using the
 client, and serialize access across agents/jobs with a bench lock. Do not run
@@ -305,8 +315,9 @@ print(artifact)
 ```
 
 Select names supported by the actual ECU; these names are from the demonstrated
-Zombie-Slave bench. Preserve the CSV and its SHA-256 with test results. Treat
-`nan` as a missing measurement, not zero. Check actual `ms` spacing and record
+Zombie-Slave bench. Preserve the CSV and its SHA-256 with test results. On the
+first failed/nonfinite read the recorder discards that row, closes the file and
+reports an error; an incomplete row never becomes a successful sample. Check actual `ms` spacing and record
 host start/end timestamps; the logger does not guarantee precise sample timing
 or a valid real-time clock. It records values, not all CAN frames.
 

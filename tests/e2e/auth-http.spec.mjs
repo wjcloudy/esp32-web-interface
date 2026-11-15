@@ -30,6 +30,17 @@ const WRITE_CMDS = ['set fweak 50', 'save', 'load', 'defaults', 'start 2', 'stop
   'can clear', 'can tx udc 0x100 0 16 1', 'can rm 12544 1', 'get udc\nsave', 'json extra', 'unknowncmd'];
 const READ_CMDS = ['json', 'get udc,tmphs', 'errors', 'stream 3 udc', 'can list'];
 
+test('only admins can opt into the physical maintenance console', async ({ mock }) => {
+  await fetch(mock.url + '/__test/serial-build?enabled=1');
+  const users = await withUsers(mock);
+  for (const cookie of [users.oper, users.view]) {
+    expect((await mock.call('/settings?serial_console=1', { method: 'POST', cookie })).status).toBe(403);
+    expect((await mock.state()).settings.serial_console).toBe(false);
+  }
+  expect((await mock.call('/settings?serial_console=1', { method: 'POST', cookie: users.admin })).status).toBe(200);
+  expect((await mock.state()).settings.serial_console).toBe(true);
+});
+
 function sseStatus(port, query) {
   return new Promise((resolve, reject) => {
     const req = http.get({ host: '127.0.0.1', port, path: '/stream?' + query }, res => {

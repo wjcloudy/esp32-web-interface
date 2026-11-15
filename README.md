@@ -411,6 +411,9 @@ CAN parameter reads/writes, node scanning, mappings, diagnostics and the CAN
 bootloader updater are also available without a GUI or Wi-Fi through the physical
 serial console. For the WeAct USB adapter, build `esp32_weact_cli`; automate it
 with `python tools/oi_cli.py --port COM27 help`.
+Maintenance commands require `OI_SERIAL_CONSOLE` and are off by default even
+in that build. An admin enables Settings → Device & Connection → serial access
+(which bypasses users and roles). Standard builds keep only `auth reset` recovery.
 See [Serial CANopen CLI](doc/SERIAL_CAN_CLI.md) for wiring, commands and framing.
 The CLI also controls SD logging, records selected CAN values as CSV and downloads
 closed SD files with chunk CRC checks (`sd`, `log`, and host `download` commands).

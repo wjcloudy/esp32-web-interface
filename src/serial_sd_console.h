@@ -5,11 +5,14 @@ static bool consoleCsvActive = false;
 static File consoleCsvFile;
 static String consoleLogPath, consoleLogError;
 static String consoleCsvNames[16];
+static uint16_t consoleCsvIndex[16];
+static uint8_t consoleCsvSub[16];
+static bool consoleCsvVirtual[16];
 static uint8_t consoleCsvCount = 0;
 static uint32_t consoleCsvInterval = 1000, consoleCsvLast = 0, consoleCsvStart = 0;
 static uint32_t consoleCsvRows = 0, consoleCsvErrors = 0, consoleCsvFlush = 0;
 void binaryLoggingStart();
-void binaryLoggingStop();
+void binaryLoggingStop(bool forceLocalStop);
 static bool consoleSdLoggerActive() { return consoleCsvActive || fastLoggingActive; }
 
 static void consoleCsvStop() {
@@ -23,6 +26,7 @@ static String consoleLogStatus() {
     "\",\"auto\":" + (consoleLogAuto ? "true" : "false") +
     ",\"path\":\"" + jsonEscape(consoleLogPath) + "\",\"rows\":" + String(consoleCsvRows) +
     ",\"read_errors\":" + String(consoleCsvErrors) + ",\"interval_ms\":" + String(consoleCsvInterval) +
+    ",\"binary_fault\":" + (binaryLoggingFault ? "true" : "false") +
     ",\"error\":\"" + jsonEscape(consoleLogError) + "\"}";
 }
 
@@ -101,16 +105,18 @@ static String consoleLog(const serialcli::Words& w, bool& ok) {
   if (w.is(1, "status") && w.count == 2) { ok = true; return consoleLogStatus(); }
   if (w.is(1, "stop") && w.count == 2) {
     consoleLogAuto = false; consoleCsvStop();
-    if (fastLoggingActive) binaryLoggingStop();
-    ok = !fastLoggingActive; return ok ? consoleLogStatus() : "UART logger stop not confirmed; retry log stop after checking target";
+    if (fastLoggingActive || binaryLoggingFault) binaryLoggingStop(false);
+    ok = !fastLoggingActive && !binaryLoggingFault; return ok ? consoleLogStatus() : "UART logger stop not confirmed; check target/recover before restarting";
   }
   if (w.is(1, "auto") && w.count == 2) {
+    if (binaryLoggingFault) return "binary logger fault latched; confirm log stop / recover target first";
     if (consoleCsvActive || fastLoggingActive) return "stop logger first";
     consoleLogAuto = true; startLogAttempt = 0; ok = true; return consoleLogStatus();
   }
   if (!haveSDCard) return "SD card not mounted; see sd status";
   if (consoleCsvActive || fastLoggingActive) return "logger already active";
   if (w.is(1, "binary") && w.count == 2) {
+    if (binaryLoggingFault) return "binary logger fault latched; confirm log stop / recover target first";
     if (canMode) return "binary logging requires inverter UART mode";
     if (WiFi.softAPgetStationNum() || WiFi.status() == WL_CONNECTED) return "binary logger requires no WiFi clients (existing automatic logger policy)";
     consoleLogAuto = false; consoleLogError = ""; binaryLoggingStart();
@@ -129,9 +135,11 @@ static String consoleLog(const serialcli::Words& w, bool& ok) {
     for (size_t i = 0; i < name.length(); ++i)
       if (!isalnum((unsigned char)name[i]) && name[i] != '_') return "CSV names must be alphanumeric/underscore";
     float v;
-    int id = canGetParamId(name);
-    if (!canVirtualFind(name, &v) && (id < 0 || id > 65535)) return "unknown parameter: " + name;
-    consoleCsvNames[count++] = name;
+    bool virtualValue = canVirtualFind(name, &v);
+    int id = virtualValue ? 0 : canGetParamId(name);
+    if (!virtualValue && (id < 0 || id > 65535)) return "unknown parameter: " + name;
+    consoleCsvNames[count] = name; consoleCsvVirtual[count] = virtualValue;
+    consoleCsvIndex[count] = canParamIndex(id); consoleCsvSub[count] = canParamSubIndex(id); ++count;
     if (comma < 0) break;
     pos = comma + 1;
   } while (true);
@@ -159,16 +167,21 @@ static void consoleCsvTick() {
   String row;
   if (!row.reserve(512)) { consoleLogError = "out of memory"; consoleCsvStop(); return; }
   row = String(millis() - consoleCsvStart);
+  uint32_t rowStart = millis();
   for (uint8_t i = 0; i < consoleCsvCount; ++i) {
-    float value;
-    if (!canVirtualFind(consoleCsvNames[i], &value)) {
-      int id = canGetParamId(consoleCsvNames[i]);
-      CanSdoResult r = canSdoReadChecked(canNodeId, canParamIndex(id), canParamSubIndex(id));
+    if (millis() - rowStart >= 20) { consoleLogError = "CAN row exceeded 20 ms budget; recording paused"; consoleCsvStop(); return; }
+    float value = NAN;
+    if (consoleCsvVirtual[i]) canVirtualFind(consoleCsvNames[i], &value);
+    else {
+      CanSdoResult r = canSdoReadChecked(canNodeId, consoleCsvIndex[i], consoleCsvSub[i], 10);
       value = r.ok ? canDecodeValue(r.value) : NAN;
     }
+    if (!isfinite(value)) {
+      ++consoleCsvErrors; consoleLogError = "CAN sample failed; recording paused";
+      consoleCsvStop(); return; // discard incomplete row on the first failure
+    }
     row += ',';
-    if (isfinite(value)) row += String(value, 5);
-    else { row += "nan"; ++consoleCsvErrors; }
+    row += String(value, 5);
   }
   row += '\n';
   if (consoleCsvFile.print(row) != row.length()) { consoleLogError = "SD row write failed"; consoleCsvStop(); return; }
