@@ -150,7 +150,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        env: [esp32_wemos, esp32_wemos_debug, esp32_t2can, esp32_t2can_debug]
+        # esp32_weact_cli: the only build with OI_SERIAL_CONSOLE (compile check, not released)
+        env: [esp32_wemos, esp32_wemos_debug, esp32_t2can, esp32_t2can_debug, esp32_weact_cli]
     steps:
       - uses: actions/checkout@v7
         with:

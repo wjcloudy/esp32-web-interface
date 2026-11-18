@@ -11,6 +11,7 @@ All commands below are run from the project root (the directory containing `plat
 | `esp32_wemos_debug` | classic ESP32 | debug build with serial debug output |
 | `esp32_t2can` | LILYGO T-2Can (ESP32-S3) | 16MB flash, PSRAM, built-in CAN |
 | `esp32_t2can_debug` | LILYGO T-2Can (ESP32-S3) | debug build |
+| `esp32_weact_cli` | classic ESP32 (WeAct, CH343 USB) | bench build with the [serial CANopen console](SERIAL_CAN_CLI.md); console on UART0, inverter UART on RX16/TX17; not released |
 
 Select an environment with `-e` / `--environment` (default is `esp32_wemos`), and a target with `-t` / `--target` (no target = build the firmware). List everything with `pio run --list-targets`.
 

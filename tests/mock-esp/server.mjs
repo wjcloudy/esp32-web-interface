@@ -111,6 +111,7 @@ function freshSettings() {
     dev_name: '', txrx_swapped: false, uart_rx_pin: 1, uart_tx_pin: 3, ap_fallback: false,
     // SD support built in (SD_AVAILABLE), probing off by default (SD_DEFAULT_ENABLED 0), so no card
     sd_available: true, sd_enabled: false, sd_card: false,
+    serial_console_available: false, serial_console: false,
     can_mode: false, can_node_id: 1, can_speed: 2, can_rx_pin: 4, can_tx_pin: 5,
     can_pwr_pin: -1, can_pwr_inv: false, can_en_pin: -1, can_en_inv: false, arch: 'esp32',
   };
@@ -488,6 +489,7 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
       }
       // A reboot's SD probe: finds the card only if probing is on
       if (p === '/__test/sd-boot') { settings.sd_card = settings.sd_enabled && q.get('card') === '1'; return text('ok'); }
+      if (p === '/__test/serial-build') { settings.serial_console_available = q.get('enabled') === '1'; return text('ok'); }
       if (p === '/__test/latency') { latencyMs = toInt(q.get('ms')); return text('ok'); }
       if (p === '/__test/uart') { jsonMs = toInt(q.get('jsonMs')); return text('ok'); }
       if (p === '/__test/can-cache') { canCacheLoaded = q.get('loaded') !== '0'; return text('ok'); }
@@ -745,6 +747,12 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
         if (mayWrite && q.has('ap_fallback')) { settings.ap_fallback = q.get('ap_fallback') === '1'; return ok(); }
         // Saved, but the card is only probed at boot: sd_card doesn't change here
         if (mayWrite && q.has('sd_enabled')) { settings.sd_enabled = q.get('sd_enabled') === '1'; return ok(); }
+        if (mayWrite && q.has('serial_console')) {
+          const value = q.get('serial_console');
+          if (value !== '0' && value !== '1') return send(400, '{"error":"serial_console must be 0 or 1"}', 'application/json');
+          if (value === '1' && !settings.serial_console_available) return send(409, '{"error":"Console unavailable in this build"}', 'application/json');
+          settings.serial_console = value === '1'; return ok();
+        }
         if (mayWrite && q.has('can_mode')) {
           const s = settings;
           s.can_mode = q.get('can_mode') === '1';

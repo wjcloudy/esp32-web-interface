@@ -393,7 +393,8 @@ Versions come from git tags (`git describe`) and show in the UI and at `/version
 - **Demo** - `npm run demo` builds and serves the live demo at http://127.0.0.1:8766/esp32-web-interface/;
   `npm run screenshots` regenerates the README pictures.
 - **Build targets** - `esp32_wemos` / `esp32_wemos_debug` (classic ESP32) and
-  `esp32_t2can` / `esp32_t2can_debug` (ESP32-S3).
+  `esp32_t2can` / `esp32_t2can_debug` (ESP32-S3). `esp32_weact_cli` is a bench build
+  with the [serial CANopen console](doc/SERIAL_CAN_CLI.md); it isn't released.
 - **Guides** - PlatformIO [setup](doc/PLATFORMIO_setup.md) · [usage](doc/PLATFORMIO_usage.md) ·
   [flashing walkthrough](doc/PLATFORMIO_flashing_esp32.md) ·
   [combined binary](doc/PLATFORMIO_usage.md#building-a-combined-binary-for-web-flasher);
@@ -404,6 +405,21 @@ After editing a file in `data/`, regenerate its `.gz` twin with `python gzip_ass
 `pio run` does it too) and upload with `uploadfs` or the Update page. The SPIFFS image only
 carries the `.gz` of files that have one (`fs_stage.py` stages it in `.pio/fsdata`): the ESP
 always serves the gzip, so the raw sources stay in `data/` for the demo and tests.
+
+### Serial CANopen CLI
+
+CAN parameter reads/writes, node scanning, mappings, diagnostics and the CAN
+bootloader updater are also available without a GUI or Wi-Fi through the physical
+serial console. For the WeAct USB adapter, build `esp32_weact_cli`; automate it
+with `python tools/oi_cli.py --port COM27 help`.
+Maintenance commands require `OI_SERIAL_CONSOLE` and are off by default even
+in that build. An admin enables Settings → Device & Connection → serial access
+(which bypasses users and roles). Standard builds keep only `auth reset` recovery.
+See [Serial CANopen CLI](doc/SERIAL_CAN_CLI.md) for wiring, commands and framing.
+The CLI also controls SD logging, records selected CAN values as CSV and downloads
+closed SD files with chunk CRC checks (`sd`, `log`, and host `download` commands).
+Coding agents can use the [real ECU development workflow](doc/ECU_AGENT_GUIDE.md)
+for target identification, snapshots, controlled writes, flashing and recovery.
 
 ## Credits
 

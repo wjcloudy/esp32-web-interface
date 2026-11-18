@@ -30,6 +30,53 @@ bool canSdoCommand(uint8_t nodeId, uint8_t command) {
   return canSdoWrite(nodeId, CAN_INDEX_COMMANDS, command, 0);
 }
 
+static CanSdoResult sdoTransaction(uint8_t node, uint16_t index, uint8_t sub,
+                                   bool write, int32_t value, uint32_t timeout) {
+  CanSdoResult result;
+  if (node < 1 || node > 127) { result.error = "invalid_node"; return result; }
+  twai_message_t frame;
+  for (int i = 0; i < 64 && canDriverReceive(&frame); ++i) {} // bounded stale drain
+  if (!(write ? canSdoWrite(node, index, sub, value) : canSdoRead(node, index, sub))) {
+    result.error = "send_failed";
+    return result;
+  }
+  uint32_t start = millis();
+  while (millis() - start < timeout) {
+    if (!canDriverReceive(&frame)) { delay(1); continue; }
+    if (frame.extd || frame.rtr || frame.identifier != (CAN_SDO_RESPONSE_BASE | node) ||
+        frame.data_length_code < 4 || frame.data[1] != (index & 0xff) ||
+        frame.data[2] != (index >> 8) || frame.data[3] != sub) continue;
+    uint8_t cmd = frame.data[0];
+    result.error = "bad_response";
+    if (cmd == SDO_ABORT && frame.data_length_code == 8) {
+      memcpy(&result.abortCode, frame.data + 4, 4);
+      result.error = "sdo_abort";
+      return result;
+    }
+    if (write && cmd == SDO_WRITE_RESPONSE && frame.data_length_code == 8) {
+      result.ok = true;
+    } else if (!write && (cmd == 0x42 || cmd == 0x43 || cmd == 0x47 || cmd == 0x4b || cmd == 0x4f)) {
+      result.size = (cmd & 1) ? 4 - ((cmd >> 2) & 3) : 4;
+      if (frame.data_length_code < 4 + result.size) return result;
+      // Raw 1/2/3-byte objects are zero-extended. OI fixed-point values use 4 bytes.
+      memcpy(&result.value, frame.data + 4, result.size);
+      result.ok = true;
+    }
+    if (result.ok) result.error = "";
+    return result;
+  }
+  return result;
+}
+
+CanSdoResult canSdoReadChecked(uint8_t node, uint16_t index, uint8_t sub, uint32_t timeout) {
+  return sdoTransaction(node, index, sub, false, 0, timeout);
+}
+
+CanSdoResult canSdoWriteConfirmed(uint8_t node, uint16_t index, uint8_t sub,
+                                 int32_t value, uint32_t timeout) {
+  return sdoTransaction(node, index, sub, true, value, timeout);
+}
+
 bool canSdoParseResponse(const twai_message_t* frame, uint8_t* outNodeId,
                           uint16_t* outIndex, uint8_t* outSubIndex, int32_t* outValue) {
   if (!frame) return false;
