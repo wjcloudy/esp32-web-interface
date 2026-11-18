@@ -90,13 +90,13 @@ static void consoleAbortUpload() {
 
 static bool serialConsoleSetEnabled(bool enabled) {
   if (enabled && !consoleTransportSafe()) return false;
-  if (!enabled) {
-    consoleCsvStop(); consoleAbortUpload();
-    if (fastLoggingActive || binaryLoggingFault) binaryLoggingStop(false);
-    if (fastLoggingActive || binaryLoggingFault) return false;
-  }
+  // Revoke access first: turning it off must never depend on the target answering.
+  serialConsoleEnabled = enabled;
   consoleLine = serialcli::LineBuffer(); recoveryLine = SerialRecoveryLine();
-  serialConsoleEnabled = enabled; return true;
+  // Console-owned work ends with access. The automatic UART logger, and a
+  // latched logger fault (which still blocks restarts), are left as they are.
+  if (!enabled) { consoleCsvStop(); consoleAbortUpload(); }
+  return true;
 }
 
 static String consoleFile(const serialcli::Words& w, bool& ok) {

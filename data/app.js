@@ -4157,15 +4157,14 @@ const Settings = () => {
           <p style="font-size:.72rem;color:var(--text3);margin:.35rem 0 0;max-width:350px">The hostname (<b>${(devName.trim().toLowerCase().replace(/[^a-z0-9 _-]/g, '').replace(/[ _]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'inverter')}.local</b>) applies after the next reboot.</p>
         </div>
 
-        ${serialInfo && html`
+        ${serialInfo && serialInfo.available && html`
         <div class="dash-box compact" id="serial-console-box">
           <h3>Serial Maintenance Console</h3>
           <${ToggleRow} label="Enable serial access (bypasses users and roles)" checked=${serialInfo.enabled}
-            disabled=${!serialInfo.available || serialSaving} onChange=${saveSerialConsole} />
+            disabled=${serialSaving} onChange=${saveSerialConsole} />
           <p style="font-size:.72rem;color:var(--text3);margin:.35rem 0 0">
             Off by default. Trusted physical access permits ECU writes, resets, firmware updates and SD logging.
-            ${serialInfo.available ? 'Long bench commands can pause web updates. Auth reset recovery stays available when off.'
-              : 'Not compiled into this firmware. Requires an OI_SERIAL_CONSOLE build, such as esp32_weact_cli.'}
+            Long bench commands can pause web updates. Auth reset recovery stays available when off.
           </p>
           ${serialMsg && html`<p role="alert" style="color:var(--red)">${serialMsg}</p>`}
         </div>`}

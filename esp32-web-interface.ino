@@ -2535,9 +2535,11 @@ static void handleSettings()
     if (server.arg("serial_console") != "0" && server.arg("serial_console") != "1") {
       server.send(400, "application/json", "{\"error\":\"serial_console must be 0 or 1\"}"); return;
     }
-    if (canFwBusy()) { server.send(409, "application/json", "{\"error\":\"Wait for CAN update before changing console access\"}"); return; }
-    if (!serialConsoleSetEnabled(server.arg("serial_console") == "1")) {
-      server.send(409, "application/json", "{\"error\":\"Console unavailable, UART port conflict, or logger stop unconfirmed\"}"); return;
+    bool enable = server.arg("serial_console") == "1";
+    // Turning access off always succeeds; only enabling waits for a CAN update.
+    if (enable && canFwBusy()) { server.send(409, "application/json", "{\"error\":\"Wait for CAN update before changing console access\"}"); return; }
+    if (!serialConsoleSetEnabled(enable)) {
+      server.send(409, "application/json", "{\"error\":\"Console unavailable in this build, or its port conflicts with the inverter UART\"}"); return;
     }
     saveSettings();
     server.send(200, "application/json", "{\"result\":\"ok\"}");
@@ -3735,6 +3737,9 @@ void binaryLoggingStart()
 
 void binaryLoggingStop(bool forceLocalStop)
 {
+  // After a local stop (SD write fault) the ESP is back at 115200 but the
+  // target may still stream at 2.25M: send the stop at the target's rate.
+  uart_set_baudrate(INVERTER_PORT, 2250000);
   uart_write_bytes(INVERTER_PORT, "\n", 1);
   delay(1);
   uart_write_bytes(INVERTER_PORT, "binarylogging 0", strnlen("binarylogging 0", UART_MESSBUF_SIZE));
@@ -3769,7 +3774,9 @@ void binaryLoggingStop(bool forceLocalStop)
   }
   else
   { //assume still logging so try again next time round
-    uart_set_baudrate(INVERTER_PORT, 2250000);
+    // Only an active logger keeps reading at 2.25M. With a latched fault
+    // logging is off, and the web UI's commands must go out at 115200.
+    if (fastLoggingActive) uart_set_baudrate(INVERTER_PORT, 2250000);
   }
   delay(10);
   uart_flush(INVERTER_PORT);

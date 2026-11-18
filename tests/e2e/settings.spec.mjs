@@ -7,17 +7,18 @@ async function gotoSubTab(page, label) {
 const gotoWebSubTab = (page) => gotoSubTab(page, 'Web Interface');
 
 test.describe('Settings tab', () => {
-  test('maintenance console is unavailable in default builds and off in opt-in builds', async ({ page, mock }) => {
+  test('maintenance console is hidden in default builds and off in opt-in builds', async ({ page, mock }) => {
     await openApp(page, mock); await gotoTab(page, 'Settings');
+    await expect(page.getByText('applies after the next reboot').first()).toBeVisible(); // settings loaded
     const box = page.locator('#serial-console-box');
     const toggle = box.getByRole('checkbox');
-    await expect(toggle).not.toBeChecked(); await expect(toggle).toBeDisabled();
-    await expect(box).toContainText('bypasses users and roles');
+    await expect(box).toHaveCount(0);
     const denied = await fetch(mock.url + '/settings?serial_console=1', { method: 'POST' });
     expect(denied.status).toBe(409);
     await fetch(mock.url + '/__test/serial-build?enabled=1');
     await page.reload(); await gotoTab(page, 'Settings');
     await expect(toggle).toBeEnabled(); await expect(toggle).not.toBeChecked();
+    await expect(box).toContainText('bypasses users and roles');
     await box.locator('label.toggle-row').click();
     await expect.poll(async () => (await mock.state()).settings.serial_console).toBe(true);
     await page.reload(); await gotoTab(page, 'Settings'); await expect(toggle).toBeChecked();

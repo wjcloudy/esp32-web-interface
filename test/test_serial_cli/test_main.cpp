@@ -156,7 +156,7 @@ static void test_reply_is_complete_and_bounded() {
   TEST_ASSERT_EQUAL_STRING("@oi {\"id\":4294967295,\"ok\":true,\"result\":\"line\\u000a\\u0009\\\"\\\\\\u0001\"}\n", bytes.data() + 1);
 }
 static void test_reply_in_place_matches_separate_buffer() {
-  for (const std::string data : {std::string(), std::string("quote\"\\\n\t"), std::string(60000, '\"')}) {
+  for (const std::string& data : {std::string(), std::string("quote\"\\\n\t"), std::string(60000, '\"')}) {
     size_t n = serialcli::replyLength(42, false, data.data(), data.size());
     std::vector<char> expected(n + 1), actual(n + 3, 'X');
     memcpy(actual.data() + 1, data.data(), data.size());
