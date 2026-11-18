@@ -81,9 +81,11 @@ Device & Connection → Enable serial access (bypasses users and roles)** once.
 This setting is kept in settings.json/NVS across updates. When off (or compiled
 out), only the minimal `auth reset` recovery parser runs. It accepts plain
 `auth reset` and framed recovery requests even during logging/CAN updates.
-After opt-in, normal CLI use needs no web connection. Disabling access stops
-CSV recording and aborts incomplete staging; the UI refuses changes during a
-CAN update or if a UART logger's stop is unconfirmed.
+After opt-in, normal CLI use needs no web connection. Turning access off always
+succeeds: it stops CSV recording and aborts incomplete staging, while a latched
+UART logger fault stays latched until a confirmed `log stop`. The UI only refuses
+to turn access on during a CAN update. The toggle appears only on builds that
+include the console.
 
 The streaming cache memory fix from
 [Cloudy PR #14](https://github.com/wjcloudy/esp32-web-interface/pull/14) is now in

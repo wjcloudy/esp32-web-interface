@@ -133,9 +133,10 @@ would have caught it.
 
 ## Firmware changes
 
-`tests.yml` compiles all four PlatformIO environments (release and debug for
-`esp32_wemos` and `esp32_t2can`) and builds the SPIFFS image on every PR — a
-change that doesn't compile for any of them will fail CI. `build.yml` builds
+`tests.yml` compiles all five PlatformIO environments (release and debug for
+`esp32_wemos` and `esp32_t2can`, plus `esp32_weact_cli`, the only build with the
+serial console) and builds the SPIFFS image on every PR — a change that doesn't
+compile for any of them will fail CI. `build.yml` builds
 the release images. Test on real
 hardware where you can; note in the PR which backend (UART / CAN) you tested.
 

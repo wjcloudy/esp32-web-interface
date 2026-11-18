@@ -10,7 +10,8 @@ It works without a browser, Wi-Fi connection, or HTTP server. The existing
 maintenance interface**: once enabled, web users, roles and sign-in do not restrict it.
 Standard builds omit maintenance commands. `OI_SERIAL_CONSOLE` compiles them
 (set by `esp32_weact_cli`); they still default off. Enable them as an admin in
-Settings → Device & Connection → **Enable serial access (bypasses users and roles)**.
+Settings → Device & Connection → **Enable serial access (bypasses users and roles)**
+(the toggle appears only on builds that include the console).
 The `serial_console` setting is mirrored into NVS and survives updates. With the
 flag absent or setting off, only minimal `auth reset` recovery is parsed.
 

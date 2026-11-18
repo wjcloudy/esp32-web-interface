@@ -393,7 +393,8 @@ Versions come from git tags (`git describe`) and show in the UI and at `/version
 - **Demo** - `npm run demo` builds and serves the live demo at http://127.0.0.1:8766/esp32-web-interface/;
   `npm run screenshots` regenerates the README pictures.
 - **Build targets** - `esp32_wemos` / `esp32_wemos_debug` (classic ESP32) and
-  `esp32_t2can` / `esp32_t2can_debug` (ESP32-S3).
+  `esp32_t2can` / `esp32_t2can_debug` (ESP32-S3). `esp32_weact_cli` is a bench build
+  with the [serial CANopen console](doc/SERIAL_CAN_CLI.md); it isn't released.
 - **Guides** - PlatformIO [setup](doc/PLATFORMIO_setup.md) · [usage](doc/PLATFORMIO_usage.md) ·
   [flashing walkthrough](doc/PLATFORMIO_flashing_esp32.md) ·
   [combined binary](doc/PLATFORMIO_usage.md#building-a-combined-binary-for-web-flasher);
