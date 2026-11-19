@@ -449,6 +449,23 @@ button:disabled:hover { background: var(--ctl-bg); border-color: var(--border); 
   margin: 0 0 12px; break-inside: avoid;
   display: block; /* flex column boxes mis-measure inside CSS columns */
 }
+/* MQTT card: two-column form that folds to one column on a phone */
+.mqtt-help { font-size: .72rem; color: var(--text3); margin: 0 0 .5rem; }
+.mqtt-help:last-child { margin: .6rem 0 0; }
+.mqtt-status { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: .75rem; color: var(--text2); margin: 0 0 .6rem; }
+.mqtt-form { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; margin: .6rem 0 0; }
+.mqtt-form label { display: flex; flex-direction: column; gap: 3px; font-size: .75rem; color: var(--text2); min-width: 0; }
+.mqtt-form input[type=text], .mqtt-form input[type=password], .mqtt-form input[type=number] { width: 100%; box-sizing: border-box; }
+.mqtt-form .mqtt-wide { grid-column: 1 / -1; }
+.mqtt-form .mqtt-check { flex-direction: row; align-items: center; gap: 6px; }
+.mqtt-form .mqtt-check input { width: auto; }
+.mqtt-retain { display: flex; align-items: flex-end; }
+.mqtt-warn { color: var(--tone-warn); font-size: .72rem; margin: 0; }
+.mqtt-actions { display: flex; align-items: center; gap: 10px; margin-top: .6rem; }
+.mqtt-actions button { font-size: .75rem; padding: 4px 14px; }
+.mqtt-ok { color: var(--accent); font-size: .75rem; font-weight: 600; }
+.mqtt-err { color: var(--red); font-size: .75rem; }
+@media (max-width: 480px) { .mqtt-form { grid-template-columns: 1fr; } }
 .settings-subhead {
   font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
   color: var(--text3); margin: .6rem 0 .35rem;

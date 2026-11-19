@@ -3674,6 +3674,140 @@ const UsersPanel = () => {
       <div class="dash-box compact"><h3>Users</h3><p class="auth-lead">Only an admin can add or change users.</p></div>`}`;
 };
 
+// MQTT broker card (Settings → Device & Connection). Settings are admin-only
+// (/mqtt); the connection status (/mqtt/status) is readable by any viewer.
+// The device never reports the stored password, only whether one is set.
+const MQTT_BLANK = { enabled: false, host: '', port: 1883, user: '', pass_set: false, client_id: '', prefix: '',
+  names: '', interval: 5, retain: false, default_prefix: '', default_client_id: '' };
+const MqttCard = () => {
+  const { state } = useContext(Store);
+  const admin = can('admin');
+  const [cfg, setCfg] = useState(null);
+  const [pass, setPass] = useState(''); // blank = keep the stored password
+  const [clearPass, setClearPass] = useState(false);
+  const [status, setStatus] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState(null); // { ok, text }
+  const set = (k) => (e) => setCfg(c => ({ ...c, [k]: e.target.value }));
+
+  useEffect(() => {
+    let alive = true;
+    if (admin) fetch('/mqtt').then(r => r.ok ? r.json() : null)
+      .then(d => { if (alive && d) setCfg({ ...MQTT_BLANK, ...d }); }).catch(() => {});
+    const poll = () => fetch('/mqtt/status').then(r => r.ok ? r.json() : null)
+      .then(s => { if (alive && s) setStatus(s); }).catch(() => {});
+    poll();
+    const t = setInterval(poll, 5000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+
+  // Names the loaded parameter list doesn't know (only once it's loaded)
+  const unknownNames = (!cfg || !state.params) ? []
+    : cfg.names.split(/[\s,;]+/).filter(n => n && !(n in state.params));
+
+  const save = async (patch = {}) => {
+    const c = { ...cfg, ...patch };
+    if (c.enabled && !c.host.trim()) {
+      setCfg(prev => ({ ...prev, enabled: false }));
+      setMsg({ ok: false, text: 'Set the broker host first.' });
+      return;
+    }
+    setSaving(true); setMsg(null);
+    const p = new URLSearchParams();
+    p.set('enabled', c.enabled ? '1' : '0');
+    p.set('host', c.host.trim());
+    p.set('port', String(parseInt(c.port) || 1883));
+    p.set('user', c.user.trim());
+    if (clearPass) p.set('pass', '');
+    else if (pass) p.set('pass', pass);
+    p.set('client_id', c.client_id.trim());
+    p.set('prefix', c.prefix.trim());
+    p.set('names', c.names.trim());
+    p.set('interval', String(parseInt(c.interval) || 5));
+    p.set('retain', c.retain ? '1' : '0');
+    try {
+      const r = await fetch('/mqtt', { method: 'POST', body: p });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+      setCfg({ ...MQTT_BLANK, ...d }); setPass(''); setClearPass(false);
+      setMsg({ ok: true, text: 'Saved' });
+      setTimeout(() => setMsg(null), 2500);
+    } catch (e) {
+      setCfg(prev => ({ ...prev, enabled: cfg.enabled }));
+      setMsg({ ok: false, text: 'Save failed: ' + e.message });
+    } finally { setSaving(false); }
+  };
+
+  const pill = !status ? null
+    : !status.enabled ? html`<span class="pill muted">Off</span>`
+    : status.connected ? html`<span class="pill active"><span class="dot"></span>Connected</span>`
+    : html`<span class="pill warn">${status.last_error || 'Connecting…'}</span>`;
+
+  return html`
+    <div class="dash-box compact" id="mqtt-box">
+      <h3>MQTT Broker</h3>
+      <p class="mqtt-help">Publish spot values to an MQTT broker over plain TCP, e.g. for Home Assistant or Node-RED.</p>
+      ${status && html`
+        <div class="mqtt-status" id="mqtt-status">
+          ${pill}
+          ${status.connected && html`<span>${status.publish_count} values published${status.last_publish_age != null ? ', last ' + status.last_publish_age + ' s ago' : ''}</span>`}
+          ${status.connected && status.last_error && html`<span class="mqtt-warn">${status.last_error}</span>`}
+          ${status.unknown && status.unknown.length > 0 && html`<span class="mqtt-warn">Not found on the inverter: ${status.unknown.join(', ')}</span>`}
+        </div>`}
+      ${admin && cfg && html`
+        <${ToggleRow} label="Publish to MQTT" checked=${cfg.enabled} disabled=${saving}
+          onChange=${v => { setCfg(c => ({ ...c, enabled: v })); save({ enabled: v }); }} />
+        <div class="mqtt-form">
+          <label class="mqtt-wide">Broker host
+            <input id="mqtt-host" type="text" value=${cfg.host} placeholder="192.168.1.50 or homeassistant.local"
+              oninput=${set('host')} autocomplete="off" spellcheck="false" />
+          </label>
+          <label>Port
+            <input id="mqtt-port" type="number" min="1" max="65535" value=${cfg.port} oninput=${set('port')} />
+          </label>
+          <label>Username
+            <input id="mqtt-user" type="text" value=${cfg.user} placeholder="optional" oninput=${set('user')}
+              autocomplete="off" spellcheck="false" />
+          </label>
+          <label>Password
+            <input id="mqtt-pass" type="password" value=${pass} disabled=${clearPass}
+              placeholder=${cfg.pass_set ? 'stored, blank keeps it' : 'optional'}
+              oninput=${e => setPass(e.target.value)} autocomplete="new-password" />
+          </label>
+          ${cfg.pass_set && html`
+            <label class="mqtt-wide mqtt-check"><input id="mqtt-pass-clear" type="checkbox" checked=${clearPass}
+              onchange=${e => { setClearPass(e.target.checked); setPass(''); }} /> Remove the stored password</label>`}
+          <label>Client ID
+            <input id="mqtt-client-id" type="text" value=${cfg.client_id} placeholder=${cfg.default_client_id}
+              oninput=${set('client_id')} autocomplete="off" spellcheck="false" />
+          </label>
+          <label>Topic prefix
+            <input id="mqtt-prefix" type="text" value=${cfg.prefix} placeholder=${cfg.default_prefix}
+              oninput=${set('prefix')} autocomplete="off" spellcheck="false" />
+          </label>
+          <label class="mqtt-wide">Spot values (comma-separated)
+            <input id="mqtt-names" type="text" value=${cfg.names} placeholder="udc, tmphs, speed, il1rms"
+              oninput=${set('names')} autocomplete="off" spellcheck="false" />
+          </label>
+          ${unknownNames.length > 0 && html`<p class="mqtt-wide mqtt-warn" id="mqtt-unknown">Not in this inverter's parameter list: ${unknownNames.join(', ')}</p>`}
+          <label>Every (s)
+            <input id="mqtt-interval" type="number" min="1" max="3600" value=${cfg.interval} oninput=${set('interval')} />
+          </label>
+          <div class="mqtt-retain">
+            <${ToggleRow} label="Retain values" checked=${cfg.retain} onChange=${v => setCfg(c => ({ ...c, retain: v }))} />
+          </div>
+        </div>
+        <div class="mqtt-actions">
+          <button id="mqtt-save" onclick=${() => save()} disabled=${saving}><${Icon} n="save" />${saving ? 'Saving…' : 'Save'}</button>
+          ${msg && html`<span role=${msg.ok ? 'status' : 'alert'} class=${msg.ok ? 'mqtt-ok' : 'mqtt-err'}>${msg.text}</span>`}
+        </div>`}
+      <p class="mqtt-help">
+        Each value goes to <code>&lt;prefix&gt;/&lt;name&gt;</code>, and <code>&lt;prefix&gt;/status</code> says
+        <code>online</code> or <code>offline</code>. The broker can be an IP address, a DNS name or a <code>.local</code> name.
+      </p>
+    </div>`;
+};
+
 const Settings = () => {
   const { state, dispatch } = useContext(Store);
   const [serialInfo, setSerialInfo] = useState(null);
@@ -3789,56 +3923,6 @@ const Settings = () => {
   const [devName, setDevName] = useState(''); // friendly device nickname
   const [devMsg, setDevMsg] = useState('');
 
-  // MQTT Broker Settings
-  const [mqttCfg, setMqttCfg] = useState({
-    enabled: false, host: '', port: 1883, user: '', pass: '', pass_set: false,
-    client_id: '', prefix: '', names: '', interval: 5, retain: false,
-    default_prefix: '', default_client_id: ''
-  });
-  const [mqttStatus, setMqttStatus] = useState(null);
-  const [mqttSaving, setMqttSaving] = useState(false);
-  const [mqttMsg, setMqttMsg] = useState('');
-
-  const loadMqtt = async () => {
-    try {
-      const r = await fetch('/mqtt');
-      if (r.ok) {
-        const d = await r.json();
-        setMqttCfg(prev => ({ ...prev, ...d, pass: '' }));
-      }
-    } catch (e) {}
-  };
-
-  const saveMqtt = async () => {
-    setMqttSaving(true);
-    setMqttMsg('');
-    try {
-      const params = new URLSearchParams();
-      params.set('enabled', mqttCfg.enabled ? '1' : '0');
-      params.set('host', mqttCfg.host.trim());
-      params.set('port', mqttCfg.port || 1883);
-      params.set('user', mqttCfg.user.trim());
-      if (mqttCfg.pass) params.set('pass', mqttCfg.pass);
-      params.set('client_id', mqttCfg.client_id.trim());
-      params.set('prefix', mqttCfg.prefix.trim());
-      params.set('names', mqttCfg.names.trim());
-      params.set('interval', mqttCfg.interval || 5);
-      params.set('retain', mqttCfg.retain ? '1' : '0');
-      const r = await fetch('/mqtt', { method: 'POST', body: params });
-      if (r.ok) {
-        setMqttMsg('Saved');
-        await loadMqtt();
-      } else {
-        setMqttMsg('Save failed');
-      }
-    } catch (e) {
-      setMqttMsg('Save failed: ' + e.message);
-    } finally {
-      setMqttSaving(false);
-      setTimeout(() => setMqttMsg(''), 3000);
-    }
-  };
-
   const saveDevName = async () => {
     const name = devName.trim();
     try {
@@ -3856,13 +3940,7 @@ const Settings = () => {
     const load = () => fetch('/wifi-status').then(r => r.ok ? r.json() : null)
       .then(s => { if (alive && s) setWifiStatus(s); }).catch(() => {});
     load();
-    loadMqtt();
-    const loadStatus = () => {
-      load();
-      if (alive) fetch('/mqtt-status').then(r => r.ok ? r.json() : null).then(s => { if (alive && s) setMqttStatus(s); }).catch(() => {});
-    };
-    loadStatus();
-    const t = setInterval(loadStatus, 5000);
+    const t = setInterval(load, 5000);
     return () => { alive = false; clearInterval(t); };
   }, []);
   // Sub-tab (Device & Connection / Web Interface / Configuration) —
@@ -4241,92 +4319,7 @@ const Settings = () => {
           </p>
         </div>`}
 
-        <div class="dash-box compact">
-          <h3>MQTT Broker</h3>
-          <p style="color:var(--text2);font-size:.8rem;margin:0 0 .5rem">Publish spot values periodically to an MQTT broker over plain TCP (e.g. Home Assistant, Node-RED).</p>
-          
-          <div style="margin-bottom:.5rem;max-width:350px">
-            <${ToggleRow} label="Enable MQTT Client" checked=${mqttCfg.enabled}
-              onChange=${v => setMqttCfg(prev => ({ ...prev, enabled: v }))} />
-          </div>
-
-          ${mqttStatus && html`
-            <div style="margin-bottom:.75rem;padding:6px 10px;background:var(--surface2);border-radius:var(--radius-xs);font-size:.75rem;display:flex;flex-direction:column;gap:3px;max-width:350px">
-              <div style="display:flex;align-items:center;gap:6px">
-                <span style="font-weight:600">Status:</span>
-                ${!mqttCfg.enabled
-                  ? html`<span class="pill" style="font-size:.65rem">Disabled</span>`
-                  : mqttStatus.connected
-                    ? html`<span class="pill success" style="font-size:.65rem">Connected</span>`
-                    : html`<span class="pill alert" style="font-size:.65rem">${mqttStatus.last_error || 'Connecting...'}</span>`}
-              </div>
-              ${mqttStatus.connected && html`
-                <div style="color:var(--text3);font-size:.7rem">
-                  Published: <b>${mqttStatus.publish_count}</b> values | Prefix: <b>${mqttStatus.prefix}</b>
-                </div>
-              `}
-            </div>
-          `}
-
-          <div style="display:flex;flex-direction:column;gap:6px;max-width:350px">
-            <div style="display:flex;gap:8px">
-              <label style="font-size:.8rem;flex:2">Broker Host:
-                <input type="text" value=${mqttCfg.host} placeholder="e.g. 192.168.1.50"
-                  oninput=${e => setMqttCfg(prev => ({ ...prev, host: e.target.value }))} style="width:100%" autocomplete="off" data-lpignore="true" data-1p-ignore />
-              </label>
-              <label style="font-size:.8rem;flex:1">Port:
-                <input type="number" value=${mqttCfg.port} placeholder="1883"
-                  oninput=${e => setMqttCfg(prev => ({ ...prev, port: parseInt(e.target.value) || 1883 }))} style="width:100%" />
-              </label>
-            </div>
-
-            <label style="font-size:.8rem">Username <span style="font-size:.7rem;color:var(--text3)">(optional)</span>:
-              <input type="text" value=${mqttCfg.user} placeholder="optional"
-                oninput=${e => setMqttCfg(prev => ({ ...prev, user: e.target.value }))} style="width:100%" autocomplete="off" data-lpignore="true" data-1p-ignore />
-            </label>
-
-            <label style="font-size:.8rem">Password <span style="font-size:.7rem;color:var(--text3)">${mqttCfg.pass_set ? '(stored, leave blank to keep)' : '(optional)'}</span>:
-              <input type="password" value=${mqttCfg.pass} placeholder=${mqttCfg.pass_set ? '••••••••' : 'optional'}
-                oninput=${e => setMqttCfg(prev => ({ ...prev, pass: e.target.value }))} style="width:100%" autocomplete="off" data-lpignore="true" data-1p-ignore />
-            </label>
-
-            <label style="font-size:.8rem">Client ID <span style="font-size:.7rem;color:var(--text3)">(blank = default)</span>:
-              <input type="text" value=${mqttCfg.client_id} placeholder=${mqttCfg.default_client_id || 'inverter-xxx'}
-                oninput=${e => setMqttCfg(prev => ({ ...prev, client_id: e.target.value }))} style="width:100%" autocomplete="off" data-lpignore="true" data-1p-ignore />
-            </label>
-
-            <label style="font-size:.8rem">Topic Prefix <span style="font-size:.7rem;color:var(--text3)">(blank = default)</span>:
-              <input type="text" value=${mqttCfg.prefix} placeholder=${mqttCfg.default_prefix || 'openinverter/inverter'}
-                oninput=${e => setMqttCfg(prev => ({ ...prev, prefix: e.target.value }))} style="width:100%" autocomplete="off" data-lpignore="true" data-1p-ignore />
-            </label>
-
-            <label style="font-size:.8rem">Spot Values to Publish <span style="font-size:.7rem;color:var(--text3)">(comma-separated)</span>:
-              <input type="text" value=${mqttCfg.names} placeholder="e.g. udc,tmphs,speed,il1"
-                oninput=${e => setMqttCfg(prev => ({ ...prev, names: e.target.value }))} style="width:100%" autocomplete="off" data-lpignore="true" data-1p-ignore />
-            </label>
-
-            <div style="display:flex;gap:12px;align-items:center;margin-top:.25rem">
-              <label style="font-size:.8rem">Interval (s):
-                <input type="number" min="1" max="3600" value=${mqttCfg.interval}
-                  oninput=${e => setMqttCfg(prev => ({ ...prev, interval: parseInt(e.target.value) || 5 }))} style="width:4.5em;margin-left:4px" />
-              </label>
-
-              <label style="font-size:.75rem;display:inline-flex;align-items:center;gap:4px">
-                <input type="checkbox" checked=${mqttCfg.retain}
-                  onchange=${e => setMqttCfg(prev => ({ ...prev, retain: e.target.checked }))} style="width:auto" />
-                Retain msgs
-              </label>
-            </div>
-
-            <div style="display:flex;align-items:center;gap:10px;margin-top:.5rem">
-              <button onclick=${saveMqtt} disabled=${mqttSaving} style="font-size:.75rem;padding:4px 14px"><${Icon} n="save" />${mqttSaving ? 'Saving...' : 'Save MQTT'}</button>
-              ${mqttMsg && html`<span style="color:var(--accent);font-size:.75rem;font-weight:600">${mqttMsg}</span>`}
-            </div>
-          </div>
-          <p style="font-size:.72rem;color:var(--text3);margin:.5rem 0 0;max-width:350px">
-            Values are published to <code>&lt;prefix&gt;/&lt;param&gt;</code> and connection status to <code>&lt;prefix&gt;/status</code> ("online" / "offline").
-          </p>
-        </div>
+        <${MqttCard} />
 
         `}
         ${subTab === 'web' && html`

@@ -1,62 +1,66 @@
 #pragma once
-// MQTT publisher: periodically reads a configured list of spot values from
-// the inverter and publishes each one to <prefix>/<name> on a broker
-// (plain TCP, optional username/password). Availability is reported on
-// <prefix>/status ("online", retained; the broker publishes the "offline"
-// last-will if the link drops). Config lives in /mqtt.json on SPIFFS.
+// MQTT publisher: publishes a configured list of spot values to
+// <prefix>/<name> on a broker (plain TCP, optional username/password).
+// Availability goes to <prefix>/status: "online" (retained) on connect, and
+// the broker publishes the "offline" last will if the link drops.
+//
+// The client runs in its own FreeRTOS task, so DNS, connect timeouts and a
+// stalled broker can only ever block that task, never the web server. The
+// main loop reads the values from the inverter (it owns the UART/CAN link)
+// and hands each finished round over with submitRound().
+//
+// Settings live in settings.json (kept across updates through the NVS
+// mirror); the password is stored only in NVS (namespace "oimqtt"), so the
+// static file handler, /list and the settings export never see it.
 #include <Arduino.h>
+#include <vector>
+#include "mqtt_logic.h"
 
 struct MqttConfig {
   bool enabled = false;
-  String host = "";
+  String host;
   uint16_t port = 1883;
-  String user = "";
-  String pass = "";
-  String clientId = "";     // blank = use the device hostname
-  String prefix = "";       // blank = "openinverter/<hostname>"
-  String names = "";        // comma-separated spot value names to publish
-  uint32_t intervalSec = 5; // publish period (1..3600 s)
+  String user;
+  String pass;
+  String clientId;          // blank = hostname + MAC tail
+  String prefix;            // blank = "openinverter/<hostname>"
+  String names;             // comma-separated spot value names
+  uint32_t intervalSec = 5; // 1..3600 s
   bool retain = false;      // retain flag on value messages
 };
 
-// Reads spot values: `names` is a comma list, `out` receives the raw reply
-// (values separated by whitespace, in request order). Returns false if the
-// values can't be read right now (busy bus, no reply) — the cycle is skipped.
-typedef bool (*MqttFetchFn)(const String& names, String& out);
-
 class MqttPublisher {
 public:
-  void begin(const String& hostname, MqttFetchFn fetch);
-  void loop();
+  // setup(), before begin(): read the mqtt_* fields of settings.json and the
+  // password from NVS
+  void loadSettings(const String& settingsJson);
+  // setup(): starts the client task if MQTT is enabled
+  void begin(const String& hostname);
 
-  void loadConfig();
-  bool saveConfig();
-  // Apply a new config (drops the current connection so it takes effect)
+  // HTTP side. Never touches the network: the task picks changes up.
+  MqttConfig config() const;
+  // Clean and apply; stores the password in NVS. Caller saves settings.json.
   void setConfig(const MqttConfig& cfg);
-  const MqttConfig& getConfig() const { return config; }
+  // "Reset settings": back to defaults, password erased
+  void reset();
+  // settings.json fields, each starting with ',' (no password)
+  String settingsFields() const;
+  String configJson() const;   // admin view, pass_set instead of the password
+  String statusJson() const;   // viewer view
 
-  // Config without the password (pass_set says whether one is stored)
-  String getConfigJson() const;
-  String getStatusJson() const;
+  // Main-loop side
+  bool roundDue(uint32_t nowMs); // true once per interval while connected
+  String names() const;
+  void submitRound(const std::vector<mqttlogic::NamedValue>& values,
+                   const std::vector<String>& unknown, const String& readError);
 
-  String effectivePrefix() const;
-  String effectiveClientId() const;
+  void taskLoop(); // the client task's body (internal)
 
 private:
+  String effectivePrefix(const MqttConfig& c) const;
+  String effectiveClientId(const MqttConfig& c) const;
   String autoClientId() const;
-  MqttConfig config;
-  String hostname = "inverter";
-  MqttFetchFn fetchFn = nullptr;
-  unsigned long lastConnectAttempt = 0;
-  unsigned long lastPublish = 0;
-  unsigned long reconnectDelay = 5000;
-  uint32_t publishCount = 0;
-  uint32_t connectCount = 0;
-  String lastError = "";
-  bool hadLink = false;
-
-  bool connect();
-  void publishValues();
+  void ensureTask();
 };
 
 extern MqttPublisher mqttPublisher;

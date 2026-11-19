@@ -160,6 +160,9 @@ access point, device name (also the hostname), dark/light/system theme and accen
 colour, keep-screen-awake, and export/import of every layout and preference as
 one JSON file.
 
+**MQTT** - publish chosen spot values to a broker (Home Assistant, Node-RED)
+every 1-3600 s, with an online/offline status topic ([details](doc/MQTT.md)).
+
 **Users & access** - optional sign-in with viewer (read-only), operator and admin
 accounts, enforced by the module itself ([details](#users-and-access)).
 

@@ -292,6 +292,14 @@
       }
       case '/wifi-status': return reply({ sta_connected: true, rssi: D.wifi.rssi, ssid: D.wifi.staSSID, ip: D.wifi.ip,
         ap_active: !settings.ap_fallback, ap_clients: 0, ap_fallback: settings.ap_fallback }, 200, 'text/json');
+      // MQTT: shown as never set up; there's no broker to reach from a web page
+      case '/mqtt':
+        if (method === 'POST') return reply('{"error":"' + DEMO_NO + '"}', 400, 'application/json');
+        return reply({ enabled: false, host: '', port: 1883, user: '', pass_set: false, client_id: '', prefix: '', names: '',
+          interval: 5, retain: false, default_prefix: 'openinverter/inverter', default_client_id: 'inverter-demo' }, 200, 'application/json');
+      case '/mqtt/status':
+        return reply({ enabled: false, connected: false, state: 'disconnected', last_error: '', prefix: 'openinverter/inverter',
+          publish_count: 0, connect_count: 0, last_publish_age: null, unknown: [] }, 200, 'application/json');
       case '/set-can-node':
         if (q.has('id')) settings.can_node_id = parseInt(q.get('id')) || 1;
         return reply('{"nodeId":' + settings.can_node_id + '}', 200, 'text/json');

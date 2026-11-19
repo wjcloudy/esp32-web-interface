@@ -1,164 +1,156 @@
 #include "mqtt_publisher.h"
 #include <WiFi.h>
 #include <WiFiClient.h>
+#include <ESPmDNS.h>
 #include <PubSubClient.h>
-#include <SPIFFS.h>
-#include <vector>
+#include <Preferences.h>
+#include "web_logic.h"
 
 MqttPublisher mqttPublisher;
 
-static WiFiClient mqttNet;
-static PubSubClient mqtt(mqttNet);
+using mqttlogic::NamedValue;
+using weblogic::jsonEscape;
 
-static const char* MQTT_CONFIG_PATH = "/mqtt.json";
-static const unsigned long MQTT_RECONNECT_MIN_MS = 5000;
-static const unsigned long MQTT_RECONNECT_MAX_MS = 60000;
-// The inverter's UART terminal truncates commands beyond 128 chars — keep
-// each 'get' well inside that (same limit the web UI uses)
-static const unsigned int MQTT_GET_CHUNK = 120;
+static const uint32_t RECONNECT_MIN_MS = 5000;
+static const uint32_t RECONNECT_MAX_MS = 60000;
+static const uint32_t MDNS_TIMEOUT_MS = 2000;
+static const char* NVS_NS = "oimqtt";
 
-// ---------- tiny JSON helpers (flat object, known keys) ----------
+// ---- State shared by the HTTP handlers, the main loop and the task ----
+// Everything below is guarded by `mtx`. The network objects are used only
+// by the task.
+static SemaphoreHandle_t mtx = nullptr;
+static MqttConfig cfg;
+static uint32_t cfgGen = 0;          // bumped on every config change
+static String hostName = "inverter";
+static TaskHandle_t task = nullptr;
 
-static String jsonEsc(const String& s)
+static bool stConnected = false;
+static int stState = -1;             // PubSubClient state()
+static String stError;
+static uint32_t stPublished = 0;
+static uint32_t stConnects = 0;
+static uint32_t stLastPublishMs = 0; // millis() of the last published round, 0 = none
+static std::vector<String> stUnknown;
+
+// One round of values waiting for the task
+static std::vector<NamedValue> pending;
+static bool pendingReady = false;
+static uint32_t lastRoundMs = 0;
+static bool roundStarted = false;
+
+struct Lock {
+  Lock() { xSemaphoreTake(mtx, portMAX_DELAY); }
+  ~Lock() { xSemaphoreGive(mtx); }
+};
+
+static void ensureMutex()
 {
-  String out;
-  out.reserve(s.length() + 4);
-  for (size_t i = 0; i < s.length(); i++) {
-    char c = s[i];
-    if (c == '"' || c == '\\') { out += '\\'; out += c; }
-    else if ((uint8_t)c >= 0x20) out += c;
+  if (!mtx) mtx = xSemaphoreCreateMutex(); // first call is in setup(), before the task exists
+}
+
+static MqttConfig cleaned(const MqttConfig& in)
+{
+  MqttConfig c = in;
+  c.host = mqttlogic::sanitizeToken(in.host, mqttlogic::HOST_MAX);
+  c.port = mqttlogic::clampPort(in.port);
+  c.user = mqttlogic::sanitizeToken(in.user, mqttlogic::USER_MAX);
+  c.pass = mqttlogic::sanitizeSecret(in.pass);
+  c.clientId = mqttlogic::sanitizeToken(in.clientId, mqttlogic::CLIENT_ID_MAX);
+  c.prefix = mqttlogic::sanitizePrefix(in.prefix);
+  c.names = mqttlogic::sanitizeNames(in.names);
+  c.intervalSec = mqttlogic::clampInterval(in.intervalSec);
+  return c;
+}
+
+// ---- Settings ----
+
+void MqttPublisher::loadSettings(const String& json)
+{
+  ensureMutex();
+  MqttConfig c;
+  c.enabled = mqttlogic::jsonBool(json, "mqtt_enabled");
+  c.host = mqttlogic::jsonStr(json, "mqtt_host");
+  c.port = mqttlogic::clampPort(mqttlogic::jsonNum(json, "mqtt_port", 1883));
+  c.user = mqttlogic::jsonStr(json, "mqtt_user");
+  c.clientId = mqttlogic::jsonStr(json, "mqtt_client_id");
+  c.prefix = mqttlogic::jsonStr(json, "mqtt_prefix");
+  c.names = mqttlogic::jsonStr(json, "mqtt_names");
+  c.intervalSec = mqttlogic::clampInterval(mqttlogic::jsonNum(json, "mqtt_interval", 5));
+  c.retain = mqttlogic::jsonBool(json, "mqtt_retain");
+  Preferences p;
+  if (p.begin(NVS_NS, true)) { c.pass = p.getString("pass", ""); p.end(); }
+  Lock l;
+  cfg = cleaned(c);
+  cfgGen++;
+}
+
+void MqttPublisher::begin(const String& hn)
+{
+  ensureMutex();
+  {
+    Lock l;
+    if (hn.length()) hostName = hn;
   }
-  return out;
+  ensureTask();
 }
 
-// Value of a quoted string field (honours backslash escapes); "" if absent
-static String jsonStr(const String& json, const char* key)
+MqttConfig MqttPublisher::config() const
 {
-  String pat = String("\"") + key + "\":\"";
-  int i = json.indexOf(pat);
-  if (i < 0) return "";
-  String out;
-  for (unsigned int p = i + pat.length(); p < json.length(); p++) {
-    char ch = json[p];
-    if (ch == '\\' && p + 1 < json.length()) out += json[++p];
-    else if (ch == '"') break;
-    else out += ch;
+  Lock l;
+  return cfg;
+}
+
+void MqttPublisher::setConfig(const MqttConfig& in)
+{
+  MqttConfig c = cleaned(in);
+  bool passChanged;
+  {
+    Lock l;
+    passChanged = c.pass != cfg.pass;
+    cfg = c;
+    cfgGen++;
+    stError = "";
+    stUnknown.clear();
+    pending.clear();
+    pendingReady = false;
+    roundStarted = false;
   }
-  return out;
-}
-
-static long jsonNum(const String& json, const char* key, long def)
-{
-  String pat = String("\"") + key + "\":";
-  int i = json.indexOf(pat);
-  if (i < 0) return def;
-  return json.substring(i + pat.length()).toInt();
-}
-
-static bool jsonBool(const String& json, const char* key)
-{
-  return json.indexOf(String("\"") + key + "\":true") >= 0;
-}
-
-// Keep only characters that are valid in a spot value name (and safe in a
-// topic: no '+', '#', '/' wildcards/levels), deduplicate separators
-static String sanitizeNames(const String& in)
-{
-  String out;
-  for (unsigned int i = 0; i < in.length(); i++) {
-    char ch = in[i];
-    if (isalnum((unsigned char)ch) || ch == '_' || ch == '.' || ch == '-') out += ch;
-    else if ((ch == ',' || ch == ' ' || ch == '\n' || ch == ';') && out.length() && out[out.length() - 1] != ',') out += ',';
+  if (passChanged) {
+    Preferences p;
+    if (p.begin(NVS_NS, false)) {
+      if (c.pass.length()) p.putString("pass", c.pass);
+      else p.remove("pass");
+      p.end();
+    }
   }
-  while (out.length() && out[out.length() - 1] == ',') out.remove(out.length() - 1);
-  return out;
+  if (c.enabled) ensureTask();
 }
 
-static String sanitizePrefix(const String& in)
+void MqttPublisher::reset()
 {
-  String out;
-  for (unsigned int i = 0; i < in.length(); i++) {
-    char ch = in[i];
-    if (ch == '+' || ch == '#' || (uint8_t)ch < 0x20) continue; // no wildcards in a publish topic
-    out += ch;
-  }
-  while (out.length() && out[out.length() - 1] == '/') out.remove(out.length() - 1);
-  return out;
+  Preferences p;
+  if (p.begin(NVS_NS, false)) { p.clear(); p.end(); }
+  Lock l;
+  cfg = MqttConfig();
+  cfgGen++;
 }
 
-// ---------- config ----------
-
-void MqttPublisher::begin(const String& hn, MqttFetchFn fetch)
+String MqttPublisher::settingsFields() const
 {
-  if (hn.length()) hostname = hn;
-  fetchFn = fetch;
-  mqtt.setBufferSize(512);
-  mqtt.setKeepAlive(30);
-  mqtt.setSocketTimeout(3); // bounds how long a stalled broker can block loop()
-  loadConfig();
-}
-
-void MqttPublisher::loadConfig()
-{
-  config = MqttConfig();
-  if (!SPIFFS.exists(MQTT_CONFIG_PATH)) return;
-  File f = SPIFFS.open(MQTT_CONFIG_PATH, "r");
-  if (!f) return;
-  String json = f.readString();
-  f.close();
-  config.enabled = jsonBool(json, "enabled");
-  config.host = jsonStr(json, "host");
-  long port = jsonNum(json, "port", 1883);
-  config.port = (port > 0 && port < 65536) ? port : 1883;
-  config.user = jsonStr(json, "user");
-  config.pass = jsonStr(json, "pass");
-  config.clientId = jsonStr(json, "client_id");
-  config.prefix = sanitizePrefix(jsonStr(json, "prefix"));
-  config.names = sanitizeNames(jsonStr(json, "names"));
-  long iv = jsonNum(json, "interval", 5);
-  config.intervalSec = (iv < 1) ? 1 : (iv > 3600) ? 3600 : iv;
-  config.retain = jsonBool(json, "retain");
-}
-
-bool MqttPublisher::saveConfig()
-{
-  File f = SPIFFS.open(MQTT_CONFIG_PATH, "w");
-  if (!f) return false;
-  f.printf("{\"enabled\":%s,\"host\":\"%s\",\"port\":%u,\"user\":\"%s\",\"pass\":\"%s\","
-           "\"client_id\":\"%s\",\"prefix\":\"%s\",\"names\":\"%s\",\"interval\":%u,\"retain\":%s}",
-           config.enabled ? "true" : "false",
-           jsonEsc(config.host).c_str(), config.port,
-           jsonEsc(config.user).c_str(), jsonEsc(config.pass).c_str(),
-           jsonEsc(config.clientId).c_str(), jsonEsc(config.prefix).c_str(),
-           jsonEsc(config.names).c_str(), (unsigned)config.intervalSec,
-           config.retain ? "true" : "false");
-  f.close();
-  return true;
-}
-
-void MqttPublisher::setConfig(const MqttConfig& cfg)
-{
-  // Say goodbye on the old connection before its settings change
-  if (mqtt.connected()) {
-    mqtt.publish((effectivePrefix() + "/status").c_str(), "offline", true);
-    mqtt.disconnect();
-  }
-  config = cfg;
-  config.host.trim();
-  config.prefix = sanitizePrefix(config.prefix);
-  config.names = sanitizeNames(config.names);
-  if (config.port == 0) config.port = 1883;
-  if (config.intervalSec < 1) config.intervalSec = 1;
-  if (config.intervalSec > 3600) config.intervalSec = 3600;
-  lastConnectAttempt = 0;
-  reconnectDelay = 0; // connect right away with the new settings
-  lastError = "";
-  hadLink = false;
-}
-
-String MqttPublisher::effectivePrefix() const
-{
-  return config.prefix.length() ? config.prefix : String("openinverter/") + hostname;
+  MqttConfig c = config();
+  String j = ",\"mqtt_enabled\":";
+  j += c.enabled ? "true" : "false";
+  j += ",\"mqtt_host\":\"" + jsonEscape(c.host) + "\"";
+  j += ",\"mqtt_port\":" + String(c.port);
+  j += ",\"mqtt_user\":\"" + jsonEscape(c.user) + "\"";
+  j += ",\"mqtt_client_id\":\"" + jsonEscape(c.clientId) + "\"";
+  j += ",\"mqtt_prefix\":\"" + jsonEscape(c.prefix) + "\"";
+  j += ",\"mqtt_names\":\"" + jsonEscape(c.names) + "\"";
+  j += ",\"mqtt_interval\":" + String(c.intervalSec);
+  j += ",\"mqtt_retain\":";
+  j += c.retain ? "true" : "false";
+  return j;
 }
 
 String MqttPublisher::autoClientId() const
@@ -168,63 +160,49 @@ String MqttPublisher::autoClientId() const
   uint64_t mac = ESP.getEfuseMac();
   char tail[8];
   snprintf(tail, sizeof(tail), "-%06x", (unsigned)((mac >> 24) & 0xFFFFFF));
-  return hostname + tail;
+  return hostName + tail;
 }
 
-String MqttPublisher::effectiveClientId() const
+String MqttPublisher::effectivePrefix(const MqttConfig& c) const
 {
-  return config.clientId.length() ? config.clientId : autoClientId();
+  return c.prefix.length() ? c.prefix : String("openinverter/") + hostName;
 }
 
-String MqttPublisher::getConfigJson() const
+String MqttPublisher::effectiveClientId(const MqttConfig& c) const
 {
+  return c.clientId.length() ? c.clientId : autoClientId();
+}
+
+String MqttPublisher::configJson() const
+{
+  Lock l;
   String j = "{\"enabled\":";
-  j += config.enabled ? "true" : "false";
-  j += ",\"host\":\"" + jsonEsc(config.host) + "\"";
-  j += ",\"port\":" + String(config.port);
-  j += ",\"user\":\"" + jsonEsc(config.user) + "\"";
+  j += cfg.enabled ? "true" : "false";
+  j += ",\"host\":\"" + jsonEscape(cfg.host) + "\"";
+  j += ",\"port\":" + String(cfg.port);
+  j += ",\"user\":\"" + jsonEscape(cfg.user) + "\"";
   j += ",\"pass_set\":";
-  j += config.pass.length() ? "true" : "false";
-  j += ",\"client_id\":\"" + jsonEsc(config.clientId) + "\"";
-  j += ",\"prefix\":\"" + jsonEsc(config.prefix) + "\"";
-  j += ",\"names\":\"" + jsonEsc(config.names) + "\"";
-  j += ",\"interval\":" + String(config.intervalSec);
+  j += cfg.pass.length() ? "true" : "false";
+  j += ",\"client_id\":\"" + jsonEscape(cfg.clientId) + "\"";
+  j += ",\"prefix\":\"" + jsonEscape(cfg.prefix) + "\"";
+  j += ",\"names\":\"" + jsonEscape(cfg.names) + "\"";
+  j += ",\"interval\":" + String(cfg.intervalSec);
   j += ",\"retain\":";
-  j += config.retain ? "true" : "false";
-  j += ",\"default_prefix\":\"" + jsonEsc(String("openinverter/") + hostname) + "\"";
-  j += ",\"default_client_id\":\"" + jsonEsc(autoClientId()) + "\"";
+  j += cfg.retain ? "true" : "false";
+  j += ",\"default_prefix\":\"" + jsonEscape(String("openinverter/") + hostName) + "\"";
+  j += ",\"default_client_id\":\"" + jsonEscape(autoClientId()) + "\"";
   j += "}";
   return j;
 }
 
-String MqttPublisher::getStatusJson() const
-{
-  bool conn = mqtt.connected();
-  String j = "{\"enabled\":";
-  j += config.enabled ? "true" : "false";
-  j += ",\"connected\":";
-  j += conn ? "true" : "false";
-  j += ",\"wifi\":";
-  j += (WiFi.status() == WL_CONNECTED) ? "true" : "false";
-  j += ",\"state\":" + String(mqtt.state());
-  j += ",\"prefix\":\"" + jsonEsc(effectivePrefix()) + "\"";
-  j += ",\"client_id\":\"" + jsonEsc(effectiveClientId()) + "\"";
-  j += ",\"publish_count\":" + String(publishCount);
-  j += ",\"connect_count\":" + String(connectCount);
-  j += ",\"last_error\":\"" + jsonEsc(lastError) + "\"";
-  j += "}";
-  return j;
-}
-
-// ---------- connection & publishing ----------
-
-static const char* mqttStateText(int st)
+static const char* stateText(int st)
 {
   switch (st) {
     case -4: return "connection timeout";
     case -3: return "connection lost";
     case -2: return "connect failed (broker unreachable?)";
     case -1: return "disconnected";
+    case 0:  return "connected";
     case 1:  return "broker rejected protocol version";
     case 2:  return "broker rejected client id";
     case 3:  return "broker unavailable";
@@ -234,116 +212,217 @@ static const char* mqttStateText(int st)
   }
 }
 
-bool MqttPublisher::connect()
+String MqttPublisher::statusJson() const
 {
-  if (!config.host.length()) { lastError = "no broker host set"; return false; }
-  mqtt.setServer(config.host.c_str(), config.port); // PubSubClient keeps the pointer — re-set every attempt
-  String id = effectiveClientId();
-  String willTopic = effectivePrefix() + "/status";
-  bool ok;
-  if (config.user.length())
-    ok = mqtt.connect(id.c_str(), config.user.c_str(), config.pass.c_str(),
-                      willTopic.c_str(), 0, true, "offline");
-  else
-    ok = mqtt.connect(id.c_str(), willTopic.c_str(), 0, true, "offline");
-  if (!ok) {
-    lastError = mqttStateText(mqtt.state());
-    return false;
+  Lock l;
+  String j = "{\"enabled\":";
+  j += cfg.enabled ? "true" : "false";
+  j += ",\"connected\":";
+  j += stConnected ? "true" : "false";
+  j += ",\"state\":\"";
+  j += stateText(stState);
+  j += "\",\"last_error\":\"" + jsonEscape(stError) + "\"";
+  j += ",\"prefix\":\"" + jsonEscape(effectivePrefix(cfg)) + "\"";
+  j += ",\"publish_count\":" + String(stPublished);
+  j += ",\"connect_count\":" + String(stConnects);
+  j += ",\"last_publish_age\":";
+  j += stLastPublishMs ? String((millis() - stLastPublishMs) / 1000) : String("null");
+  j += ",\"unknown\":[";
+  for (size_t i = 0; i < stUnknown.size(); i++) {
+    if (i) j += ',';
+    j += "\"" + jsonEscape(stUnknown[i]) + "\"";
   }
-  connectCount++;
-  lastError = "";
-  mqtt.publish(willTopic.c_str(), "online", true);
-  lastPublish = 0; // publish a fresh set straight away
+  j += "]}";
+  return j;
+}
+
+// ---- Main loop side ----
+
+bool MqttPublisher::roundDue(uint32_t now)
+{
+  if (!mtx) return false;
+  Lock l;
+  if (!cfg.enabled || !stConnected || !cfg.names.length()) return false;
+  if (pendingReady) return false; // the task hasn't taken the last round yet
+  if (roundStarted && now - lastRoundMs < cfg.intervalSec * 1000UL) return false;
+  roundStarted = true;
+  lastRoundMs = now;
   return true;
 }
 
-void MqttPublisher::publishValues()
+String MqttPublisher::names() const
 {
-  if (!fetchFn || !config.names.length()) return;
-  String prefix = effectivePrefix();
+  Lock l;
+  return cfg.names;
+}
 
-  // Walk the name list in 'get'-sized chunks
-  unsigned int pos = 0;
-  while (pos < config.names.length() && mqtt.connected()) {
-    // Build one chunk of whole names
-    String chunk;
-    std::vector<String> chunkNames;
-    while (pos < config.names.length()) {
-      int comma = config.names.indexOf(',', pos);
-      String n = (comma < 0) ? config.names.substring(pos) : config.names.substring(pos, comma);
-      unsigned int next = (comma < 0) ? config.names.length() : comma + 1;
-      if (n.length() == 0) { pos = next; continue; }
-      if (chunkNames.size() && 4 + chunk.length() + 1 + n.length() > MQTT_GET_CHUNK) break;
-      if (chunk.length()) chunk += ',';
-      chunk += n;
-      chunkNames.push_back(n);
-      pos = next;
-    }
-    if (chunkNames.empty()) break;
+void MqttPublisher::submitRound(const std::vector<NamedValue>& values,
+                                const std::vector<String>& unknown, const String& readError)
+{
+  Lock l;
+  stUnknown = unknown;
+  if (readError.length()) stError = readError;
+  else if (stError.startsWith("could not read")) stError = "";
+  if (values.empty()) return;
+  pending = values;
+  pendingReady = true;
+  if (task) xTaskNotifyGive(task);
+}
 
-    String reply;
-    if (!fetchFn(chunk, reply)) { lastError = "could not read values from inverter"; return; }
+// ---- Client task ----
 
-    // Values come back whitespace-separated (UART: one per line, CAN: tabs)
-    std::vector<String> tokens;
-    int i = 0, len = reply.length();
-    while (i < len) {
-      while (i < len && isspace((unsigned char)reply[i])) i++;
-      int s = i;
-      while (i < len && !isspace((unsigned char)reply[i])) i++;
-      if (i > s) tokens.push_back(reply.substring(s, i));
-    }
-    if (tokens.size() != chunkNames.size()) {
-      // Mis-mapped values are worse than none — skip the whole chunk
-      lastError = "reply didn't match requested values (unknown name?)";
-      continue;
-    }
-    for (size_t k = 0; k < chunkNames.size(); k++) {
-      const char* t = tokens[k].c_str();
-      char* end;
-      strtod(t, &end);
-      if (end == t || *end) continue; // not a number (e.g. an error word)
-      String topic = prefix + "/" + chunkNames[k];
-      if (mqtt.publish(topic.c_str(), t, config.retain)) publishCount++;
-    }
+static void taskEntry(void*) { mqttPublisher.taskLoop(); }
+
+void MqttPublisher::ensureTask()
+{
+  bool enabled;
+  {
+    Lock l;
+    enabled = cfg.enabled;
+  }
+  if (task || !enabled) return;
+  // Created on first enable and kept: disabling just disconnects
+  if (xTaskCreate(taskEntry, "mqtt", 8192, nullptr, 1, &task) != pdPASS) {
+    task = nullptr;
+    Lock l;
+    stError = "could not start the MQTT task (low memory)";
   }
 }
 
-void MqttPublisher::loop()
+void MqttPublisher::taskLoop()
 {
-  if (!config.enabled) {
+  WiFiClient net;
+  PubSubClient mqtt(net);
+  mqtt.setBufferSize(512);
+  mqtt.setKeepAlive(30);
+  mqtt.setSocketTimeout(5);
+
+  MqttConfig c;             // the task's own copy of the config
+  uint32_t seenGen = (uint32_t)-1;
+  String host;              // setServer keeps the pointer: must outlive the client's use
+  IPAddress mdnsIp;
+  uint32_t nextAttempt = 0, backoff = 0;
+  std::vector<NamedValue> round;
+
+  auto setStatus = [&](bool conn, const String* err) {
+    Lock l;
+    stConnected = conn;
+    stState = mqtt.state();
+    if (err) stError = *err;
+  };
+  auto goodbye = [&]() {
     if (mqtt.connected()) {
-      mqtt.publish((effectivePrefix() + "/status").c_str(), "offline", true);
+      mqtt.publish((effectivePrefix(c) + "/status").c_str(), "offline", true);
       mqtt.disconnect();
     }
-    return;
-  }
-  if (WiFi.status() != WL_CONNECTED) {
-    if (hadLink) { lastError = "WiFi station not connected"; hadLink = false; }
-    return;
-  }
-  hadLink = true;
+    setStatus(false, nullptr);
+  };
 
-  if (!mqtt.connected()) {
-    unsigned long now = millis();
-    if (lastConnectAttempt && now - lastConnectAttempt < reconnectDelay) return;
-    lastConnectAttempt = now;
-    if (connect()) {
-      reconnectDelay = MQTT_RECONNECT_MIN_MS;
-    } else {
-      // Back off so an unreachable broker doesn't stall the web server
-      // with a blocking connect attempt every pass
-      reconnectDelay = reconnectDelay ? reconnectDelay * 2 : MQTT_RECONNECT_MIN_MS;
-      if (reconnectDelay > MQTT_RECONNECT_MAX_MS) reconnectDelay = MQTT_RECONNECT_MAX_MS;
-      return;
+  for (;;) {
+    bool changed = false;
+    {
+      Lock l;
+      if (cfgGen != seenGen) {
+        changed = true;
+        seenGen = cfgGen;
+      }
     }
-  }
+    if (changed) {
+      goodbye(); // on the old settings' prefix
+      {
+        Lock l;
+        c = cfg;
+      }
+      host = c.host;
+      mdnsIp = IPAddress();
+      nextAttempt = 0;
+      backoff = 0;
+    }
 
-  mqtt.loop();
+    if (!c.enabled || WiFi.status() != WL_CONNECTED) {
+      if (mqtt.connected()) goodbye();
+      else if (c.enabled) { String e = "Wi-Fi station not connected"; setStatus(false, &e); }
+      ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(500));
+      continue;
+    }
 
-  if (lastPublish == 0 || millis() - lastPublish >= config.intervalSec * 1000UL) {
-    lastPublish = millis();
-    if (lastPublish == 0) lastPublish = 1;
-    publishValues();
+    if (!mqtt.connected()) {
+      setStatus(false, nullptr);
+      uint32_t now = millis();
+      if (nextAttempt && (int32_t)(now - nextAttempt) < 0) {
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(200));
+        continue;
+      }
+      String err;
+      bool ok = false;
+      if (!host.length()) err = "no broker host set";
+      else {
+        // ".local" names only resolve over mDNS
+        String mdns = mqttlogic::mdnsName(host);
+        if (mdns.length()) {
+          if (mdnsIp == IPAddress()) mdnsIp = MDNS.queryHost((char*)mdns.c_str(), MDNS_TIMEOUT_MS);
+          if (mdnsIp == IPAddress()) err = String("could not resolve ") + host + " over mDNS";
+          else mqtt.setServer(mdnsIp, c.port);
+        } else mqtt.setServer(host.c_str(), c.port);
+        if (!err.length()) {
+          String id = effectiveClientId(c);
+          String will = effectivePrefix(c) + "/status";
+          if (c.user.length())
+            ok = mqtt.connect(id.c_str(), c.user.c_str(), c.pass.c_str(), will.c_str(), 0, true, "offline");
+          else
+            ok = mqtt.connect(id.c_str(), will.c_str(), 0, true, "offline");
+          if (ok) ok = mqtt.publish(will.c_str(), "online", true);
+          if (!ok) { err = stateText(mqtt.state()); mdnsIp = IPAddress(); }
+        }
+      }
+      {
+        // A config change while connecting wins: don't report stale results
+        Lock l;
+        if (cfgGen != seenGen) continue;
+      }
+      if (ok) {
+        backoff = 0;
+        nextAttempt = 0;
+        String none;
+        setStatus(true, &none);
+        Lock l;
+        stConnects++;
+        roundStarted = false; // first values straight away
+      } else {
+        backoff = backoff ? backoff * 2 : RECONNECT_MIN_MS;
+        if (backoff > RECONNECT_MAX_MS) backoff = RECONNECT_MAX_MS;
+        nextAttempt = millis() + backoff;
+        if (!nextAttempt) nextAttempt = 1;
+        setStatus(false, &err);
+      }
+      continue;
+    }
+
+    mqtt.loop();
+
+    bool have = false;
+    {
+      Lock l;
+      if (pendingReady && cfgGen == seenGen) {
+        round.swap(pending);
+        pending.clear();
+        pendingReady = false;
+        have = true;
+      }
+    }
+    if (have) {
+      String prefix = effectivePrefix(c);
+      uint32_t sent = 0;
+      for (const NamedValue& v : round) {
+        if (!mqtt.connected()) break;
+        if (mqtt.publish(mqttlogic::valueTopic(prefix, v.name).c_str(), v.value.c_str(), c.retain)) sent++;
+      }
+      round.clear();
+      Lock l;
+      stPublished += sent;
+      if (sent) stLastPublishMs = millis() ? millis() : 1;
+    }
+    // Wake on a new round, else poll the socket for keepalive/pings
+    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
   }
 }
