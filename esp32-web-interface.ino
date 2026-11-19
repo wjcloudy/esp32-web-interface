@@ -64,6 +64,7 @@
 
 using weblogic::jsonEscape;
 using weblogic::findArrayEnd;
+#include "src/mqtt_publisher.h"
 
 #ifndef DBG_OUTPUT_PORT
 #define DBG_OUTPUT_PORT Serial2
@@ -910,6 +911,7 @@ static void cfgResetAll()
   Preferences prefs;
   if (prefs.begin("oicfg", false)) { prefs.clear(); prefs.end(); }
   for (const weblogic::CfgMirrorFile& m : weblogic::CFG_MIRRORED) SPIFFS.remove(m.path);
+  mqttPublisher.reset(); // its password lives in NVS of its own
 }
 
 void handleFileUpload(){
@@ -2387,7 +2389,7 @@ static void saveSettings(const String& canNodesJson)
 {
   File f = SPIFFS.open("/settings.json", "w");
   if (f) {
-    f.printf("{\"dev_name\":\"%s\",\"txrx_swapped\":%s,\"uart_rx_pin\":%d,\"uart_tx_pin\":%d,\"ap_fallback\":%s,\"sd_enabled\":%s,\"can_mode\":%s,\"can_node_id\":%d,\"can_speed\":%d,\"can_rx_pin\":%d,\"can_tx_pin\":%d,\"can_pwr_pin\":%d,\"can_pwr_inv\":%s,\"can_en_pin\":%d,\"can_en_inv\":%s,\"can_nodes\":%s,\"serial_console\":%s}",
+    f.printf("{\"dev_name\":\"%s\",\"txrx_swapped\":%s,\"uart_rx_pin\":%d,\"uart_tx_pin\":%d,\"ap_fallback\":%s,\"sd_enabled\":%s,\"can_mode\":%s,\"can_node_id\":%d,\"can_speed\":%d,\"can_rx_pin\":%d,\"can_tx_pin\":%d,\"can_pwr_pin\":%d,\"can_pwr_inv\":%s,\"can_en_pin\":%d,\"can_en_inv\":%s,\"can_nodes\":%s,\"serial_console\":%s%s}",
              jsonEscape(deviceName).c_str(),
              txrxSwapped ? "true" : "false",
              uartRxPin, uartTxPin,
@@ -2397,7 +2399,8 @@ static void saveSettings(const String& canNodesJson)
              canNodeId, canSpeed, canRxPin, canTxPin,
              canPwrPin, canPwrInv ? "true" : "false",
              canEnPin, canEnInv ? "true" : "false",
-             canNodesJson.c_str(), serialConsoleEnabled ? "true" : "false");
+             canNodesJson.c_str(), serialConsoleEnabled ? "true" : "false",
+             mqttPublisher.settingsFields().c_str());
     f.close();
     cfgMirrorSave("/settings.json");
   }
@@ -2428,6 +2431,7 @@ static void loadSettings()
 
       apFallback = json.indexOf("\"ap_fallback\":true") >= 0;
       serialConsoleEnabled = json.indexOf("\"serial_console\":true") >= 0;
+      mqttPublisher.loadSettings(json);
       // Absent in older files → keep the build's default
       if (json.indexOf("\"sd_enabled\":false") >= 0) sdEnabled = false;
       else if (json.indexOf("\"sd_enabled\":true") >= 0) sdEnabled = true;
@@ -2833,8 +2837,7 @@ static void sseTick()
   sseClient.print("data: " + out + "\n\n");
 }
 
-// ==================== Sign-in endpoints (/auth/*) ====================
-
+// ==================== Sign-in endpoints (/auth/*) =============
 static String authArgLower(const char* name, unsigned int maxLen)
 {
   String v = server.arg(name).substring(0, maxLen);
@@ -3300,6 +3303,102 @@ private:
 bool AuthRouter::_publicStatic = false;
 static AuthRouter authRouter;
 
+// ==================== MQTT ====================
+// The client and its network waits run in their own task (src/mqtt_publisher):
+// these handlers only read or replace its settings, and mqttTick() below
+// reads the values from the inverter, one short step per loop() pass.
+
+static void handleMqttConfig()
+{
+  if (server.method() != HTTP_POST) { server.send(200, "application/json", mqttPublisher.configJson()); return; }
+  MqttConfig c = mqttPublisher.config();
+  auto flag = [](const String& v) { return v == "1" || v == "true"; };
+  if (server.hasArg("enabled")) c.enabled = flag(server.arg("enabled"));
+  if (server.hasArg("host")) c.host = server.arg("host");
+  if (server.hasArg("port")) c.port = mqttlogic::clampPort(server.arg("port").toInt());
+  if (server.hasArg("user")) c.user = server.arg("user");
+  // Absent = keep the stored password; present and empty = remove it
+  if (server.hasArg("pass")) c.pass = server.arg("pass");
+  if (server.hasArg("client_id")) c.clientId = server.arg("client_id");
+  if (server.hasArg("prefix")) c.prefix = server.arg("prefix");
+  if (server.hasArg("names")) c.names = server.arg("names");
+  if (server.hasArg("interval")) c.intervalSec = mqttlogic::clampInterval(server.arg("interval").toInt());
+  if (server.hasArg("retain")) c.retain = flag(server.arg("retain"));
+  if (c.enabled && !mqttlogic::sanitizeToken(c.host, mqttlogic::HOST_MAX).length()) {
+    server.send(400, "application/json", "{\"error\":\"Set the broker host before enabling MQTT\"}");
+    return;
+  }
+  mqttPublisher.setConfig(c);
+  saveSettings();
+  server.send(200, "application/json", mqttPublisher.configJson());
+}
+
+static void handleMqttStatus()
+{
+  server.send(200, "application/json", mqttPublisher.statusJson());
+}
+
+// One round = every configured name, read in `get` batches (UART) or one
+// SDO read at a time (CAN), one batch per pass so loop() stays responsive.
+static std::vector<std::vector<String>> mqttBatches;
+static size_t mqttBatchIdx = 0;
+static std::vector<mqttlogic::NamedValue> mqttValues;
+static std::vector<String> mqttUnknown;
+static String mqttReadError;
+static uint32_t mqttCacheAttemptMs = 0;
+
+static void mqttTick()
+{
+  if (mqttBatches.empty()) {
+    if (!mqttPublisher.roundDue(millis())) return;
+    std::vector<String> names = mqttlogic::splitNames(mqttPublisher.names());
+    if (canMode) for (const String& n : names) mqttBatches.push_back(std::vector<String>(1, n));
+    else mqttBatches = mqttlogic::batchNames(names);
+    if (mqttBatches.empty()) return;
+    mqttBatchIdx = 0;
+    mqttValues.clear();
+    mqttUnknown.clear();
+    mqttReadError = "";
+  }
+  const std::vector<String>& batch = mqttBatches[mqttBatchIdx];
+  bool abandon = false;
+  if (canMode) {
+    // Never while a firmware update owns the bus
+    if (canFwBusy()) abandon = true;
+    else {
+      // Headless (no browser has loaded the parameter list yet): fetch it,
+      // at most once a minute, as the first json request would
+      if (!canParamCacheLoaded && (!mqttCacheAttemptMs || millis() - mqttCacheAttemptMs > 60000)) {
+        mqttCacheAttemptMs = millis() | 1;
+        canDownloadParamCache();
+      }
+      float val;
+      bool virt = canVirtualFind(batch[0], &val);
+      int id = virt ? -1 : canGetParamId(batch[0]);
+      if (!virt && !canParamCacheLoaded) { mqttReadError = "could not read the parameter list over CAN"; abandon = true; }
+      else {
+        if (!virt) val = id >= 0 ? canReadParamValue(id) : NAN;
+        if (!virt && id < 0) mqttUnknown.push_back(batch[0]);
+        else if (!isnan(val)) mqttValues.push_back({ batch[0], String(val, 2) });
+      }
+    }
+  } else {
+    // One plain 'get' transaction, like the SSE stream's
+    sendCommand("get " + mqttlogic::joinNames(batch));
+    InverterUartPort port;
+    String out = weblogic::readReply(port, 0, UART_TIMEOUT, UART_IDLE_TIMEOUT);
+    mqttlogic::MatchResult m = mqttlogic::matchUartReply(batch, out);
+    if (!m.aligned) mqttReadError = out.length() ? "could not read values: reply didn't match the request"
+                                                 : "could not read values: no reply from the inverter";
+    for (const mqttlogic::NamedValue& v : m.values) mqttValues.push_back(v);
+    for (const String& n : m.unknown) mqttUnknown.push_back(n);
+  }
+  if (abandon || ++mqttBatchIdx >= mqttBatches.size()) {
+    if (!abandon || mqttReadError.length()) mqttPublisher.submitRound(mqttValues, mqttUnknown, mqttReadError);
+    mqttBatches.clear();
+  }
+}
+
 void setup(void){
   DBG_OUTPUT_PORT.begin(115200);
   //Inverter.setRxBufferSize(50000);
@@ -3409,6 +3508,8 @@ void setup(void){
 
   MDNS.begin(mdnsHost.c_str());
 
+  mqttPublisher.begin(mdnsHost); // after loadSettings(); starts the client task if enabled
+
   //SERVER INIT
   // ArduinoOTA (port 3232) has no notion of users: it runs only while
   // sign-in is off. With users, update through the Update tab (admin).
@@ -3485,6 +3586,8 @@ void setup(void){
   route("/baud", weblogic::M_ANY, handleBaud);
   route("/settings", weblogic::M_GET, handleSettings);
   route("/settings", weblogic::M_POST, handleSettings);
+  route("/mqtt", weblogic::M_GET | weblogic::M_POST, handleMqttConfig);
+  route("/mqtt/status", weblogic::M_GET, handleMqttStatus);
   #ifndef WEB_VERSION
 #define WEB_VERSION "dev"
 #endif
@@ -3800,7 +3903,10 @@ void loop(void){
   // SSE value stream (gauges page). Never while binary logging owns the
   // UART at its own baud rate — though logging only runs with no WiFi
   // clients, so the two can't really coexist anyway.
-  if (!fastLoggingActive) sseTick();
+  if (!fastLoggingActive) {
+    sseTick();
+    mqttTick();
+  }
 
   // AP-fallback mode transitions (drop the AP once the station is up, bring
   // it back if the station falls over) — checked every 15 s

@@ -249,6 +249,7 @@ static const RouteRule ROUTES[] = {
   { "/version",             M_ANY,           PERM_READ },
   { "/otainfo",             M_ANY,           PERM_READ },
   { "/settings",            M_GET,           PERM_READ },
+  { "/mqtt/status",         M_GET,           PERM_READ },   // connection state, no settings
   { "/favorites.json",      M_ANY,           PERM_READ },
   { "/gauges.json",         M_ANY,           PERM_READ },
   { "/plots.json",          M_ANY,           PERM_READ },
@@ -266,6 +267,7 @@ static const RouteRule ROUTES[] = {
   { "/virtual-reload",      M_ANY,           PERM_WRITE },
   // --- admin: the device itself
   { "/settings",            M_POST,          PERM_ADMIN },
+  { "/mqtt",                M_GET | M_POST,  PERM_ADMIN },  // broker settings (host, user)
   { "/wifi",                M_ANY,           PERM_ADMIN },
   { "/espupdate",           M_POST,          PERM_ADMIN },
   { "/espupdate-url",       M_POST,          PERM_ADMIN },
