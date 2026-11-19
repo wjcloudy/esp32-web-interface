@@ -35,7 +35,9 @@ including any configured names the inverter reported as unknown.
 
 - The MQTT client runs in its own task. A slow, missing or stalled broker
   delays only MQTT, never the web interface or the gauges. Failed connections
-  retry after 5 s, doubling up to 60 s.
+  retry after 5 s, doubling up to 60 s. A publish that fails (a broker that
+  went away or a stalled link) closes the connection at once and reconnects
+  on the same schedule, rather than waiting for the keepalive to time out.
 - Values are read from the inverter only while the broker is connected: one
   `get` per batch of names over UART (one reply line per name, so an unknown
   name costs only its own value), or one SDO read per name in CAN mode.

@@ -38,6 +38,7 @@ static std::vector<NamedValue> pending;
 static bool pendingReady = false;
 static uint32_t lastRoundMs = 0;
 static bool roundStarted = false;
+static uint32_t roundGen = 0;        // cfgGen when the round in progress began
 
 struct Lock {
   Lock() { xSemaphoreTake(mtx, portMAX_DELAY); }
@@ -247,6 +248,7 @@ bool MqttPublisher::roundDue(uint32_t now)
   if (roundStarted && now - lastRoundMs < cfg.intervalSec * 1000UL) return false;
   roundStarted = true;
   lastRoundMs = now;
+  roundGen = cfgGen;
   return true;
 }
 
@@ -260,6 +262,9 @@ void MqttPublisher::submitRound(const std::vector<NamedValue>& values,
                                 const std::vector<String>& unknown, const String& readError)
 {
   Lock l;
+  // Settings changed while the main loop was reading: the names (or prefix)
+  // may no longer apply, so drop the round rather than publish it
+  if (roundGen != cfgGen) return;
   stUnknown = unknown;
   if (readError.length()) stError = readError;
   else if (stError.startsWith("could not read")) stError = "";
@@ -310,10 +315,15 @@ void MqttPublisher::taskLoop()
     stState = mqtt.state();
     if (err) stError = *err;
   };
+  // A failed write means the link is stalled or gone. PubSubClient keeps
+  // reporting "connected" until the TCP stack notices (up to 1.5 x keepalive)
+  // and each further write could wait ~10 s, so close the socket at once and
+  // let the reconnect backoff take over.
+  auto drop = [&]() { net.stop(); };
   auto goodbye = [&]() {
     if (mqtt.connected()) {
-      mqtt.publish((effectivePrefix(c) + "/status").c_str(), "offline", true);
-      mqtt.disconnect();
+      if (mqtt.publish((effectivePrefix(c) + "/status").c_str(), "offline", true)) mqtt.disconnect();
+      else drop();
     }
     setStatus(false, nullptr);
   };
@@ -371,7 +381,7 @@ void MqttPublisher::taskLoop()
             ok = mqtt.connect(id.c_str(), c.user.c_str(), c.pass.c_str(), will.c_str(), 0, true, "offline");
           else
             ok = mqtt.connect(id.c_str(), will.c_str(), 0, true, "offline");
-          if (ok) ok = mqtt.publish(will.c_str(), "online", true);
+          if (ok && !mqtt.publish(will.c_str(), "online", true)) { ok = false; drop(); }
           if (!ok) { err = stateText(mqtt.state()); mdnsIp = IPAddress(); }
         }
       }
@@ -413,11 +423,20 @@ void MqttPublisher::taskLoop()
     if (have) {
       String prefix = effectivePrefix(c);
       uint32_t sent = 0;
+      bool failed = false;
       for (const NamedValue& v : round) {
-        if (!mqtt.connected()) break;
-        if (mqtt.publish(mqttlogic::valueTopic(prefix, v.name).c_str(), v.value.c_str(), c.retain)) sent++;
+        if (!mqtt.publish(mqttlogic::valueTopic(prefix, v.name).c_str(), v.value.c_str(), c.retain)) { failed = true; break; }
+        sent++;
       }
       round.clear();
+      if (failed) {
+        drop();
+        backoff = RECONNECT_MIN_MS; // a dead broker then backs off like any failed connect
+        nextAttempt = millis() + backoff;
+        if (!nextAttempt) nextAttempt = 1;
+        String e = "publish failed, reconnecting";
+        setStatus(false, &e);
+      }
       Lock l;
       stPublished += sent;
       if (sent) stLastPublishMs = millis() ? millis() : 1;
