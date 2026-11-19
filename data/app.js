@@ -3763,19 +3763,19 @@ const MqttCard = () => {
         <div class="mqtt-form">
           <label class="mqtt-wide">Broker host
             <input id="mqtt-host" type="text" value=${cfg.host} placeholder="192.168.1.50 or homeassistant.local"
-              oninput=${set('host')} autocomplete="off" spellcheck="false" />
+              oninput=${set('host')} autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore />
           </label>
           <label>Port
             <input id="mqtt-port" type="number" min="1" max="65535" value=${cfg.port} oninput=${set('port')} />
           </label>
           <label>Username
             <input id="mqtt-user" type="text" value=${cfg.user} placeholder="optional" oninput=${set('user')}
-              autocomplete="off" spellcheck="false" />
+              autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore />
           </label>
           <label>Password
             <input id="mqtt-pass" type="password" value=${pass} disabled=${clearPass}
               placeholder=${cfg.pass_set ? 'stored, blank keeps it' : 'optional'}
-              oninput=${e => setPass(e.target.value)} autocomplete="new-password" />
+              oninput=${e => setPass(e.target.value)} autocomplete="new-password" data-lpignore="true" data-1p-ignore />
           </label>
           ${cfg.pass_set && html`
             <label class="mqtt-wide mqtt-check"><input id="mqtt-pass-clear" type="checkbox" checked=${clearPass}
