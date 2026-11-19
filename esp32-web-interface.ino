@@ -37,7 +37,6 @@
 #include <WiFi.h>
 #include <WiFiClient.h>
 #include <WiFiClientSecure.h>
-#include <HTTPClient.h>
 #include <WebServer.h>
 #include <Preferences.h>
 #include <SPIFFS.h>
@@ -55,14 +54,17 @@
 #include "driver/uart.h"
 #include "src/can_driver.h"
 #include "src/can_protocol.h"
+#include "src/can_transfer_sink.h"
 #include "src/web_logic.h"
 #include "src/web_auth.h"
 #include "esp_timer.h"
 #include <functional>
 #include <vector>
+#include <utility>
 
 using weblogic::jsonEscape;
 using weblogic::findArrayEnd;
+#include "src/mqtt_publisher.h"
 
 #ifndef DBG_OUTPUT_PORT
 #define DBG_OUTPUT_PORT Serial2
@@ -83,9 +85,15 @@ using weblogic::findArrayEnd;
 #define SD_DEFAULT_ENABLED 0
 #endif
 
+#ifndef INVERTER_PORT
 #define INVERTER_PORT UART_NUM_0
+#endif
+#ifndef INVERTER_RX
 #define INVERTER_RX 1 //3 - Swapped for Wemos board onto Zombie and other OI boards
+#endif
+#ifndef INVERTER_TX
 #define INVERTER_TX 3 //1 - Swapped for Wemos board onto Zombie and other OI boards
+#endif
 #define UART_TIMEOUT (100 / portTICK_PERIOD_MS)
 // Silence that ends a reply once bytes have started arriving. uart_read_bytes
 // waits the full timeout unless the buffer fills, so using UART_TIMEOUT here
@@ -121,6 +129,8 @@ int uartRxPin = INVERTER_RX; // configurable UART pins (the swap toggle flips th
 int uartTxPin = INVERTER_TX;
 bool apFallback = false; // true = AP broadcasts only while the station link is down
 bool canMode = false; // true = CAN bus mode, false = UART mode
+bool serialConsoleEnabled = false; // old settings and fresh devices default off
+static bool serialConsoleSetEnabled(bool enabled);
 int canNodeId = CAN_NODE_ID_MIN;
 int canSpeed = 2; // 0=125k, 1=250k, 2=500k
 int canRxPin = CAN_RX_PIN;
@@ -297,38 +307,38 @@ static bool canDownloadParamCache() {
   if (!canMode || !canDriverIsRunning()) return false;
   DBG_OUTPUT_PORT.println("CAN: downloading parameter database...");
 
-  // Allocate buffer for JSON string (ZombieVerter-class param databases run >32KB)
-  const uint32_t bufSize = 49152;
-  uint8_t* buf = (uint8_t*)malloc(bufSize);
-  if (!buf) return false;
+  // Collect directly into the candidate's final String storage. A fixed 48 KiB
+  // scratch buffer plus a cache String and response copy exhausted/fragmented
+  // the classic ESP32 heap after the first successful download.
+  const uint32_t maxBytes = 49151;
+  if (!canParamCacheLoaded) canParamJson = String(); // release invalid cache capacity
 
   // A single lost segment truncates the transfer, so retry the whole download
   // and only cache transfers that finished with the device's last-segment flag.
   // (A retry after a truncated attempt may resume mid-transfer on the device
   // side — the sanity check below rejects that and the next attempt is fresh.)
   for (int attempt = 1; attempt <= 3; attempt++) {
-    memset(buf, 0, bufSize);
+    String candidate;
+    CanTextSink<String> collector(candidate, maxBytes);
     bool complete = false;
-    uint32_t bytesRead = canSdoReadSegmented(canNodeId, CAN_INDEX_JSON, buf, bufSize - 1, 100, &complete);
+    uint32_t bytesRead = canSdoReadSegmentedTo(canNodeId, CAN_INDEX_JSON, collector.sink(), maxBytes, 100, &complete);
 
     // Sanity check: a real param database is a non-trivial JSON object
     uint32_t end = bytesRead;
-    while (end > 0 && (buf[end - 1] == 0 || isspace(buf[end - 1]))) end--;
-    bool looksValid = end > 64 && buf[0] == '{' && buf[end - 1] == '}';
+    while (end > 0 && (candidate[end - 1] == 0 || isspace((unsigned char)candidate[end - 1]))) end--;
+    bool looksValid = end > 64 && candidate[0] == '{' && candidate[end - 1] == '}';
 
     if (bytesRead > 0 && complete && looksValid) {
-      buf[bytesRead] = 0;
-      canParamJson = String((char*)buf);
+      candidate.remove(end);
+      canParamJson = std::move(candidate);
       canParamCacheLoaded = true;
       DBG_OUTPUT_PORT.printf("CAN: downloaded %u bytes of parameter data (attempt %d)\n", bytesRead, attempt);
-      free(buf);
       return true;
     }
     DBG_OUTPUT_PORT.printf("CAN: parameter download incomplete (%u bytes, attempt %d)\n", bytesRead, attempt);
     delay(50);
   }
 
-  free(buf);
   DBG_OUTPUT_PORT.println("CAN: parameter download failed");
   return false;
 }
@@ -615,8 +625,24 @@ bool haveRTC = false;
 volatile bool haveSDCard = false; // also set late by the sdinit task
 bool sdEnabled = SD_DEFAULT_ENABLED; // runtime setting, applied at boot
 volatile bool sdInitDone = false;
+volatile bool sdInitRunning = false;
+static bool startSdMount() {
+#if SD_AVAILABLE
+  if (haveSDCard || sdInitRunning) return true;
+  sdInitDone = false; sdInitRunning = true;
+  if (xTaskCreate([](void*) {
+    haveSDCard = SD_MMC.begin("/sdcard", true, false, 40000, 5U);
+    sdInitDone = true; sdInitRunning = false; vTaskDelete(NULL);
+  }, "sdinit", 4096, NULL, 1, NULL) == pdPASS) return true;
+  sdInitDone = true; sdInitRunning = false;
+#endif
+  return false;
+}
+static bool consoleSdLoggerActive();
 bool fastLoggingEnabled = true;
 bool fastLoggingActive = false;
+bool binaryLoggingFault = false;
+void binaryLoggingStop(bool forceLocalStop = false);
 uint8_t SDIObuffer[SDIO_BUFFER_SIZE];
 uint16_t indexSDIObuffer = 0;
 uint16_t blockCountSD = 0;
@@ -885,6 +911,7 @@ static void cfgResetAll()
   Preferences prefs;
   if (prefs.begin("oicfg", false)) { prefs.clear(); prefs.end(); }
   for (const weblogic::CfgMirrorFile& m : weblogic::CFG_MIRRORED) SPIFFS.remove(m.path);
+  mqttPublisher.reset(); // its password lives in NVS of its own
 }
 
 void handleFileUpload(){
@@ -1016,44 +1043,80 @@ void handleEspUpdateUpload(){
   }
 }
 
+// One GET over an open-ended client (plain or TLS). HTTP/1.0, so the body is
+// never chunked and can be read straight off the socket. Returns the status
+// (-1: no usable reply); a redirect's target goes to location, a 200's body
+// through espOtaFeed. Replaces HTTPClient, whose cookie, auth and date
+// handling (~13 KB) this one request never needed
+template <class Net>
+static int espOtaGet(Net& net, const weblogic::HttpUrl& u, String& location){
+  net.setTimeout(20); // seconds, for the connect and each read
+  if(!net.connect(u.host.c_str(), u.port)){ espOtaErr = "Could not connect to " + u.host; return -1; }
+  net.print("GET " + u.path + " HTTP/1.0\r\nHost: " + weblogic::httpHostHeader(u) +
+            "\r\nUser-Agent: OpenInverter-ESP32\r\nAccept: */*\r\nConnection: close\r\n\r\n");
+  int code = weblogic::httpStatusCode(net.readStringUntil('\n'));
+  int32_t total = -1;
+  bool headersEnded = false;
+  for(int i = 0; code >= 0 && i < 64; i++){
+    String line = net.readStringUntil('\n');
+    if(line.length() == 0 || line == "\r"){ headersEnded = true; break; }
+    String v;
+    if(weblogic::httpHeader(line, "Location", v)) location = v;
+    else if(weblogic::httpHeader(line, "Content-Length", v)) total = weblogic::httpContentLength(v);
+  }
+  if(code < 0 || !headersEnded){ espOtaErr = "Bad HTTP reply from " + u.host; net.stop(); return -1; }
+  if(code != 200){ net.stop(); return code; }
+
+  uint8_t buf[1024];
+  uint32_t got = 0;
+  uint32_t idleMs = 0; // a live-but-silent peer must not stall the task forever
+  while(espOtaPhase < 3){
+    int avail = net.available();
+    if(avail > 0){
+      int n = net.read(buf, avail > (int)sizeof(buf) ? (int)sizeof(buf) : avail);
+      if(n > 0){
+        espOtaFeed(buf, n); got += n; idleMs = 0;
+        if(total > 0) espOtaDlPct = (int)((uint64_t)got * 100 / (uint32_t)total);
+        continue;
+      }
+    }
+    if(!net.connected()) break; // closed and drained
+    delay(1);
+    if(++idleMs > 30000){ espOtaErr = "Download stalled (no data for 30s)"; break; }
+  }
+  net.stop();
+  return code;
+}
+
 // Download a combined OTA image from a URL and flash it server-side. The ESP
 // fetches it directly (the browser can't — GitHub release downloads have no CORS
-// headers), following redirects, and streams the body through the same parser.
-// Runs as a background task so the web server stays responsive and the UI can
-// poll /espupdate-status for progress.
+// headers), following redirects (GitHub sends release downloads on to its CDN),
+// and streams the body through the same parser. Runs as a background task so
+// the web server stays responsive and the UI can poll /espupdate-status.
 static void espOtaDownloadTask(void* param){
   (void)param;
   espOtaReset();
   espOtaDlPct = 0; espOtaDlState = 1;
 
-  WiFiClientSecure client;
-  client.setInsecure();            // skip cert validation; the image is validated on flash
-  HTTPClient http;
-  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-  http.setTimeout(20000);
-  if(!http.begin(client, espOtaDlUrl)){
-    espOtaErr = "Could not start download"; espOtaDlState = 3; vTaskDelete(NULL); return;
-  }
-  int code = http.GET();
-  if(code != HTTP_CODE_OK){
-    http.end(); espOtaErr = String("Download HTTP ") + code; espOtaDlState = 3; vTaskDelete(NULL); return;
-  }
-  int total = http.getSize();
-  WiFiClient* stream = http.getStreamPtr();
-  uint8_t buf[1024];
-  uint32_t got = 0;
-  uint32_t idleMs = 0; // a live-but-silent peer must not stall the task forever
-  while(http.connected() && espOtaPhase < 3){
-    size_t avail = stream->available();
-    if(avail){
-      int n = stream->readBytes(buf, avail > sizeof(buf) ? sizeof(buf) : avail);
-      if(n > 0){ espOtaFeed(buf, n); got += n; if(total > 0) espOtaDlPct = (int)((uint64_t)got * 100 / (uint32_t)total); idleMs = 0; }
+  String url = espOtaDlUrl;
+  int code = -1;
+  for(int hop = 0; hop < 6; hop++){
+    weblogic::HttpUrl u;
+    if(!weblogic::parseHttpUrl(url, u)){ espOtaErr = "Unsupported download URL"; break; }
+    String location;
+    if(u.https){
+      WiFiClientSecure net;
+      net.setInsecure();           // skip cert validation; the image is validated on flash
+      code = espOtaGet(net, u, location);
     } else {
-      delay(1);
-      if(++idleMs > 30000){ espOtaErr = "Download stalled (no data for 30s)"; break; }
+      WiFiClient net;
+      code = espOtaGet(net, u, location);
     }
+    if(!weblogic::httpIsRedirect(code)) break;
+    if(!weblogic::resolveRedirect(u, location, url)){ espOtaErr = "Bad redirect from " + u.host; break; }
   }
-  http.end();
+  if(espOtaErr.length() == 0 && code != 200)
+    espOtaErr = weblogic::httpIsRedirect(code) ? String("Too many redirects") : String("Download HTTP ") + code;
   espOtaDone = true;
   espOtaOk = (espOtaPhase == 3);
   if(espOtaOk){
@@ -1148,6 +1211,7 @@ void handleRTCSet() {
  }
 }
 void handleSdCardDeleteAll() {
+    if (consoleSdLoggerActive()) { server.send(409, "text/json", "{\"error\":\"Stop logger first\"}"); return; }
     if (haveSDCard) {
       // Never unlink the log file while it's open for writing — FatFs allows
       // it and subsequent writes then corrupt the allocation table
@@ -1320,6 +1384,14 @@ bool uart_readStartsWith(const char *val)
 
 static void initUART(bool reinit = false)
 {
+#ifdef OI_USB_UART0_CONSOLE
+  // Older Wemos settings often select GPIO1/3. Even UART1 would steal
+  // those physical USB-console pins if we applied that saved assignment.
+  if (uartRxPin == 1 || uartRxPin == 3 || uartTxPin == 1 || uartTxPin == 3) {
+    uartRxPin = INVERTER_RX;
+    uartTxPin = INVERTER_TX;
+  }
+#endif
   // uart_set_pin(port, tx_io, rx_io, ...) — the configured pins are used
   // directly (a board preset in the UI fills them; Wemos = TX3/RX1)
   if (reinit) {
@@ -1527,34 +1599,16 @@ static void handleCommand() {
 
 // SDO read with abort detection and index verification (for walking mapping/error tables)
 static bool canSdoReadEntry(uint16_t index, uint8_t subIndex, int32_t* value) {
-  twai_message_t resp;
-  while (canDriverReceive(&resp)) {} // drain stale frames
-
-  if (!canSdoRead(canNodeId, index, subIndex)) return false;
-  if (!canReceiveForNode(canNodeId, &resp, 50)) return false;
-  if (resp.data[0] == SDO_ABORT) return false;
-
-  uint16_t rIndex;
-  uint8_t rSubIndex;
-  if (!canSdoParseResponse(&resp, NULL, &rIndex, &rSubIndex, value)) return false;
-  return rIndex == index && rSubIndex == subIndex;
+  CanSdoResult result = canSdoReadChecked(canNodeId, index, subIndex, 50);
+  if (result.ok && value) *value = result.value;
+  return result.ok;
 }
 
 // SDO write that waits for and verifies the confirmation
 // Returns 0 on success, the SDO abort code on rejection, -1 on comm failure
 static int32_t canSdoWriteChecked(uint16_t index, uint8_t subIndex, int32_t value) {
-  twai_message_t resp;
-  while (canDriverReceive(&resp)) {} // drain stale frames
-
-  if (!canSdoWrite(canNodeId, index, subIndex, value)) return -1;
-  if (!canReceiveForNode(canNodeId, &resp, 200)) return -1;
-  if (resp.data[0] == SDO_WRITE_RESPONSE) return 0;
-  if (resp.data[0] == SDO_ABORT) {
-    int32_t code;
-    memcpy(&code, &resp.data[4], 4);
-    return code ? code : -1;
-  }
-  return -1;
+  CanSdoResult result = canSdoWriteConfirmed(canNodeId, index, subIndex, value);
+  return result.ok ? 0 : result.abortCode ? (int32_t)result.abortCode : -1;
 }
 
 // Translate an error/enum value to its name using a unit string like "0=None, 1=UdcLow"
@@ -1726,7 +1780,7 @@ static String canExecuteCommand(const String& cmdStr, int repeat) {
       bool first = true;
       for (int dir = 0; dir < 2; dir++) {
         uint16_t index = dir ? CAN_INDEX_MAP_RD_RX : CAN_INDEX_MAP_RD;
-        while (true) {
+        while (index < (dir ? 0x3200 : 0x3180)) {
           int32_t cobid;
           if (!canSdoReadEntry(index, 0, &cobid)) break; // no more messages
           int sub = 1;
@@ -2024,26 +2078,21 @@ static void canFwUpdateTask(void* arg)
   vTaskDelete(NULL);
 }
 
-static void handleCanFwUpdate()
+// Shared entry point for HTTP and the physical serial console.
+static bool startCanFwUpdate(const String& path, String& error)
 {
-  if (!canMode) { server.send(400, "text/plain", "CAN mode required"); return; }
-  if (!server.hasArg("file")) { server.send(500, "text/plain", "BAD ARGS"); return; }
-
-  if (canFwState == CANFW_WAITBOOT || canFwState == CANFW_FLASHING) {
-    server.send(409, "text/json", "{\"message\":\"Update already in progress\"}");
-    return;
-  }
-
-  File file = SPIFFS.open(server.arg("file"), "r");
-  if (!file) { server.send(500, "text/json", "{\"message\":\"Failed to open file\"}"); return; }
+  if (!canMode || !canDriverIsRunning()) { error = "CAN mode required"; return false; }
+  if (canFwBusy()) { error = "Update already in progress"; return false; }
+  File file = SPIFFS.open(path, "r");
+  if (!file) { error = "Failed to open file"; return false; }
   size_t fileSize = file.size();
   file.close();
-  if (fileSize == 0) { server.send(500, "text/json", "{\"message\":\"Firmware file is empty\"}"); return; }
+  if (fileSize == 0) { error = "Firmware file is empty"; return false; }
 
   // The CAN bootloader protocol caps the page count at one byte
-  if (fileSize > 255 * 1024) { server.send(500, "text/json", "{\"message\":\"Firmware too large (max 255KB)\"}"); return; }
+  if (fileSize > 255 * 1024) { error = "Firmware too large (max 255KB)"; return false; }
 
-  canFwPath = server.arg("file");
+  canFwPath = path;
   canFwMsg = "";
   canFwState = CANFW_WAITBOOT;
   canFwPage = 0;
@@ -2054,7 +2103,19 @@ static void handleCanFwUpdate()
   if (xTaskCreate(canFwUpdateTask, "canfw", 8192, NULL, 2, NULL) != pdPASS) {
     canFwState = CANFW_ERROR;
     canFwMsg = "Could not start update task (out of memory?)";
-    server.send(500, "text/json", "{\"message\":\"Could not start update task\"}");
+    error = "Could not start update task";
+    return false;
+  }
+  return true;
+}
+
+static void handleCanFwUpdate()
+{
+  if (!canMode) { server.send(400, "text/plain", "CAN mode required"); return; }
+  if (!server.hasArg("file")) { server.send(500, "text/plain", "BAD ARGS"); return; }
+  String error;
+  if (!startCanFwUpdate(server.arg("file"), error)) {
+    server.send(canFwBusy() ? 409 : 500, "text/json", "{\"message\":\"" + jsonEscape(error) + "\"}");
     return;
   }
 
@@ -2328,7 +2389,7 @@ static void saveSettings(const String& canNodesJson)
 {
   File f = SPIFFS.open("/settings.json", "w");
   if (f) {
-    f.printf("{\"dev_name\":\"%s\",\"txrx_swapped\":%s,\"uart_rx_pin\":%d,\"uart_tx_pin\":%d,\"ap_fallback\":%s,\"sd_enabled\":%s,\"can_mode\":%s,\"can_node_id\":%d,\"can_speed\":%d,\"can_rx_pin\":%d,\"can_tx_pin\":%d,\"can_pwr_pin\":%d,\"can_pwr_inv\":%s,\"can_en_pin\":%d,\"can_en_inv\":%s,\"can_nodes\":%s}",
+    f.printf("{\"dev_name\":\"%s\",\"txrx_swapped\":%s,\"uart_rx_pin\":%d,\"uart_tx_pin\":%d,\"ap_fallback\":%s,\"sd_enabled\":%s,\"can_mode\":%s,\"can_node_id\":%d,\"can_speed\":%d,\"can_rx_pin\":%d,\"can_tx_pin\":%d,\"can_pwr_pin\":%d,\"can_pwr_inv\":%s,\"can_en_pin\":%d,\"can_en_inv\":%s,\"can_nodes\":%s,\"serial_console\":%s%s}",
              jsonEscape(deviceName).c_str(),
              txrxSwapped ? "true" : "false",
              uartRxPin, uartTxPin,
@@ -2338,7 +2399,8 @@ static void saveSettings(const String& canNodesJson)
              canNodeId, canSpeed, canRxPin, canTxPin,
              canPwrPin, canPwrInv ? "true" : "false",
              canEnPin, canEnInv ? "true" : "false",
-             canNodesJson.c_str());
+             canNodesJson.c_str(), serialConsoleEnabled ? "true" : "false",
+             mqttPublisher.settingsFields().c_str());
     f.close();
     cfgMirrorSave("/settings.json");
   }
@@ -2368,6 +2430,8 @@ static void loadSettings()
       }
 
       apFallback = json.indexOf("\"ap_fallback\":true") >= 0;
+      serialConsoleEnabled = json.indexOf("\"serial_console\":true") >= 0;
+      mqttPublisher.loadSettings(json);
       // Absent in older files → keep the build's default
       if (json.indexOf("\"sd_enabled\":false") >= 0) sdEnabled = false;
       else if (json.indexOf("\"sd_enabled\":true") >= 0) sdEnabled = true;
@@ -2471,6 +2535,18 @@ static void handleSettings()
     server.send(200, "text/json", "{\"result\":\"ok\",\"rebooting\":true}");
     delay(250);
     ESP.restart();
+  } else if (server.hasArg("serial_console")) {
+    if (server.arg("serial_console") != "0" && server.arg("serial_console") != "1") {
+      server.send(400, "application/json", "{\"error\":\"serial_console must be 0 or 1\"}"); return;
+    }
+    bool enable = server.arg("serial_console") == "1";
+    // Turning access off always succeeds; only enabling waits for a CAN update.
+    if (enable && canFwBusy()) { server.send(409, "application/json", "{\"error\":\"Wait for CAN update before changing console access\"}"); return; }
+    if (!serialConsoleSetEnabled(enable)) {
+      server.send(409, "application/json", "{\"error\":\"Console unavailable in this build, or its port conflicts with the inverter UART\"}"); return;
+    }
+    saveSettings();
+    server.send(200, "application/json", "{\"result\":\"ok\"}");
   } else if (server.hasArg("sd_enabled")) {
     sdEnabled = (server.arg("sd_enabled") == "1");
     saveSettings();
@@ -2541,6 +2617,14 @@ static void sendSettingsJson()
     json += SD_AVAILABLE ? "true" : "false";
     json += ",\"sd_enabled\":";
     json += sdEnabled ? "true" : "false";
+    json += ",\"serial_console\":";
+    json += serialConsoleEnabled ? "true" : "false";
+    json += ",\"serial_console_available\":";
+#ifdef OI_SERIAL_CONSOLE
+    json += "true";
+#else
+    json += "false";
+#endif
     json += ",\"sd_card\":";
     json += haveSDCard ? "true" : "false";
     json += ",\"can_mode\":";
@@ -2753,8 +2837,7 @@ static void sseTick()
   sseClient.print("data: " + out + "\n\n");
 }
 
-// ==================== Sign-in endpoints (/auth/*) ====================
-
+// ==================== Sign-in endpoints (/auth/*) =============
 static String authArgLower(const char* name, unsigned int maxLen)
 {
   String v = server.arg(name).substring(0, maxLen);
@@ -3020,22 +3103,39 @@ static bool authResetPinUsable()
 #endif
 }
 
+#include "src/serial_recovery.h"
+static SerialRecoveryLine recoveryLine;
+#ifdef OI_SERIAL_CONSOLE
+#include "src/serial_can_console.h"
+#else
+static bool consoleSdLoggerActive() { return fastLoggingActive; }
+static bool serialConsoleSetEnabled(bool enabled) {
+  if (enabled) return false;
+  serialConsoleEnabled = false; return true;
+}
+#endif
+
+static void minimalSerialRecoveryTick() {
+  for (unsigned i = 0; i < 128 && DBG_OUTPUT_PORT.available(); ++i) {
+    if (!recoveryLine.push(DBG_OUTPUT_PORT.read())) continue;
+    bool reset = authEnabled();
+    const char* message = reset ? "resetting users and rebooting" : "Auth: no users, nothing to reset";
+    char response[160];
+    int length = recoveryLine.framed
+      ? snprintf(response, sizeof(response), "@oi {\"id\":%lu,\"ok\":true,\"result\":\"%s\"}\n", (unsigned long)recoveryLine.id, message)
+      : snprintf(response, sizeof(response), "%s\n", message);
+    DBG_OUTPUT_PORT.write(reinterpret_cast<const uint8_t*>(response), length);
+    if (reset) authRecoveryReset("serial");
+  }
+}
+
 static void authRecoveryTick()
 {
-  static char line[24];
-  static uint8_t len = 0;
-  while (DBG_OUTPUT_PORT.available()) {
-    int c = DBG_OUTPUT_PORT.read();
-    if (c == '\r' || c == '\n') {
-      line[len] = 0;
-      if (len && strcmp(line, "auth reset") == 0) {
-        if (authEnabled()) authRecoveryReset("serial");
-        else DBG_OUTPUT_PORT.println("Auth: no users, nothing to reset");
-      }
-      len = 0;
-    } else if (len < sizeof(line) - 1) line[len++] = (char)c;
-    else len = 0; // line noise longer than any command: start over
-  }
+#ifdef OI_SERIAL_CONSOLE
+  if (serialConsoleEnabled && consoleTransportSafe()) serialCanConsoleTick();
+  else
+#endif
+    minimalSerialRecoveryTick();
 #if AUTH_RESET_PIN >= 0
   static bool pinReady = false, seenHigh = false;
   static uint32_t lowSince = 0;
@@ -3203,6 +3303,102 @@ private:
 bool AuthRouter::_publicStatic = false;
 static AuthRouter authRouter;
 
+// ==================== MQTT ====================
+// The client and its network waits run in their own task (src/mqtt_publisher):
+// these handlers only read or replace its settings, and mqttTick() below
+// reads the values from the inverter, one short step per loop() pass.
+
+static void handleMqttConfig()
+{
+  if (server.method() != HTTP_POST) { server.send(200, "application/json", mqttPublisher.configJson()); return; }
+  MqttConfig c = mqttPublisher.config();
+  auto flag = [](const String& v) { return v == "1" || v == "true"; };
+  if (server.hasArg("enabled")) c.enabled = flag(server.arg("enabled"));
+  if (server.hasArg("host")) c.host = server.arg("host");
+  if (server.hasArg("port")) c.port = mqttlogic::clampPort(server.arg("port").toInt());
+  if (server.hasArg("user")) c.user = server.arg("user");
+  // Absent = keep the stored password; present and empty = remove it
+  if (server.hasArg("pass")) c.pass = server.arg("pass");
+  if (server.hasArg("client_id")) c.clientId = server.arg("client_id");
+  if (server.hasArg("prefix")) c.prefix = server.arg("prefix");
+  if (server.hasArg("names")) c.names = server.arg("names");
+  if (server.hasArg("interval")) c.intervalSec = mqttlogic::clampInterval(server.arg("interval").toInt());
+  if (server.hasArg("retain")) c.retain = flag(server.arg("retain"));
+  if (c.enabled && !mqttlogic::sanitizeToken(c.host, mqttlogic::HOST_MAX).length()) {
+    server.send(400, "application/json", "{\"error\":\"Set the broker host before enabling MQTT\"}");
+    return;
+  }
+  mqttPublisher.setConfig(c);
+  saveSettings();
+  server.send(200, "application/json", mqttPublisher.configJson());
+}
+
+static void handleMqttStatus()
+{
+  server.send(200, "application/json", mqttPublisher.statusJson());
+}
+
+// One round = every configured name, read in `get` batches (UART) or one
+// SDO read at a time (CAN), one batch per pass so loop() stays responsive.
+static std::vector<std::vector<String>> mqttBatches;
+static size_t mqttBatchIdx = 0;
+static std::vector<mqttlogic::NamedValue> mqttValues;
+static std::vector<String> mqttUnknown;
+static String mqttReadError;
+static uint32_t mqttCacheAttemptMs = 0;
+
+static void mqttTick()
+{
+  if (mqttBatches.empty()) {
+    if (!mqttPublisher.roundDue(millis())) return;
+    std::vector<String> names = mqttlogic::splitNames(mqttPublisher.names());
+    if (canMode) for (const String& n : names) mqttBatches.push_back(std::vector<String>(1, n));
+    else mqttBatches = mqttlogic::batchNames(names);
+    if (mqttBatches.empty()) return;
+    mqttBatchIdx = 0;
+    mqttValues.clear();
+    mqttUnknown.clear();
+    mqttReadError = "";
+  }
+  const std::vector<String>& batch = mqttBatches[mqttBatchIdx];
+  bool abandon = false;
+  if (canMode) {
+    // Never while a firmware update owns the bus
+    if (canFwBusy()) abandon = true;
+    else {
+      // Headless (no browser has loaded the parameter list yet): fetch it,
+      // at most once a minute, as the first json request would
+      if (!canParamCacheLoaded && (!mqttCacheAttemptMs || millis() - mqttCacheAttemptMs > 60000)) {
+        mqttCacheAttemptMs = millis() | 1;
+        canDownloadParamCache();
+      }
+      float val;
+      bool virt = canVirtualFind(batch[0], &val);
+      int id = virt ? -1 : canGetParamId(batch[0]);
+      if (!virt && !canParamCacheLoaded) { mqttReadError = "could not read the parameter list over CAN"; abandon = true; }
+      else {
+        if (!virt) val = id >= 0 ? canReadParamValue(id) : NAN;
+        if (!virt && id < 0) mqttUnknown.push_back(batch[0]);
+        else if (!isnan(val)) mqttValues.push_back({ batch[0], String(val, 2) });
+      }
+    }
+  } else {
+    // One plain 'get' transaction, like the SSE stream's
+    sendCommand("get " + mqttlogic::joinNames(batch));
+    InverterUartPort port;
+    String out = weblogic::readReply(port, 0, UART_TIMEOUT, UART_IDLE_TIMEOUT);
+    mqttlogic::MatchResult m = mqttlogic::matchUartReply(batch, out);
+    if (!m.aligned) mqttReadError = out.length() ? "could not read values: reply didn't match the request"
+                                                 : "could not read values: no reply from the inverter";
+    for (const mqttlogic::NamedValue& v : m.values) mqttValues.push_back(v);
+    for (const String& n : m.unknown) mqttUnknown.push_back(n);
+  }
+  if (abandon || ++mqttBatchIdx >= mqttBatches.size()) {
+    if (!abandon || mqttReadError.length()) mqttPublisher.submitRound(mqttValues, mqttUnknown, mqttReadError);
+    mqttBatches.clear();
+  }
+}
+
 void setup(void){
   DBG_OUTPUT_PORT.begin(115200);
   //Inverter.setRxBufferSize(50000);
@@ -3245,12 +3441,7 @@ void setup(void){
     // driver or, if it had already exited, deleted a stale handle — both
     // hung boards with no card fitted (issue #5). Flags are globals because
     // the task can outlive setup()'s stack frame.
-    xTaskCreate([](void*) {
-      if (SD_MMC.begin("/sdcard", true, false, 40000, 5U))
-        haveSDCard = true;
-      sdInitDone = true;
-      vTaskDelete(NULL);
-    }, "sdinit", 4096, NULL, 1, NULL);
+    startSdMount();
 
     // Wait up to 1 second; a slow card that comes up later still sets haveSDCard
     for (int i = 0; i < 10 && !sdInitDone; i++) {
@@ -3316,6 +3507,8 @@ void setup(void){
   sta_tick.attach(10, staCheck);
 
   MDNS.begin(mdnsHost.c_str());
+
+  mqttPublisher.begin(mdnsHost); // after loadSettings(); starts the client task if enabled
 
   //SERVER INIT
   // ArduinoOTA (port 3232) has no notion of users: it runs only while
@@ -3393,6 +3586,8 @@ void setup(void){
   route("/baud", weblogic::M_ANY, handleBaud);
   route("/settings", weblogic::M_GET, handleSettings);
   route("/settings", weblogic::M_POST, handleSettings);
+  route("/mqtt", weblogic::M_GET | weblogic::M_POST, handleMqttConfig);
+  route("/mqtt/status", weblogic::M_GET, handleMqttStatus);
   #ifndef WEB_VERSION
 #define WEB_VERSION "dev"
 #endif
@@ -3544,26 +3739,27 @@ void setup(void){
       return;
     }
     // Run a single segmented download attempt and report where it ended up
-    const uint32_t bufSize = 49152;
-    uint8_t* buf = (uint8_t*)malloc(bufSize);
-    if (!buf) { server.send(500, "text/json", "{\"error\":\"oom\"}"); return; }
+    CanPreviewSink<24> preview;
+    uint32_t heapBefore = ESP.getFreeHeap();
     bool complete = false;
     uint32_t t0 = millis();
-    uint32_t bytesRead = canSdoReadSegmented(canNodeId, CAN_INDEX_JSON, buf, bufSize - 1, 100, &complete);
+    uint32_t bytesRead = canSdoReadSegmentedTo(canNodeId, CAN_INDEX_JSON, preview.sink(), 49151, 100, &complete);
     uint32_t elapsed = millis() - t0;
     String head = "";
-    for (uint32_t i = 0; i < 24 && i < bytesRead; i++) {
-      char c = (char)buf[i];
+    for (size_t i = 0; i < preview.length; i++) {
+      char c = preview.bytes[i];
       if (c == '"' || c == '\\') head += '\\';
       head += (c >= 32 && c < 127) ? c : '.';
     }
-    free(buf);
     String r = "{\"nodeId\":" + String(canNodeId) +
                ",\"bytes\":" + String(bytesRead) +
                ",\"complete\":" + (complete ? "true" : "false") +
                ",\"stage\":" + String(canSegStatus.stage) +
                ",\"cmd\":" + String(canSegStatus.cmd) +
                ",\"ms\":" + String(elapsed) +
+               ",\"heap_before\":" + String(heapBefore) +
+               ",\"heap_free\":" + String(ESP.getFreeHeap()) +
+               ",\"heap_largest\":" + String(ESP.getMaxAllocHeap()) +
                ",\"head\":\"" + head + "\"}";
     server.send(200, "text/json", r);
   });
@@ -3609,6 +3805,7 @@ void setup(void){
 
 void binaryLoggingStart()
 {
+  if (binaryLoggingFault) return; // explicit confirmed stop/recovery required
   if(createNextSDFile())
   {
     sendCommand(""); //flush out buffer in case just had power up
@@ -3619,6 +3816,10 @@ void binaryLoggingStart()
     {
       uart_set_baudrate(INVERTER_PORT, 2250000);
       fastLoggingActive = true;
+      indexSDIObuffer = blockCountSD = 0;
+#ifdef OI_SERIAL_CONSOLE
+      consoleLogPath = dataFile.name();
+#endif
       DBG_OUTPUT_PORT.println("Binary logging started");
     }
     else //no response - in case it did actually switch but we missed response send the turn off command
@@ -3637,8 +3838,11 @@ void binaryLoggingStart()
   }
 }
 
-void binaryLoggingStop()
+void binaryLoggingStop(bool forceLocalStop)
 {
+  // After a local stop (SD write fault) the ESP is back at 115200 but the
+  // target may still stream at 2.25M: send the stop at the target's rate.
+  uart_set_baudrate(INVERTER_PORT, 2250000);
   uart_write_bytes(INVERTER_PORT, "\n", 1);
   delay(1);
   uart_write_bytes(INVERTER_PORT, "binarylogging 0", strnlen("binarylogging 0", UART_MESSBUF_SIZE));
@@ -3649,18 +3853,33 @@ void binaryLoggingStop()
   uart_flush(INVERTER_PORT);
   //data should now have stopped so send command again and check response
   sendCommand("binarylogging 0");
-  if (uart_readStartsWith("OK"))
+  bool confirmed = uart_readStartsWith("OK");
+  bool writeFailed = false;
+  if (confirmed || forceLocalStop)
   {
     uart_set_baudrate(INVERTER_PORT, 115200);
     fastUart = false;
     fastLoggingActive = false;
+    // Preserve a final partial block; small recordings used to be empty.
+    if (indexSDIObuffer) {
+      if (dataFile.write(SDIObuffer, indexSDIObuffer) != indexSDIObuffer) {
+        binaryLoggingFault = writeFailed = true;
+#ifdef OI_SERIAL_CONSOLE
+        consoleLogError = "SD final block write failed";
+#endif
+      }
+      indexSDIObuffer = 0;
+    }
     dataFile.flush(); //make sure up to date
     dataFile.close();
-    DBG_OUTPUT_PORT.println("Binary logging terminated");
+    DBG_OUTPUT_PORT.println(confirmed ? "Binary logging terminated" : "Binary logging stopped locally; target stop unconfirmed");
+    if (confirmed && !forceLocalStop && !writeFailed) binaryLoggingFault = false;
   }
   else
   { //assume still logging so try again next time round
-    uart_set_baudrate(INVERTER_PORT, 2250000);
+    // Only an active logger keeps reading at 2.25M. With a latched fault
+    // logging is off, and the web UI's commands must go out at 115200.
+    if (fastLoggingActive) uart_set_baudrate(INVERTER_PORT, 2250000);
   }
   delay(10);
   uart_flush(INVERTER_PORT);
@@ -3684,7 +3903,10 @@ void loop(void){
   // SSE value stream (gauges page). Never while binary logging owns the
   // UART at its own baud rate — though logging only runs with no WiFi
   // clients, so the two can't really coexist anyway.
-  if (!fastLoggingActive) sseTick();
+  if (!fastLoggingActive) {
+    sseTick();
+    mqttTick();
+  }
 
   // AP-fallback mode transitions (drop the AP once the station is up, bring
   // it back if the station falls over) — checked every 15 s
@@ -3719,7 +3941,16 @@ void loop(void){
         indexSDIObuffer += bytesRead;
         if(indexSDIObuffer >= SDIO_BUFFER_SIZE)
         {
-          dataFile.write(SDIObuffer, SDIO_BUFFER_SIZE);
+          if (dataFile.write(SDIObuffer, SDIO_BUFFER_SIZE) != SDIO_BUFFER_SIZE) {
+            binaryLoggingFault = true;
+            indexSDIObuffer = 0; // do not replay a partially written block
+#ifdef OI_SERIAL_CONSOLE
+            consoleLogError = "SD binary block write failed; target stop may be unconfirmed";
+            consoleLogAuto = false;
+#endif
+            binaryLoggingStop(true); // close the failing file even without target ACK
+            return;
+          }
           indexSDIObuffer = 0;
           blockCountSD++;
           if(blockCountSD >= FLUSH_WRITES)
@@ -3732,7 +3963,11 @@ void loop(void){
     }
     else //not active so start
     {
-      if(haveSDCard && fastLoggingEnabled && (startLogAttempt < 3) && (millis() > LOG_DELAY_VAL))
+      if(
+#ifdef OI_SERIAL_CONSOLE
+         consoleLogAuto &&
+#endif
+         !binaryLoggingFault && !canMode && haveSDCard && fastLoggingEnabled && (startLogAttempt < 3) && (millis() > LOG_DELAY_VAL))
       {
         startLogAttempt++;
         binaryLoggingStart();

@@ -34,6 +34,7 @@
 //   GET  /__test/add-user?name=&password=&role= -> create an account directly
 //   GET  /__test/clock?advance=ms    -> move the mock's clock (session expiry)
 //   GET  /__test/auth-reset          -> the BOOT-button / serial lockout recovery
+//   POST /__test/mqtt-status         -> merge JSON body into the MQTT task status
 //   GET  /__test/foc[?blocked=1]     -> behave like the FOC build: no `start`
 //                                       command, a manualstart test parameter
 //                                       (blocked: an interlock holds the start)
@@ -111,9 +112,19 @@ function freshSettings() {
     dev_name: '', txrx_swapped: false, uart_rx_pin: 1, uart_tx_pin: 3, ap_fallback: false,
     // SD support built in (SD_AVAILABLE), probing off by default (SD_DEFAULT_ENABLED 0), so no card
     sd_available: true, sd_enabled: false, sd_card: false,
+    serial_console_available: false, serial_console: false,
     can_mode: false, can_node_id: 1, can_speed: 2, can_rx_pin: 4, can_tx_pin: 5,
     can_pwr_pin: -1, can_pwr_inv: false, can_en_pin: -1, can_en_inv: false, arch: 'esp32',
   };
+}
+
+// MQTT settings (settings.json mqtt_* fields + the NVS password) and the
+// client task's status, as src/mqtt_publisher reports them
+function freshMqtt() {
+  return { enabled: false, host: '', port: 1883, user: '', pass: '', client_id: '', prefix: '', names: '', interval: 5, retain: false };
+}
+function freshMqttStatus() {
+  return { connected: false, state: 'disconnected', last_error: '', publish_count: 0, connect_count: 0, last_publish_age: null, unknown: [] };
 }
 
 export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
@@ -122,6 +133,8 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
   let commandLog = [];
   let settings = freshSettings();
   let canNodes = null; // the can_nodes array persisted in settings.json (raw JSON text)
+  let mqtt = freshMqtt();
+  let mqttStatus = freshMqttStatus(); // scriptable via /__test/mqtt-status
   let canMap = [];     // CAN-mode mappings: { isrx, cobid, paramid, position, length, gain, offset }
   let canCacheLoaded = true;
   let fwStatus = { state: 0 }; // /fwupdate-status reply, scriptable via /__test/fw-status
@@ -433,12 +446,13 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
 
       // --- test introspection ---
       if (p === '/__test/commands') return json(commandLog);
-      if (p === '/__test/state') return json({ inverter, files: [...files.keys()], settings, canNodes, canMap, commandLog, fwSteps, otaFlashes, wifi, sseOpen: sseRes !== null,
+      if (p === '/__test/state') return json({ inverter, files: [...files.keys()], settings, canNodes, mqtt, canMap, commandLog, fwSteps, otaFlashes, wifi, sseOpen: sseRes !== null,
         users: auth.users().map(u => ({ name: u.name, role: u.role })), sessions: auth.sessionCount(), otaRunning: !auth.enabled() });
       if (p === '/__test/add-user') {
         const err = auth.add(q.get('name'), q.get('password'), q.get('role') || 'viewer');
         return err ? send(400, err) : text('ok');
       }
+      if (p === '/__test/mqtt-status') { Object.assign(mqttStatus, JSON.parse(body.toString() || '{}')); return text('ok'); }
       if (p === '/__test/clock') { clockOffset += toInt(q.get('advance')); return text(String(clockOffset)); }
       if (p === '/__test/auth-reset') { auth.clear(); return text('ok'); }
       if (p === '/__test/foc') {
@@ -456,7 +470,7 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
       if (p === '/__test/reset') {
         auth.clear(); clockOffset = 0;
         inverter = freshInverterState(); files = new Map(); commandLog = []; fwSteps = []; otaFlashes = 0;
-        settings = freshSettings(); canNodes = null; wifi = { apSSID: 'inverter', staSSID: 'mocknet' }; canMap = []; canCacheLoaded = true; sseMode = 'on'; latencyMs = 0; jsonMs = 0;
+        settings = freshSettings(); canNodes = null; mqtt = freshMqtt(); mqttStatus = freshMqttStatus(); wifi = { apSSID: 'inverter', staSSID: 'mocknet' }; canMap = []; canCacheLoaded = true; sseMode = 'on'; latencyMs = 0; jsonMs = 0;
         fwStatus = { state: 0 };
         return text('reset');
       }
@@ -488,6 +502,7 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
       }
       // A reboot's SD probe: finds the card only if probing is on
       if (p === '/__test/sd-boot') { settings.sd_card = settings.sd_enabled && q.get('card') === '1'; return text('ok'); }
+      if (p === '/__test/serial-build') { settings.serial_console_available = q.get('enabled') === '1'; return text('ok'); }
       if (p === '/__test/latency') { latencyMs = toInt(q.get('ms')); return text('ok'); }
       if (p === '/__test/uart') { jsonMs = toInt(q.get('jsonMs')); return text('ok'); }
       if (p === '/__test/can-cache') { canCacheLoaded = q.get('loaded') !== '0'; return text('ok'); }
@@ -737,7 +752,7 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
         if (mayWrite && q.has('reset_settings')) {
           // cfgResetAll(): device config back to defaults (file + NVS copy),
           // users/Wi-Fi/layouts untouched; the device then reboots
-          settings = freshSettings(); canNodes = null;
+          settings = freshSettings(); canNodes = null; mqtt = freshMqtt();
           files.delete('settings.json'); files.delete('uiprefs.json');
           return text('{"result":"ok","rebooting":true}', 'text/json');
         }
@@ -745,6 +760,12 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
         if (mayWrite && q.has('ap_fallback')) { settings.ap_fallback = q.get('ap_fallback') === '1'; return ok(); }
         // Saved, but the card is only probed at boot: sd_card doesn't change here
         if (mayWrite && q.has('sd_enabled')) { settings.sd_enabled = q.get('sd_enabled') === '1'; return ok(); }
+        if (mayWrite && q.has('serial_console')) {
+          const value = q.get('serial_console');
+          if (value !== '0' && value !== '1') return send(400, '{"error":"serial_console must be 0 or 1"}', 'application/json');
+          if (value === '1' && !settings.serial_console_available) return send(409, '{"error":"Console unavailable in this build"}', 'application/json');
+          settings.serial_console = value === '1'; return ok();
+        }
         if (mayWrite && q.has('can_mode')) {
           const s = settings;
           s.can_mode = q.get('can_mode') === '1';
@@ -773,6 +794,30 @@ export function createMockEsp({ port = 0, ssePort = 0 } = {}) {
           try { JSON.parse(canNodes); out = out.slice(0, -1) + ',"can_nodes":' + canNodes + '}'; } catch (e) { /* unparseable: firmware would splice garbage */ }
         }
         return text(out, 'text/json');
+      }
+      if (p === '/mqtt') {
+        // handleMqttConfig: GET reads, POST replaces (absent pass = keep it)
+        const view = () => {
+          const { pass, ...rest } = mqtt;
+          return json({ ...rest, pass_set: pass.length > 0, default_prefix: 'openinverter/inverter', default_client_id: 'inverter-a1b2c3' });
+        };
+        if (req.method !== 'POST') return view();
+        const flag = (v) => v === '1' || v === 'true';
+        const c = { ...mqtt };
+        if (q.has('enabled')) c.enabled = flag(q.get('enabled'));
+        for (const k of ['host', 'user', 'pass', 'client_id', 'prefix']) if (q.has(k)) c[k] = k === 'pass' ? q.get(k) : q.get(k).trim();
+        if (q.has('names')) c.names = [...new Set(q.get('names').split(/[\s,;]+/).map(n => n.replace(/[^A-Za-z0-9_.-]/g, '')).filter(Boolean))].join(',');
+        if (q.has('port')) { const v = toInt(q.get('port')); c.port = v > 0 && v < 65536 ? v : 1883; }
+        if (q.has('interval')) c.interval = Math.max(1, Math.min(3600, toInt(q.get('interval')) || 1));
+        if (q.has('retain')) c.retain = flag(q.get('retain'));
+        c.prefix = c.prefix.replace(/[+#\s]/g, '').replace(/^\/+|\/+$/g, '');
+        if (c.enabled && !c.host) return send(400, '{"error":"Set the broker host before enabling MQTT"}', 'application/json');
+        mqtt = c;
+        return view();
+      }
+      if (p === '/mqtt/status') {
+        return json({ ...mqttStatus, enabled: mqtt.enabled, connected: mqtt.enabled && mqttStatus.connected,
+          prefix: mqtt.prefix || 'openinverter/inverter' });
       }
       if (p === '/wifi') {
         // handleWifi: AP change, station change, or the templated wifi.html

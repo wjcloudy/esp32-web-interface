@@ -3674,8 +3674,157 @@ const UsersPanel = () => {
       <div class="dash-box compact"><h3>Users</h3><p class="auth-lead">Only an admin can add or change users.</p></div>`}`;
 };
 
+// MQTT broker card (Settings → Device & Connection). Settings are admin-only
+// (/mqtt); the connection status (/mqtt/status) is readable by any viewer.
+// The device never reports the stored password, only whether one is set.
+const MQTT_BLANK = { enabled: false, host: '', port: 1883, user: '', pass_set: false, client_id: '', prefix: '',
+  names: '', interval: 5, retain: false, default_prefix: '', default_client_id: '' };
+const MqttCard = () => {
+  const { state } = useContext(Store);
+  const admin = can('admin');
+  const [cfg, setCfg] = useState(null);
+  const [pass, setPass] = useState(''); // blank = keep the stored password
+  const [clearPass, setClearPass] = useState(false);
+  const [status, setStatus] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState(null); // { ok, text }
+  const set = (k) => (e) => setCfg(c => ({ ...c, [k]: e.target.value }));
+
+  useEffect(() => {
+    let alive = true;
+    if (admin) fetch('/mqtt').then(r => r.ok ? r.json() : null)
+      .then(d => { if (alive && d) setCfg({ ...MQTT_BLANK, ...d }); }).catch(() => {});
+    const poll = () => fetch('/mqtt/status').then(r => r.ok ? r.json() : null)
+      .then(s => { if (alive && s) setStatus(s); }).catch(() => {});
+    poll();
+    const t = setInterval(poll, 5000);
+    return () => { alive = false; clearInterval(t); };
+  }, []);
+
+  // Names the inverter's list doesn't know: spot values and parameters can
+  // both be published. Only once the real list is in (CAN mode without the
+  // parameter database has just a placeholder status/opmode pair)
+  const listLoaded = state.canMode ? state.canConnected : Object.keys(state.params || {}).length > 0;
+  const unknownNames = (!cfg || !listLoaded) ? []
+    : cfg.names.split(/[\s,;]+/).filter(n => n && !(n in (state.spotValues || {})) && !(n in (state.params || {})));
+
+  const save = async (patch = {}) => {
+    const c = { ...cfg, ...patch };
+    if (c.enabled && !c.host.trim()) {
+      setCfg(prev => ({ ...prev, enabled: false }));
+      setMsg({ ok: false, text: 'Set the broker host first.' });
+      return;
+    }
+    setSaving(true); setMsg(null);
+    const p = new URLSearchParams();
+    p.set('enabled', c.enabled ? '1' : '0');
+    p.set('host', c.host.trim());
+    p.set('port', String(parseInt(c.port) || 1883));
+    p.set('user', c.user.trim());
+    if (clearPass) p.set('pass', '');
+    else if (pass) p.set('pass', pass);
+    p.set('client_id', c.client_id.trim());
+    p.set('prefix', c.prefix.trim());
+    p.set('names', c.names.trim());
+    p.set('interval', String(parseInt(c.interval) || 5));
+    p.set('retain', c.retain ? '1' : '0');
+    try {
+      const r = await fetch('/mqtt', { method: 'POST', body: p });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.error || 'HTTP ' + r.status);
+      setCfg({ ...MQTT_BLANK, ...d }); setPass(''); setClearPass(false);
+      setMsg({ ok: true, text: 'Saved' });
+      setTimeout(() => setMsg(null), 2500);
+    } catch (e) {
+      setCfg(prev => ({ ...prev, enabled: cfg.enabled }));
+      setMsg({ ok: false, text: 'Save failed: ' + e.message });
+    } finally { setSaving(false); }
+  };
+
+  const pill = !status ? null
+    : !status.enabled ? html`<span class="pill muted">Off</span>`
+    : status.connected ? html`<span class="pill active"><span class="dot"></span>Connected</span>`
+    : html`<span class="pill warn">${status.last_error || 'Connecting…'}</span>`;
+
+  return html`
+    <div class="dash-box compact" id="mqtt-box">
+      <h3>MQTT Broker</h3>
+      <p class="mqtt-help">Publish spot values to an MQTT broker over plain TCP, e.g. for Home Assistant or Node-RED.</p>
+      ${status && html`
+        <div class="mqtt-status" id="mqtt-status">
+          ${pill}
+          ${status.connected && html`<span>${status.publish_count} values published${status.last_publish_age != null ? ', last ' + status.last_publish_age + ' s ago' : ''}</span>`}
+          ${status.connected && status.last_error && html`<span class="mqtt-warn">${status.last_error}</span>`}
+          ${status.unknown && status.unknown.length > 0 && html`<span class="mqtt-warn">Not found on the inverter: ${status.unknown.join(', ')}</span>`}
+        </div>`}
+      ${admin && cfg && html`
+        <${ToggleRow} label="Publish to MQTT" checked=${cfg.enabled} disabled=${saving}
+          onChange=${v => { setCfg(c => ({ ...c, enabled: v })); save({ enabled: v }); }} />
+        <div class="mqtt-form">
+          <label class="mqtt-wide">Broker host
+            <input id="mqtt-host" type="text" value=${cfg.host} placeholder="192.168.1.50 or homeassistant.local"
+              oninput=${set('host')} autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore />
+          </label>
+          <label>Port
+            <input id="mqtt-port" type="number" min="1" max="65535" value=${cfg.port} oninput=${set('port')} />
+          </label>
+          <label>Username
+            <input id="mqtt-user" type="text" value=${cfg.user} placeholder="optional" oninput=${set('user')}
+              autocomplete="off" spellcheck="false" data-lpignore="true" data-1p-ignore />
+          </label>
+          <label>Password
+            <input id="mqtt-pass" type="password" value=${pass} disabled=${clearPass}
+              placeholder=${cfg.pass_set ? 'stored, blank keeps it' : 'optional'}
+              oninput=${e => setPass(e.target.value)} autocomplete="new-password" data-lpignore="true" data-1p-ignore />
+          </label>
+          ${cfg.pass_set && html`
+            <label class="mqtt-wide mqtt-check"><input id="mqtt-pass-clear" type="checkbox" checked=${clearPass}
+              onchange=${e => { setClearPass(e.target.checked); setPass(''); }} /> Remove the stored password</label>`}
+          <label>Client ID
+            <input id="mqtt-client-id" type="text" value=${cfg.client_id} placeholder=${cfg.default_client_id}
+              oninput=${set('client_id')} autocomplete="off" spellcheck="false" />
+          </label>
+          <label>Topic prefix
+            <input id="mqtt-prefix" type="text" value=${cfg.prefix} placeholder=${cfg.default_prefix}
+              oninput=${set('prefix')} autocomplete="off" spellcheck="false" />
+          </label>
+          <label class="mqtt-wide">Spot values (comma-separated)
+            <input id="mqtt-names" type="text" value=${cfg.names} placeholder="udc, tmphs, speed, il1rms"
+              oninput=${set('names')} autocomplete="off" spellcheck="false" />
+          </label>
+          ${unknownNames.length > 0 && html`<p class="mqtt-wide mqtt-warn" id="mqtt-unknown">Not in this inverter's parameter list: ${unknownNames.join(', ')}</p>`}
+          <label>Every (s)
+            <input id="mqtt-interval" type="number" min="1" max="3600" value=${cfg.interval} oninput=${set('interval')} />
+          </label>
+          <div class="mqtt-retain">
+            <${ToggleRow} label="Retain values" checked=${cfg.retain} onChange=${v => setCfg(c => ({ ...c, retain: v }))} />
+          </div>
+        </div>
+        <div class="mqtt-actions">
+          <button id="mqtt-save" onclick=${() => save()} disabled=${saving}><${Icon} n="save" />${saving ? 'Saving…' : 'Save'}</button>
+          ${msg && html`<span role=${msg.ok ? 'status' : 'alert'} class=${msg.ok ? 'mqtt-ok' : 'mqtt-err'}>${msg.text}</span>`}
+        </div>`}
+      <p class="mqtt-help">
+        Each value goes to <code>${'<prefix>/<name>'}</code>, and
+        <code>${'<prefix>/status'}</code> says <code>online</code> or <code>offline</code>. The broker can be an IP address, a DNS name or a <code>.local</code> name.
+      </p>
+    </div>`;
+};
+
 const Settings = () => {
   const { state, dispatch } = useContext(Store);
+  const [serialInfo, setSerialInfo] = useState(null);
+  const [serialMsg, setSerialMsg] = useState('');
+  const [serialSaving, setSerialSaving] = useState(false);
+  const saveSerialConsole = async (enabled) => {
+    setSerialSaving(true); setSerialMsg('');
+    try {
+      const r = await fetch('/settings?serial_console=' + (enabled ? '1' : '0'), { method: 'POST' });
+      if (!r.ok) { const data = await r.json(); throw new Error(data.error || 'Could not save serial console setting'); }
+      setSerialInfo({ ...serialInfo, enabled });
+    } catch (e) { setSerialMsg(e.message); }
+    finally { setSerialSaving(false); }
+  };
   const [uartRxPin, setUartRxPin] = useState(1); // configurable UART pins (default GPIO1/3)
   const [uartTxPin, setUartTxPin] = useState(3);
   const [loading, setLoading] = useState(true);
@@ -3776,6 +3925,7 @@ const Settings = () => {
   const [sdInfo, setSdInfo] = useState(null); // { available, enabled, card } from /settings
   const [devName, setDevName] = useState(''); // friendly device nickname
   const [devMsg, setDevMsg] = useState('');
+
   const saveDevName = async () => {
     const name = devName.trim();
     try {
@@ -3832,6 +3982,8 @@ const Settings = () => {
           if (data.uart_rx_pin != null) setUartRxPin(data.uart_rx_pin);
           if (data.uart_tx_pin != null) setUartTxPin(data.uart_tx_pin);
           setApFb(data.ap_fallback === true);
+          if (data.serial_console_available !== undefined)
+            setSerialInfo({ available: data.serial_console_available === true, enabled: data.serial_console === true });
           // Older firmware doesn't report SD state — keep the box hidden
           if (data.sd_available !== undefined)
             // probed = what this boot did (the toggle only applies after a reboot)
@@ -4143,6 +4295,18 @@ const Settings = () => {
           <p style="font-size:.72rem;color:var(--text3);margin:.35rem 0 0;max-width:350px">The hostname (<b>${(devName.trim().toLowerCase().replace(/[^a-z0-9 _-]/g, '').replace(/[ _]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '') || 'inverter')}.local</b>) applies after the next reboot.</p>
         </div>
 
+        ${serialInfo && serialInfo.available && html`
+        <div class="dash-box compact" id="serial-console-box">
+          <h3>Serial Maintenance Console</h3>
+          <${ToggleRow} label="Enable serial access (bypasses users and roles)" checked=${serialInfo.enabled}
+            disabled=${serialSaving} onChange=${saveSerialConsole} />
+          <p style="font-size:.72rem;color:var(--text3);margin:.35rem 0 0">
+            Off by default. Trusted physical access permits ECU writes, resets, firmware updates and SD logging.
+            Long bench commands can pause web updates. Auth reset recovery stays available when off.
+          </p>
+          ${serialMsg && html`<p role="alert" style="color:var(--red)">${serialMsg}</p>`}
+        </div>`}
+
         ${sdInfo && sdInfo.available && html`
         <div class="dash-box compact" id="sd-card-box">
           <h3>SD Card</h3>
@@ -4157,6 +4321,8 @@ const Settings = () => {
             <b>${!sdInfo.probed ? 'Not probed at this boot.' : sdInfo.card ? 'Card detected.' : 'No card detected.'}</b>
           </p>
         </div>`}
+
+        <${MqttCard} />
 
         `}
         ${subTab === 'web' && html`

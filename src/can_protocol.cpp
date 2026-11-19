@@ -30,6 +30,53 @@ bool canSdoCommand(uint8_t nodeId, uint8_t command) {
   return canSdoWrite(nodeId, CAN_INDEX_COMMANDS, command, 0);
 }
 
+static CanSdoResult sdoTransaction(uint8_t node, uint16_t index, uint8_t sub,
+                                   bool write, int32_t value, uint32_t timeout) {
+  CanSdoResult result;
+  if (node < 1 || node > 127) { result.error = "invalid_node"; return result; }
+  twai_message_t frame;
+  for (int i = 0; i < 64 && canDriverReceive(&frame); ++i) {} // bounded stale drain
+  if (!(write ? canSdoWrite(node, index, sub, value) : canSdoRead(node, index, sub))) {
+    result.error = "send_failed";
+    return result;
+  }
+  uint32_t start = millis();
+  while (millis() - start < timeout) {
+    if (!canDriverReceive(&frame)) { delay(1); continue; }
+    if (frame.extd || frame.rtr || frame.identifier != (CAN_SDO_RESPONSE_BASE | node) ||
+        frame.data_length_code < 4 || frame.data[1] != (index & 0xff) ||
+        frame.data[2] != (index >> 8) || frame.data[3] != sub) continue;
+    uint8_t cmd = frame.data[0];
+    result.error = "bad_response";
+    if (cmd == SDO_ABORT && frame.data_length_code == 8) {
+      memcpy(&result.abortCode, frame.data + 4, 4);
+      result.error = "sdo_abort";
+      return result;
+    }
+    if (write && cmd == SDO_WRITE_RESPONSE && frame.data_length_code == 8) {
+      result.ok = true;
+    } else if (!write && (cmd == 0x42 || cmd == 0x43 || cmd == 0x47 || cmd == 0x4b || cmd == 0x4f)) {
+      result.size = (cmd & 1) ? 4 - ((cmd >> 2) & 3) : 4;
+      if (frame.data_length_code < 4 + result.size) return result;
+      // Raw 1/2/3-byte objects are zero-extended. OI fixed-point values use 4 bytes.
+      memcpy(&result.value, frame.data + 4, result.size);
+      result.ok = true;
+    }
+    if (result.ok) result.error = "";
+    return result;
+  }
+  return result;
+}
+
+CanSdoResult canSdoReadChecked(uint8_t node, uint16_t index, uint8_t sub, uint32_t timeout) {
+  return sdoTransaction(node, index, sub, false, 0, timeout);
+}
+
+CanSdoResult canSdoWriteConfirmed(uint8_t node, uint16_t index, uint8_t sub,
+                                 int32_t value, uint32_t timeout) {
+  return sdoTransaction(node, index, sub, true, value, timeout);
+}
+
 bool canSdoParseResponse(const twai_message_t* frame, uint8_t* outNodeId,
                           uint16_t* outIndex, uint8_t* outSubIndex, int32_t* outValue) {
   if (!frame) return false;
@@ -84,7 +131,7 @@ bool canReceiveForNode(uint8_t nodeId, twai_message_t* outFrame, uint32_t timeou
 
 CanSegStatus canSegStatus = {0, 0, 0};
 
-uint32_t canSdoReadSegmented(uint8_t nodeId, uint16_t index, uint8_t* buffer, uint32_t maxLen, uint32_t timeoutPerSegmentMs, bool* outComplete) {
+uint32_t canSdoReadSegmentedTo(uint8_t nodeId, uint16_t index, const CanSdoSink& sink, uint32_t maxLen, uint32_t timeoutPerSegmentMs, bool* outComplete) {
   // CANopen segmented upload: initiate with an SDO read, then request segments
   // with an alternating toggle bit. Each segment carries up to 7 data bytes;
   // the last segment is flagged in bit 0 of the command byte.
@@ -94,7 +141,7 @@ uint32_t canSdoReadSegmented(uint8_t nodeId, uint16_t index, uint8_t* buffer, ui
   // Drain stale frames (e.g. late responses to earlier reads) so the initiate
   // response can't be mismatched to a leftover expedited frame
   twai_message_t resp;
-  while (canDriverReceive(&resp)) {}
+  for (unsigned i = 0; i < 64 && canDriverReceive(&resp); ++i) {}
 
   if (!canSdoRead(nodeId, index, 0)) { canSegStatus.stage = 1; return 0; }
 
@@ -102,13 +149,17 @@ uint32_t canSdoReadSegmented(uint8_t nodeId, uint16_t index, uint8_t* buffer, ui
 
   uint8_t cmd = resp.data[0];
   if (cmd == SDO_ABORT) { canSegStatus.stage = 4; canSegStatus.cmd = cmd; return 0; }
-  if ((cmd & 0xE0) != SDO_RESPONSE_UPLOAD) { canSegStatus.stage = 3; canSegStatus.cmd = cmd; return 0; }
+  if (resp.extd || resp.rtr || resp.data_length_code != 8 ||
+      resp.identifier != (CAN_SDO_RESPONSE_BASE | nodeId) ||
+      resp.data[1] != (index & 0xff) || resp.data[2] != (index >> 8) || resp.data[3] != 0 ||
+      (cmd & 0xE0) != SDO_RESPONSE_UPLOAD) { canSegStatus.stage = 3; canSegStatus.cmd = cmd; return 0; }
 
   // Expedited response: object fits in the 4 data bytes of the initiate response
   if (cmd & SDO_EXPEDITED) {
     uint8_t n = (cmd & SDO_SIZE_SPECIFIED) ? 4 - ((cmd >> 2) & 0x3) : 4;
-    if (n > maxLen) n = maxLen;
-    memcpy(buffer, &resp.data[4], n);
+    if (n > maxLen) { canSegStatus.stage = 8; return 0; }
+    if ((sink.begin && !sink.begin(sink.context, n)) ||
+        !sink.write || !sink.write(sink.context, &resp.data[4], n)) { canSegStatus.stage = 9; return 0; }
     if (outComplete) *outComplete = true;
     canSegStatus.bytes = n;
     return n;
@@ -119,6 +170,11 @@ uint32_t canSdoReadSegmented(uint8_t nodeId, uint16_t index, uint8_t* buffer, ui
   // the whole download (blind re-requests can silently skip data).
   uint32_t totalBytes = 0;
   bool toggle = false;
+  uint32_t hint = 0;
+  if (cmd & SDO_SIZE_SPECIFIED) memcpy(&hint, resp.data + 4, sizeof(hint));
+  // A hint is an allocation optimisation, not permission to exceed maxLen.
+  if (hint > maxLen) hint = 0;
+  if (!sink.write || (sink.begin && !sink.begin(sink.context, hint))) { canSegStatus.stage = 9; return 0; }
 
   while (true) {
     if (totalBytes >= maxLen) { canSegStatus.stage = 8; break; }
@@ -131,11 +187,16 @@ uint32_t canSdoReadSegmented(uint8_t nodeId, uint16_t index, uint8_t* buffer, ui
     if (!canReceiveForNode(nodeId, &resp, timeoutPerSegmentMs)) { canSegStatus.stage = 6; break; }
     cmd = resp.data[0];
     if (cmd & SDO_ABORT) { canSegStatus.stage = 4; canSegStatus.cmd = cmd; break; }
+    if (resp.extd || resp.rtr || resp.data_length_code != 8 ||
+        resp.identifier != (CAN_SDO_RESPONSE_BASE | nodeId) || (cmd & 0xE0) != 0) {
+      canSegStatus.stage = 10; canSegStatus.cmd = cmd; break;
+    }
     if ((cmd & SDO_TOGGLE_BIT) != expected) { canSegStatus.stage = 7; canSegStatus.cmd = cmd; break; }
 
     uint8_t n = 7 - ((cmd >> 1) & 0x7);  // valid data bytes in this segment
-    for (uint8_t i = 0; i < n && totalBytes < maxLen; i++)
-      buffer[totalBytes++] = resp.data[1 + i];
+    if (n > maxLen - totalBytes) { canSegStatus.stage = 8; break; }
+    if (!sink.write(sink.context, resp.data + 1, n)) { canSegStatus.stage = 9; break; }
+    totalBytes += n;
 
     if (cmd & SDO_SIZE_SPECIFIED) {      // last segment received
       if (outComplete) *outComplete = true;
@@ -147,4 +208,16 @@ uint32_t canSdoReadSegmented(uint8_t nodeId, uint16_t index, uint8_t* buffer, ui
 
   canSegStatus.bytes = totalBytes;
   return totalBytes;
+}
+
+uint32_t canSdoReadSegmented(uint8_t nodeId, uint16_t index, uint8_t* buffer, uint32_t maxLen, uint32_t timeoutPerSegmentMs, bool* outComplete) {
+  struct Buffer { uint8_t* bytes; uint32_t used; } state = {buffer, 0};
+  CanSdoSink sink = {&state, nullptr, [](void* context, const uint8_t* bytes, uint8_t length) {
+    auto& s = *static_cast<Buffer*>(context);
+    if (!s.bytes) return false;
+    memcpy(s.bytes + s.used, bytes, length);
+    s.used += length;
+    return true;
+  }};
+  return canSdoReadSegmentedTo(nodeId, index, sink, maxLen, timeoutPerSegmentMs, outComplete);
 }
