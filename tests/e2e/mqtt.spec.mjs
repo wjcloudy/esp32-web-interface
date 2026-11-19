@@ -25,7 +25,9 @@ test.describe('MQTT settings', () => {
     await box.locator('#mqtt-names').fill('udc, tmphs; udc nosuchvalue');
     await box.locator('#mqtt-interval').fill('10');
     // A name the inverter's parameter list doesn't have is flagged before saving
-    await expect(box.locator('#mqtt-unknown')).toContainText('nosuchvalue');
+    await expect(box.locator('#mqtt-unknown')).toHaveText("Not in this inverter's parameter list: nosuchvalue");
+    // The help text shows real angle brackets, not HTML entities
+    await expect(box).toContainText('<prefix>/<name>');
     await box.locator('#mqtt-save').click();
     await expect(box.getByRole('status')).toContainText('Saved');
 

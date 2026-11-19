@@ -3701,9 +3701,12 @@ const MqttCard = () => {
     return () => { alive = false; clearInterval(t); };
   }, []);
 
-  // Names the loaded parameter list doesn't know (only once it's loaded)
-  const unknownNames = (!cfg || !state.params) ? []
-    : cfg.names.split(/[\s,;]+/).filter(n => n && !(n in state.params));
+  // Names the inverter's list doesn't know: spot values and parameters can
+  // both be published. Only once the real list is in (CAN mode without the
+  // parameter database has just a placeholder status/opmode pair)
+  const listLoaded = state.canMode ? state.canConnected : Object.keys(state.params || {}).length > 0;
+  const unknownNames = (!cfg || !listLoaded) ? []
+    : cfg.names.split(/[\s,;]+/).filter(n => n && !(n in (state.spotValues || {})) && !(n in (state.params || {})));
 
   const save = async (patch = {}) => {
     const c = { ...cfg, ...patch };
@@ -3802,8 +3805,8 @@ const MqttCard = () => {
           ${msg && html`<span role=${msg.ok ? 'status' : 'alert'} class=${msg.ok ? 'mqtt-ok' : 'mqtt-err'}>${msg.text}</span>`}
         </div>`}
       <p class="mqtt-help">
-        Each value goes to <code>&lt;prefix&gt;/&lt;name&gt;</code>, and <code>&lt;prefix&gt;/status</code> says
-        <code>online</code> or <code>offline</code>. The broker can be an IP address, a DNS name or a <code>.local</code> name.
+        Each value goes to <code>${'<prefix>/<name>'}</code>, and
+        <code>${'<prefix>/status'}</code> says <code>online</code> or <code>offline</code>. The broker can be an IP address, a DNS name or a <code>.local</code> name.
       </p>
     </div>`;
 };
